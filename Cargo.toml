@@ -1,0 +1,14 @@
+[package]
+name = "caracal"
+version = "0.1.0"
+edition = "2024"
+description = "Native GPUI GPU-accelerated terminal / SSH / serial client"
+
+[dependencies]
+gpui = "0.2.2"
+alacritty_terminal = "0.26.0"
+portable-pty = "0.9.0"
+flume = "0.12.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"
+log = "0.4"
