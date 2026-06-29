@@ -22,9 +22,9 @@ use crate::terminal::render::terminal_canvas;
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
 
-/// Primary monospace font with a Nerd Font fallback, so prompt/CLI glyphs in the
-/// Private Use Area (powerline arrows, devicons, …) resolve instead of showing
-/// tofu.
+/// Primary monospace font. The `fallbacks` list is set for correctness on
+/// platforms that honor it; on Linux gpui 0.2.2 ignores it, so Nerd Font glyphs
+/// are routed explicitly to [`symbol_font`] by the renderer instead.
 fn terminal_font() -> Font {
     let mut font = font("JetBrains Mono");
     font.fallbacks = Some(FontFallbacks::from_fonts(vec![
@@ -33,11 +33,18 @@ fn terminal_font() -> Font {
     font
 }
 
+/// Symbol font used for Private Use Area (Nerd Font) glyphs: powerline arrows,
+/// devicons, Material Design icons, etc.
+fn symbol_font() -> Font {
+    font("Symbols Nerd Font")
+}
+
 pub struct TerminalView {
     term: SharedTerm,
     backend: Arc<dyn PtyBackend>,
     focus_handle: FocusHandle,
     font: Font,
+    symbol_font: Font,
     font_size: Pixels,
     title: String,
     exited: bool,
@@ -81,6 +88,7 @@ impl TerminalView {
             backend,
             focus_handle,
             font: terminal_font(),
+            symbol_font: symbol_font(),
             font_size: px(14.0),
             title: "terminal".to_string(),
             exited: false,
@@ -133,6 +141,7 @@ impl Render for TerminalView {
                 self.term.clone(),
                 self.backend.clone(),
                 self.font.clone(),
+                self.symbol_font.clone(),
                 self.font_size,
                 self.focus_handle.clone(),
             ))

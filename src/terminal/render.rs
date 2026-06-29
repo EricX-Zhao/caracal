@@ -44,6 +44,7 @@ pub fn terminal_canvas(
     term: SharedTerm,
     backend: Arc<dyn PtyBackend>,
     font: Font,
+    symbol_font: Font,
     font_size: Pixels,
     focus: FocusHandle,
 ) -> impl gpui::IntoElement {
@@ -71,16 +72,40 @@ pub fn terminal_canvas(
         },
         // PAINT: grid -> glyphs.
         move |bounds: Bounds<Pixels>, metrics: CellMetrics, window, cx| {
-            paint_grid(&term, &font, font_size, &focus, bounds, metrics, window, cx);
+            paint_grid(
+                &term,
+                &font,
+                &symbol_font,
+                font_size,
+                &focus,
+                bounds,
+                metrics,
+                window,
+                cx,
+            );
         },
     )
     .size_full()
+}
+
+/// Codepoints that belong to Nerd Font icon ranges (the three Private Use Areas).
+/// These never appear in an ordinary monospace font, so on Linux — where gpui
+/// 0.2.2 ignores `Font.fallbacks` and cosmic-text's auto-fallback is unreliable
+/// for PUA — we route them explicitly to the symbol font.
+fn is_nerd_font_glyph(c: char) -> bool {
+    matches!(
+        c as u32,
+        0xE000..=0xF8FF        // BMP Private Use Area
+        | 0xF0000..=0xFFFFD    // Supplementary PUA-A
+        | 0x100000..=0x10FFFD  // Supplementary PUA-B
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn paint_grid(
     term: &SharedTerm,
     font: &Font,
+    symbol_font: &Font,
     font_size: Pixels,
     focus: &FocusHandle,
     bounds: Bounds<Pixels>,
@@ -164,7 +189,9 @@ fn paint_grid(
             continue;
         }
 
-        let run_font = if flags.contains(Flags::BOLD) {
+        let run_font = if is_nerd_font_glyph(c) {
+            symbol_font.clone()
+        } else if flags.contains(Flags::BOLD) {
             bold_font.clone()
         } else {
             font.clone()
