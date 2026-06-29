@@ -5,10 +5,38 @@ edition = "2024"
 description = "Native GPUI GPU-accelerated terminal / SSH / serial client"
 
 [dependencies]
-gpui = "0.2.2"
+# --- Phase 1: bare window + local shell, cross-platform (Windows / Linux / macOS) ---
+#
+# Pull `gpui` and `gpui_platform` from the same Zed git revision so the platform
+# facade (`gpui_platform`) and the core UI framework (`gpui`) always agree on
+# their internal contract. The rev pin mirrors `longbridge/gpui-component` (which
+# we use in Phase 5+) and is the most-baked known-good combo.
+#
+# Why git and not crates.io `gpui = "0.2.2"`: `gpui_platform` is a workspace
+# internal crate of `zed-industries/zed` and is not published. It is the facade
+# that re-exports `gpui_linux` / `gpui_macos` / `gpui_windows` and propagates
+# the `wayland` / `x11` / `font-kit` / `runtime_shaders` features to them.
+#
+# Features enabled:
+#   - `font-kit`     — needed on macOS for the bundled font system; on Linux it
+#                      uses fontconfig (via `zed-font-kit`'s `dlopen` source).
+#   - `x11`, `wayland` — Linux needs both: the runtime picks the active one
+#                      through `WAYLAND_DISPLAY` / `DISPLAY`.
+#   - `runtime_shaders` — macOS Metal runtime shader compilation (harmless on
+#                      Linux/Windows; required on macOS for some effects).
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+
+# Terminal model + transport
 alacritty_terminal = "0.26.0"
 portable-pty = "0.9.0"
+
+# Bridge plumbing (the only place cross-context channels live — see
+# `terminal/bridge.rs` and CLAUDE.md §2). flume straddles blocking + async.
 flume = "0.12.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Misc
 anyhow = "1"
 log = "0.4"

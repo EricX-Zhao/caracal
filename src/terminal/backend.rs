@@ -8,6 +8,23 @@ use std::sync::Mutex;
 use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
+/// Pick the user's default shell and the env var that holds their home
+/// directory. Unix: `$SHELL` / `$HOME` (fallback `/bin/sh`). Windows: `%COMSPEC%`
+/// (fallback `cmd.exe`) / `%USERPROFILE%`. Done at spawn-time so it picks up
+/// env changes (e.g. inside containers / SSH).
+fn default_shell_and_home() -> (String, &'static str) {
+    #[cfg(windows)]
+    {
+        let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+        (shell, "USERPROFILE")
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        (shell, "HOME")
+    }
+}
+
 /// Unified byte-stream interface over a backend transport.
 ///
 /// - `write`: bytes destined for the backend (keystrokes / query responses).
@@ -42,10 +59,10 @@ impl LocalPty {
             pixel_height: 0,
         })?;
 
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let (shell, home_var) = default_shell_and_home();
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
-        if let Ok(home) = std::env::var("HOME") {
+        if let Ok(home) = std::env::var(home_var) {
             cmd.cwd(home);
         }
         let child = pair.slave.spawn_command(cmd)?;
