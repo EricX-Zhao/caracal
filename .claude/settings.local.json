@@ -32,7 +32,12 @@
       "Bash(fc-list : family)",
       "Bash(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json timeout 6 cargo run)",
       "Bash(fc-list)",
-      "Bash(awk 'NR>=64 && /^impl / {print NR\": \"$0} NR==365{print \">>>365 shape_line here\"}' src/text_system.rs)"
+      "Bash(awk 'NR>=64 && /^impl / {print NR\": \"$0} NR==365{print \">>>365 shape_line here\"}' src/text_system.rs)",
+      "Bash(timeout 120 curl -sL -o symbols.zip \"https://github.com/ryanoasis/nerd-fonts/releases/latest/download/NerdFontsSymbolsOnly.zip\")",
+      "Bash(unzip -o symbols.zip -d symbols_extract '*.ttf')",
+      "Bash(mkdir -p ~/.local/share/fonts)",
+      "Bash(cp /tmp/claude-1000/-home-eric-code-caracal/62ac8a92-bc74-429a-89c2-f980cce0b9a3/scratchpad/symbols_extract/SymbolsNerdFontMono-Regular.ttf ~/.local/share/fonts/)",
+      "Bash(fc-cache -f ~/.local/share/fonts)"
     ]
   }
 }

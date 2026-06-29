@@ -34,9 +34,10 @@ fn terminal_font() -> Font {
 }
 
 /// Symbol font used for Private Use Area (Nerd Font) glyphs: powerline arrows,
-/// devicons, Material Design icons, etc.
+/// devicons, Material Design icons, etc. The *Mono* variant designs every glyph
+/// to a single terminal cell, so no shrink-to-fit is needed.
 fn symbol_font() -> Font {
-    font("Symbols Nerd Font")
+    font("Symbols Nerd Font Mono")
 }
 
 pub struct TerminalView {
