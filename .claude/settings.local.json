@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(git --version)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(cargo search *)",
+      "Bash(timeout 30 curl -sL https://crates.io/api/v1/crates/gpui-component/0.5.1/download -o gc.crate)",
+      "Bash(tar xzf *)",
+      "Bash(timeout 30 curl -sL \"https://docs.rs/crate/gpui-component/0.5.1/source/Cargo.toml\")",
+      "Bash(python3 -c ' *)",
+      "Bash(sed -n '/pub struct KeyDownEvent/,/^}/p' src/interactive.rs)",
+      "Bash(sed -n '/pub struct Modifiers {/,/^}/p' src/platform/keystroke.rs)",
+      "Bash(sed -n '/pub struct ScrollWheelEvent/,/^}/p' src/interactive.rs)",
+      "Bash(sed -n '/pub enum ScrollDelta/,/^}/p' src/interactive.rs)",
+      "Bash(cd *)",
+      "Bash(sed -n '/pub struct RenderableContent/,/^}/p' src/term/mod.rs)",
+      "Bash(sed -n '/pub struct RenderableCursor/,/^}/p' src/term/mod.rs)",
+      "Bash(sed -n '/pub struct Cell {/,/^}/p' src/term/cell.rs)",
+      "Bash(sed -n '/pub struct Indexed/,/^}/p' src/grid/mod.rs)",
+      "Read(//home/eric/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vte-0.15.0/**)",
+      "Bash(sed -n '/pub struct Rgb/,/^}/p' src/ansi.rs)",
+      "Bash(sed -n '/pub enum Color {/,/^}/p' src/ansi.rs)",
+      "Bash(sed -n '/pub enum NamedColor {/,/^}/p' src/ansi.rs)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}
