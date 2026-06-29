@@ -189,26 +189,76 @@ fn paint_grid(
             continue;
         }
 
-        let run_font = if is_nerd_font_glyph(c) {
-            symbol_font.clone()
-        } else if flags.contains(Flags::BOLD) {
-            bold_font.clone()
+        if is_nerd_font_glyph(c) {
+            // Proportional Symbols Nerd Font: shrink-to-fit + center, so wide
+            // icons don't overflow into the next cell.
+            paint_symbol(
+                &ts,
+                symbol_font,
+                c,
+                fg,
+                font_size,
+                point(x, y),
+                cw * width_cells,
+                ch,
+                window,
+                cx,
+            );
         } else {
-            font.clone()
-        };
-        let text: gpui::SharedString = c.to_string().into();
-        let run = TextRun {
-            len: text.len(),
-            font: run_font,
-            color: fg,
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let shaped = ts.shape_line(text, font_size, &[run], None);
-        let _ = shaped.paint(point(x, y), ch, window, cx);
+            let run_font = if flags.contains(Flags::BOLD) {
+                &bold_font
+            } else {
+                font
+            };
+            let (text, run) = text_run(c, run_font, fg);
+            let shaped = ts.shape_line(text, font_size, &[run], None);
+            let _ = shaped.paint(point(x, y), ch, window, cx);
+        }
     }
     drop(term);
+}
+
+/// Build a single-glyph `(text, TextRun)` pair.
+fn text_run(c: char, font: &Font, color: Hsla) -> (gpui::SharedString, TextRun) {
+    let text: gpui::SharedString = c.to_string().into();
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    (text, run)
+}
+
+/// Paint a Nerd Font symbol glyph, shrinking it to fit `allotted` width and
+/// centering it horizontally within the cell.
+#[allow(clippy::too_many_arguments)]
+fn paint_symbol(
+    ts: &gpui::WindowTextSystem,
+    font: &Font,
+    c: char,
+    color: Hsla,
+    font_size: Pixels,
+    origin: Point<Pixels>,
+    allotted: Pixels,
+    ch: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (text, run) = text_run(c, font, color);
+    let mut shaped = ts.shape_line(text, font_size, &[run], None);
+
+    // Shrink oversized icons (the proportional font has many double-width glyphs).
+    if shaped.width > allotted && shaped.width > px(0.0) {
+        let scale = f32::from(allotted) / f32::from(shaped.width);
+        let (text2, run2) = text_run(c, font, color);
+        shaped = ts.shape_line(text2, font_size * scale, &[run2], None);
+    }
+
+    let x_off = ((f32::from(allotted) - f32::from(shaped.width)) / 2.0).max(0.0);
+    let _ = shaped.paint(point(origin.x + px(x_off), origin.y), ch, window, cx);
 }
 
 fn paint_cursor_overlay(

@@ -30,7 +30,9 @@
       "Bash(timeout 15 vulkaninfo --summary)",
       "Bash(fc-match monospace *)",
       "Bash(fc-list : family)",
-      "Bash(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json timeout 6 cargo run)"
+      "Bash(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json timeout 6 cargo run)",
+      "Bash(fc-list)",
+      "Bash(awk 'NR>=64 && /^impl / {print NR\": \"$0} NR==365{print \">>>365 shape_line here\"}' src/text_system.rs)"
     ]
   }
 }
