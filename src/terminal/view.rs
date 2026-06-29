@@ -9,8 +9,8 @@ use std::sync::Arc;
 use alacritty_terminal::event::Event;
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    Context, FocusHandle, Focusable, Font, InteractiveElement, IntoElement, KeyDownEvent,
-    ParentElement, Pixels, Render, Styled, Task, Window, div, font, px,
+    Context, FocusHandle, Focusable, Font, FontFallbacks, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Pixels, Render, Styled, Task, Window, div, font, px,
 };
 
 use crate::terminal::backend::{LocalPty, PtyBackend};
@@ -21,6 +21,17 @@ use crate::terminal::render::terminal_canvas;
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
+
+/// Primary monospace font with a Nerd Font fallback, so prompt/CLI glyphs in the
+/// Private Use Area (powerline arrows, devicons, …) resolve instead of showing
+/// tofu.
+fn terminal_font() -> Font {
+    let mut font = font("JetBrains Mono");
+    font.fallbacks = Some(FontFallbacks::from_fonts(vec![
+        "Symbols Nerd Font".to_string(),
+    ]));
+    font
+}
 
 pub struct TerminalView {
     term: SharedTerm,
@@ -69,7 +80,7 @@ impl TerminalView {
             term,
             backend,
             focus_handle,
-            font: font("JetBrains Mono"),
+            font: terminal_font(),
             font_size: px(14.0),
             title: "terminal".to_string(),
             exited: false,
