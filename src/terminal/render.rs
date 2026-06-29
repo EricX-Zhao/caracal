@@ -13,7 +13,8 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
 use gpui::{
-    App, Bounds, FocusHandle, Font, Hsla, Pixels, Point, TextRun, Window, canvas, fill, point, px,
+    App, Bounds, FocusHandle, Font, Hsla, Pixels, Point, Styled, TextRun, Window, canvas, fill,
+    point, px,
 };
 
 use crate::terminal::backend::PtyBackend;
@@ -32,7 +33,9 @@ fn cell_metrics(window: &Window, font: &Font, font_size: Pixels) -> CellMetrics 
     let width = ts
         .em_advance(font_id, font_size)
         .unwrap_or_else(|_| font_size * 0.6);
-    let height = (ts.ascent(font_id, font_size) + ts.descent(font_id, font_size)).ceil();
+    // Cell height = font's glyph extent plus a little leading, with a sane floor.
+    let glyph_extent = ts.ascent(font_id, font_size) + ts.descent(font_id, font_size);
+    let height = glyph_extent.max(font_size * 1.2).ceil();
     CellMetrics { width, height }
 }
 
@@ -71,6 +74,7 @@ pub fn terminal_canvas(
             paint_grid(&term, &font, font_size, &focus, bounds, metrics, window, cx);
         },
     )
+    .size_full()
 }
 
 #[allow(clippy::too_many_arguments)]

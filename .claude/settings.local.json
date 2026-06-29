@@ -27,7 +27,10 @@
       "Bash(git add *)",
       "Bash(git commit *)",
       "Bash(cargo build *)",
-      "Bash(timeout 15 vulkaninfo --summary)"
+      "Bash(timeout 15 vulkaninfo --summary)",
+      "Bash(fc-match monospace *)",
+      "Bash(fc-list : family)",
+      "Bash(VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json timeout 6 cargo run)"
     ]
   }
 }

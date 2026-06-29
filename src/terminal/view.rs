@@ -69,7 +69,7 @@ impl TerminalView {
             term,
             backend,
             focus_handle,
-            font: font("monospace"),
+            font: font("JetBrains Mono"),
             font_size: px(14.0),
             title: "terminal".to_string(),
             exited: false,
