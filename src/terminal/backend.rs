@@ -38,6 +38,16 @@ pub trait PtyBackend: Send + Sync + 'static {
     fn resize(&self, cols: u16, rows: u16);
 }
 
+/// A backend that discards all input. Used as a placeholder when a real backend
+/// fails to start (e.g. SSH connection refused) so the `TerminalView` stays a
+/// valid entity and can still display the error text fed into its `Term`.
+pub struct NullBackend;
+
+impl PtyBackend for NullBackend {
+    fn write(&self, _bytes: &[u8]) {}
+    fn resize(&self, _cols: u16, _rows: u16) {}
+}
+
 /// Local pseudo-terminal running the user's shell, via `portable-pty`.
 pub struct LocalPty {
     master: Mutex<Box<dyn MasterPty + Send>>,

@@ -9,4 +9,5 @@ pub mod model;
 pub mod render;
 pub mod scrollback;
 pub mod selection;
+pub mod ssh;
 pub mod view;

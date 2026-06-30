@@ -31,11 +31,15 @@ gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d
 # Terminal model + transport
 alacritty_terminal = "0.26.0"
 portable-pty = "0.9.0"
+# SSH backend (Phase 4): russh client driven on a dedicated tokio runtime thread
+# (see terminal/ssh.rs). Default crypto backend is aws-lc-rs (needs cmake/clang,
+# which the build env has).
+russh = "0.61"
 
 # Bridge plumbing (the only place cross-context channels live — see
 # `terminal/bridge.rs` and CLAUDE.md §2). flume straddles blocking + async.
 flume = "0.12.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 
 # Misc
 anyhow = "1"

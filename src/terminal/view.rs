@@ -16,13 +16,14 @@ use gpui::{
     Window, div, font, px,
 };
 
-use crate::terminal::backend::{LocalPty, PtyBackend};
+use crate::terminal::backend::{LocalPty, NullBackend, PtyBackend};
 use crate::terminal::bridge::{run_drain, run_feeder};
 use crate::terminal::keymap::{PastePayload, encode_key, encode_paste};
 use crate::terminal::model::{SharedTerm, new_term};
 use crate::terminal::render::terminal_canvas;
 use crate::terminal::scrollback;
 use crate::terminal::selection;
+use crate::terminal::ssh::{SshBackend, SshConfig};
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
@@ -114,7 +115,39 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    /// A terminal backed by the local shell (`LocalPty`).
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_backend(window, cx, |cols, rows, bytes_tx| {
+            Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
+        })
+    }
+
+    /// A terminal backed by an SSH session. On connection failure the error is
+    /// written into the grid (so the user sees it) and the backend is a no-op,
+    /// keeping the entity valid instead of panicking (CLAUDE.md: clean error).
+    pub fn new_ssh(window: &mut Window, cx: &mut Context<Self>, config: SshConfig) -> Self {
+        Self::with_backend(window, cx, move |cols, rows, bytes_tx| {
+            match SshBackend::spawn(config, cols, rows, bytes_tx.clone()) {
+                Ok(backend) => Arc::new(backend),
+                Err(e) => {
+                    let _ = bytes_tx.send(
+                        format!("\r\n\x1b[1;31mSSH connection failed:\x1b[0m {e}\r\n").into_bytes(),
+                    );
+                    Arc::new(NullBackend)
+                }
+            }
+        })
+    }
+
+    /// Shared construction: wire the model, feeder, drain task, and focus; the
+    /// backend is built by `make_backend` (given the initial size and the byte
+    /// sink the feeder reads from). The backend is agnostic here — `TerminalView`
+    /// never learns whether it's local, SSH, or serial (CLAUDE.md §2).
+    fn with_backend(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         // Route keyboard to the terminal immediately.
         window.focus(&focus_handle, cx);
@@ -125,10 +158,7 @@ impl TerminalView {
 
         let term = new_term(DEFAULT_COLS, DEFAULT_ROWS, events_tx.clone());
 
-        let backend: Arc<dyn PtyBackend> = Arc::new(
-            LocalPty::spawn(DEFAULT_COLS as u16, DEFAULT_ROWS as u16, bytes_tx)
-                .expect("failed to spawn local pty"),
-        );
+        let backend = make_backend(DEFAULT_COLS as u16, DEFAULT_ROWS as u16, bytes_tx);
 
         // Feeder thread: raw PTY bytes -> Term (via ANSI parser) -> Wakeup.
         {
