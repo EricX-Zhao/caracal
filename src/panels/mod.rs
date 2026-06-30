@@ -3,4 +3,5 @@
 //! `terminal/` entity, delegates focus to it, and exposes a title. No business
 //! logic lives here (CLAUDE.md §1).
 
+pub mod session_list;
 pub mod terminal;
