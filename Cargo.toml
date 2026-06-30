@@ -28,6 +28,12 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac10
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 
+# Phase 5: dock shell (DockArea + panels). Pinned to a gpui-component rev that
+# uses the SAME gpui git rev as above — they must agree or cargo can't unify
+# gpui. Only `panels/` and `workspace.rs` may import it (CLAUDE.md §1); the
+# `terminal/` world stays free of it.
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+
 # Terminal model + transport
 alacritty_terminal = "0.26.0"
 portable-pty = "0.9.0"

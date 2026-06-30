@@ -30,7 +30,7 @@ const DEFAULT_ROWS: usize = 24;
 
 /// The bundled symbol font (registered in `main`) used as the default fallback so
 /// Nerd Font / powerline glyphs resolve even when the primary font lacks them.
-const SYMBOL_FALLBACK: &str = "Symbols Nerd Font Mono";
+const SYMBOL_FALLBACK: &str = "Symbols Nerd Font";
 
 /// User-configurable terminal font. Not hardcoded to any specific family — the
 /// primary defaults to the system monospace; a settings UI can later swap it via

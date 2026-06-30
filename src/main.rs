@@ -6,15 +6,18 @@
 //! the `application()` factory in `gpui_platform` `#[cfg]`-gates the right
 //! platform implementation (`gpui_linux` / `gpui_macos` / `gpui_windows`).
 
+mod panels;
 mod terminal;
+mod workspace;
 
 use std::borrow::Cow;
 
-use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext, Bounds, Styled, WindowBounds, WindowOptions, px, size};
+use gpui_component::{ActiveTheme, Root};
 use gpui_platform::application;
 
 use terminal::ssh::SshConfig;
-use terminal::view::TerminalView;
+use workspace::Workspace;
 
 /// Symbol font bundled into the binary and registered with the text system, so
 /// Nerd Font glyphs resolve from the *same* fontdb cosmic-text shapes with
@@ -44,6 +47,9 @@ fn main() {
     #[cfg(target_os = "linux")]
 
     application().run(|cx: &mut App| {
+        // Must run before using any gpui-component feature (theme/overlay/etc.).
+        gpui_component::init(cx);
+
         if let Err(e) = cx
             .text_system()
             .add_fonts(vec![Cow::Borrowed(SYMBOLS_NERD_FONT_MONO)])
@@ -60,10 +66,10 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                cx.new(|cx| match ssh {
-                    Some(config) => TerminalView::new_ssh(window, cx, config),
-                    None => TerminalView::new(window, cx),
-                })
+                let workspace = cx.new(|cx| Workspace::new(ssh, window, cx));
+                // The window's top-level view must be a gpui-component `Root`
+                // (provides theme context, overlays, notifications).
+                cx.new(|cx| Root::new(workspace, window, cx).bg(cx.theme().background))
             },
         )
         .expect("failed to open window");
