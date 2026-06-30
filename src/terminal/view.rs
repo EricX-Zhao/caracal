@@ -28,6 +28,17 @@ use crate::terminal::ssh::{SshBackend, SshConfig};
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
 
+// Keys that gpui-component's `Root` context binds for itself (tab → focus nav,
+// ctrl-c → Copy) must be reclaimed for the terminal. We bind these in the deeper
+// "Terminal" context (see `main`), which wins over Root, and forward the right
+// bytes to the PTY. Plain `on_key_down` never sees them — Root's bindings run
+// before key listeners (gpui window dispatch order).
+gpui::actions!(caracal_terminal, [Interrupt, SendTab, SendBackTab]);
+
+/// The `key_context` set on the terminal element; the reclaiming key bindings in
+/// `main` target this same context.
+pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
+
 /// The bundled symbol font (registered in `main`) used as the default fallback so
 /// Nerd Font / powerline glyphs resolve even when the primary font lacks them.
 const SYMBOL_FALLBACK: &str = "Symbols Nerd Font";
@@ -301,12 +312,35 @@ impl TerminalView {
 
         let mode: TermMode = *self.term.lock().mode();
         if let Some(bytes) = encode_key(&ev.keystroke, mode) {
-            self.backend.write(&bytes);
-            // Typing while scrolled back should snap to the bottom.
-            self.term
-                .lock()
-                .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+            self.send_input(&bytes);
         }
+    }
+
+    /// Write bytes to the backend and snap the viewport to the live area (typing
+    /// while scrolled back jumps to the bottom).
+    fn send_input(&self, bytes: &[u8]) {
+        self.backend.write(bytes);
+        self.term
+            .lock()
+            .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
+    // --- Keys reclaimed from gpui-component's Root bindings (see `main`). ---
+
+    /// Ctrl+C → interrupt (0x03 / SIGINT), not the Root "Copy" action. Use
+    /// Ctrl+Shift+C to copy a selection.
+    fn on_interrupt(&mut self, _: &Interrupt, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.send_input(&[0x03]);
+    }
+
+    /// Tab → send a literal tab (shell completion), not Root focus navigation.
+    fn on_send_tab(&mut self, _: &SendTab, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.send_input(b"\t");
+    }
+
+    /// Shift+Tab → CSI Z (back-tab), not Root focus navigation.
+    fn on_send_back_tab(&mut self, _: &SendBackTab, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.send_input(b"\x1b[Z");
     }
 
     /// Mouse-down: start a selection. Click type (Simple / Semantic /
@@ -498,9 +532,13 @@ impl Render for TerminalView {
         let view = cx.entity();
         div()
             .track_focus(&self.focus_handle)
-            .key_context("Terminal")
+            .key_context(TERMINAL_KEY_CONTEXT)
             .size_full()
             .on_key_down(cx.listener(Self::on_key_down))
+            // Actions reclaiming Root-context keys (tab / shift-tab / ctrl-c).
+            .on_action(cx.listener(Self::on_interrupt))
+            .on_action(cx.listener(Self::on_send_tab))
+            .on_action(cx.listener(Self::on_send_back_tab))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_click))
             .on_mouse_move(cx.listener(Self::on_mouse_move))

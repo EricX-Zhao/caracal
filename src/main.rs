@@ -12,11 +12,12 @@ mod workspace;
 
 use std::borrow::Cow;
 
-use gpui::{App, AppContext, Bounds, Styled, WindowBounds, WindowOptions, px, size};
+use gpui::{App, AppContext, Bounds, KeyBinding, Styled, WindowBounds, WindowOptions, px, size};
 use gpui_component::{ActiveTheme, Root};
 use gpui_platform::application;
 
 use terminal::ssh::SshConfig;
+use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::Workspace;
 
 /// Symbol font bundled into the binary and registered with the text system, so
@@ -49,6 +50,15 @@ fn main() {
     application().run(|cx: &mut App| {
         // Must run before using any gpui-component feature (theme/overlay/etc.).
         gpui_component::init(cx);
+
+        // Reclaim keys that gpui-component's Root context binds (tab → focus nav,
+        // ctrl-c → Copy): bind them in the deeper "Terminal" context so the
+        // terminal receives them as raw input (tab completion, SIGINT).
+        cx.bind_keys([
+            KeyBinding::new("ctrl-c", Interrupt, Some(TERMINAL_KEY_CONTEXT)),
+            KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
+            KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
+        ]);
 
         if let Err(e) = cx
             .text_system()
