@@ -158,54 +158,66 @@ async fn connect_and_shell(
     Ok((session, channel))
 }
 
-/// The post-connection event loop: pump bytes both ways until the channel
-/// closes or the view is dropped.
+/// The post-connection event loop. The channel is split so reading and writing
+/// run as independent concurrent loops: when the read loop awaits on the bounded
+/// `bytes_tx` (render backpressure), the write loop is *not* blocked, so input
+/// (keystrokes, Ctrl-C) always reaches the remote promptly. Backpressure on the
+/// read side simply stops draining the russh channel, which paces the remote via
+/// SSH flow control. Exits when either half ends (channel closed / view dropped).
 async fn run_loop(
     session: Handle<ClientHandler>,
-    mut channel: Channel<Msg>,
+    channel: Channel<Msg>,
     bytes_tx: flume::Sender<Vec<u8>>,
     ctrl_rx: flume::Receiver<Ctrl>,
 ) {
-    loop {
-        tokio::select! {
-            ctrl = ctrl_rx.recv_async() => {
-                match ctrl {
-                    Ok(Ctrl::Data(b)) => {
-                        if channel.data(&b[..]).await.is_err() {
-                            break;
-                        }
-                    }
-                    Ok(Ctrl::Resize { cols, rows }) => {
-                        let _ = channel.window_change(cols as u32, rows as u32, 0, 0).await;
-                    }
-                    Ok(Ctrl::Close) | Err(_) => {
-                        let _ = channel.eof().await;
+    let (mut read_half, write_half) = channel.split();
+
+    let read_loop = async {
+        loop {
+            match read_half.wait().await {
+                // stdout
+                Some(ChannelMsg::Data { ref data }) => {
+                    if bytes_tx.send_async(data.to_vec()).await.is_err() {
                         break;
                     }
                 }
+                // stderr arrives as ExtendedData (CLAUDE.md §4) — render it inline.
+                Some(ChannelMsg::ExtendedData { ref data, .. }) => {
+                    if bytes_tx.send_async(data.to_vec()).await.is_err() {
+                        break;
+                    }
+                }
+                // ExitStatus precedes Close; keep reading trailing output.
+                Some(ChannelMsg::ExitStatus { .. }) => {}
+                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                _ => {}
             }
-            msg = channel.wait() => {
-                match msg {
-                    // stdout
-                    Some(ChannelMsg::Data { ref data }) => {
-                        if bytes_tx.send(data.to_vec()).is_err() {
-                            break;
-                        }
+        }
+    };
+
+    let write_loop = async {
+        loop {
+            match ctrl_rx.recv_async().await {
+                Ok(Ctrl::Data(b)) => {
+                    if write_half.data(&b[..]).await.is_err() {
+                        break;
                     }
-                    // stderr arrives as ExtendedData (CLAUDE.md §4) — render it inline.
-                    Some(ChannelMsg::ExtendedData { ref data, .. }) => {
-                        if bytes_tx.send(data.to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    // ExitStatus precedes Close; keep reading until the channel
-                    // actually closes so we don't drop trailing output.
-                    Some(ChannelMsg::ExitStatus { .. }) => {}
-                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                    _ => {}
+                }
+                Ok(Ctrl::Resize { cols, rows }) => {
+                    let _ = write_half.window_change(cols as u32, rows as u32, 0, 0).await;
+                }
+                Ok(Ctrl::Close) | Err(_) => {
+                    let _ = write_half.eof().await;
+                    break;
                 }
             }
         }
+    };
+
+    // Stop as soon as either side finishes.
+    tokio::select! {
+        _ = read_loop => {}
+        _ = write_loop => {}
     }
 
     let _ = session

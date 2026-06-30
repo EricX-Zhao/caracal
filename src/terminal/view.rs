@@ -28,6 +28,12 @@ use crate::terminal::ssh::{SshBackend, SshConfig};
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
 
+/// Capacity (in read-chunks, ~8 KiB each) of the PTY→feeder byte channel. Small
+/// enough that a runaway producer is paced to render speed and the backlog left
+/// after Ctrl-C drains in a few frames; large enough not to stutter normal
+/// bursts. ~256 KiB.
+const PTY_CHANNEL_CAPACITY: usize = 32;
+
 // Keys that gpui-component's `Root` context binds for itself (tab → focus nav,
 // ctrl-c → Copy) must be reclaimed for the terminal. We bind these in the deeper
 // "Terminal" context (see `main`), which wins over Root, and forward the right
@@ -164,8 +170,15 @@ impl TerminalView {
         window.focus(&focus_handle, cx);
 
         // Channels (the only cross-context plumbing lives in the bridge).
+        // The PTY byte channel is *bounded* so a fast producer can't outrun the
+        // render-paced feeder: when it fills, the reader blocks, the PTY buffer
+        // fills, and the program (e.g. `cat` of a huge file) blocks on write
+        // instead of racing to completion. That keeps it alive and interruptible
+        // (Ctrl-C reaches a live process) and bounds the post-interrupt backlog.
+        // The feeder always drains this channel regardless of tab visibility, so
+        // a backgrounded tab never deadlocks (CLAUDE.md §2).
         let (events_tx, events_rx) = flume::unbounded::<Event>();
-        let (bytes_tx, bytes_rx) = flume::unbounded::<Vec<u8>>();
+        let (bytes_tx, bytes_rx) = flume::bounded::<Vec<u8>>(PTY_CHANNEL_CAPACITY);
 
         let term = new_term(DEFAULT_COLS, DEFAULT_ROWS, events_tx.clone());
 
