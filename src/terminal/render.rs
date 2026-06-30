@@ -19,12 +19,15 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 
 use gpui::{
-    App, Bounds, FocusHandle, Font, Hsla, Pixels, Point, Styled, TextAlign, TextRun, Window, canvas,
-    fill, point, px,
+    App, Bounds, Entity, FocusHandle, Font, Hsla, Pixels, Point, Styled, TextAlign, TextRun,
+    Window, canvas, fill, point, px,
 };
 
 use crate::terminal::backend::PtyBackend;
-use crate::terminal::model::{SharedTerm, TermDimensions, default_bg_hsla, resolve_color};
+use crate::terminal::model::{
+    SharedTerm, TermDimensions, default_bg_hsla, resolve_color, selection_bg_hsla,
+};
+use crate::terminal::view::TerminalView;
 
 /// Metrics passed from prepaint to paint.
 #[derive(Clone, Copy)]
@@ -46,7 +49,16 @@ fn cell_metrics(window: &Window, font: &Font, font_size: Pixels) -> CellMetrics 
 }
 
 /// Build the terminal grid canvas element.
+///
+/// The `view` entity is given so the paint callback can stash the
+/// freshly-measured cell metrics and current column/row count back
+/// onto the [`TerminalView`] — the mouse handlers need those to convert
+/// pixel coordinates into grid points (Phase 3 selection support).
+/// We do this on every paint because the metrics depend on the
+/// measured bounds, which can change at any frame (window resize,
+/// font change, …).
 pub fn terminal_canvas(
+    view: Entity<TerminalView>,
     term: SharedTerm,
     backend: Arc<dyn PtyBackend>,
     font: Font,
@@ -55,10 +67,11 @@ pub fn terminal_canvas(
 ) -> impl gpui::IntoElement {
     let prepaint_term = term.clone();
     let prepaint_font = font.clone();
+    let prepaint_view = view.clone();
 
     canvas(
         // PREPAINT: measure -> compute cols/rows -> resize term + backend.
-        move |bounds: Bounds<Pixels>, window, _cx| {
+        move |bounds: Bounds<Pixels>, window, cx| {
             let metrics = cell_metrics(window, &prepaint_font, font_size);
             let cols = (f32::from(bounds.size.width) / f32::from(metrics.width)).floor() as usize;
             let rows = (f32::from(bounds.size.height) / f32::from(metrics.height)).floor() as usize;
@@ -73,6 +86,23 @@ pub fn terminal_canvas(
                     backend.resize(cols as u16, rows as u16);
                 }
             }
+
+            // Stash the metrics on the view for the mouse handlers. We
+            // do this unconditionally — even on a frame where the grid
+            // size didn't change, the view's cached metrics may have
+            // drifted (e.g. the user resized the window by a sub-cell
+            // amount), and a slightly stale cache means selections
+            // snap to the wrong cell. cx.update lets us mutate
+            // the entity from inside a prepaint callback.
+            let _ = prepaint_view.update(cx, |v, _cx| {
+                v.remember_cell_metrics(
+                    f32::from(metrics.width),
+                    f32::from(metrics.height),
+                    cols,
+                    rows,
+                );
+            });
+
             metrics
         },
         // PAINT: grid -> glyphs.
@@ -106,6 +136,7 @@ fn paint_grid(
     let term = term.lock();
     let content = term.renderable_content();
     let colors = content.colors;
+    let selection = content.selection;
     let display_offset = content.display_offset as i32;
     let show_cursor = focused
         && content.mode.contains(TermMode::SHOW_CURSOR)
@@ -149,9 +180,21 @@ fn paint_grid(
 
         let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
 
+        // Selection highlight takes precedence over the cell's own background;
+        // the glyph foreground is left untouched so the text stays legible.
+        let selected = selection
+            .as_ref()
+            .is_some_and(|range| range.contains(cell.point));
+
         // Background quad when the cell isn't the plain default.
         let is_default_bg = !swap && matches!(cell.bg, Color::Named(NamedColor::Background));
-        if !is_default_bg {
+        if selected {
+            let cell_bounds = Bounds {
+                origin: point(x, y),
+                size: gpui::size(cw * width_cells, ch),
+            };
+            window.paint_quad(fill(cell_bounds, selection_bg_hsla()));
+        } else if !is_default_bg {
             let cell_bounds = Bounds {
                 origin: point(x, y),
                 size: gpui::size(cw * width_cells, ch),

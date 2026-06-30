@@ -7,4 +7,6 @@ pub mod bridge;
 pub mod keymap;
 pub mod model;
 pub mod render;
+pub mod scrollback;
+pub mod selection;
 pub mod view;

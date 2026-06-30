@@ -7,17 +7,22 @@
 use std::sync::Arc;
 
 use alacritty_terminal::event::Event;
+use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    Context, FocusHandle, Focusable, Font, FontFallbacks, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Pixels, Render, SharedString, Styled, Task, Window, div, font, px,
+    ClipboardItem, Context, FocusHandle, Focusable, Font, FontFallbacks, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Styled, Task,
+    Window, div, font, px,
 };
 
 use crate::terminal::backend::{LocalPty, PtyBackend};
 use crate::terminal::bridge::{run_drain, run_feeder};
-use crate::terminal::keymap::encode_key;
+use crate::terminal::keymap::{PastePayload, encode_key, encode_paste};
 use crate::terminal::model::{SharedTerm, new_term};
 use crate::terminal::render::terminal_canvas;
+use crate::terminal::scrollback;
+use crate::terminal::selection;
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
@@ -90,6 +95,21 @@ pub struct TerminalView {
     font_config: FontConfig,
     title: String,
     exited: bool,
+    /// Cell metrics cached from the last paint. Mouse handlers need to
+    /// convert pixel coordinates into grid coordinates, and the cell
+    /// metrics are computed inside `terminal_canvas`'s prepaint. We
+    /// refresh them on every paint via [`Self::remember_cell_metrics`].
+    last_cell_w: f32,
+    last_cell_h: f32,
+    last_cols: usize,
+    last_rows: usize,
+    /// `Some(ty)` while a left-button drag is in progress; the type was
+    /// chosen from the originating `MouseDownEvent::click_count`. We keep
+    /// it as an `Option` here (not on the alacritty `Term`) because the
+    /// `Term::selection` field is already mutated to be the live anchor
+    /// — we just need a tiny bit of "is a drag currently active" memory
+    /// to drive the cursor shape and copy-on-up behavior.
+    selection_dragging: Option<SelectionType>,
     _drain_task: Task<()>,
 }
 
@@ -132,6 +152,11 @@ impl TerminalView {
             font_config: FontConfig::default(),
             title: "terminal".to_string(),
             exited: false,
+            last_cell_w: 0.0,
+            last_cell_h: 0.0,
+            last_cols: 0,
+            last_rows: 0,
+            selection_dragging: None,
             _drain_task: drain_task,
         }
     }
@@ -183,12 +208,248 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, _cx: &mut Context<Self>) {
+    /// Stash the most recent paint's cell metrics on the view. Called
+    /// by the canvas prepaint callback (see `render::terminal_canvas`)
+    /// so the mouse handlers can map pixel coordinates into grid
+    /// coordinates. `pub(crate)` because the only legitimate caller
+    /// is `render::terminal_canvas` in this same crate.
+    pub(crate) fn remember_cell_metrics(
+        &mut self,
+        cell_w: f32,
+        cell_h: f32,
+        cols: usize,
+        rows: usize,
+    ) {
+        self.last_cell_w = cell_w;
+        self.last_cell_h = cell_h;
+        self.last_cols = cols;
+        self.last_rows = rows;
+    }
+
+    fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Copy shortcut: Ctrl+Shift+C → copy current selection to clipboard.
+        // This is the XTerm / gnome-terminal convention; Ctrl+C alone
+        // continues to mean SIGINT (Phase 2 behavior).
+        if ev.keystroke.modifiers.control
+            && ev.keystroke.modifiers.shift
+            && matches!(ev.keystroke.key.as_ref(), "c" | "C")
+        {
+            self.copy_selection_to_clipboard(cx);
+            return;
+        }
+        // Paste shortcut: Ctrl+Shift+V → read clipboard and feed the
+        // bracketed-paste-aware encoder. We don't take ownership of
+        // focus on the keystroke; the encoder will correctly wrap in
+        // ESC[200~ / ESC[201~ if the term is in BRACKETED_PASTE mode.
+        if ev.keystroke.modifiers.control
+            && ev.keystroke.modifiers.shift
+            && matches!(ev.keystroke.key.as_ref(), "v" | "V")
+        {
+            self.paste_from_clipboard(cx);
+            return;
+        }
+
+        // Local scrollback navigation: Shift+PageUp/PageDown/Home/End move the
+        // viewport over history instead of being sent to the program. Plain
+        // PageUp/etc. still go to the app (encode_key below -> ESC[5~).
+        let m = &ev.keystroke.modifiers;
+        if m.shift && !m.control && !m.alt && !m.platform {
+            use alacritty_terminal::grid::Scroll;
+            let scroll = match ev.keystroke.key.as_ref() {
+                "pageup" => Some(Scroll::PageUp),
+                "pagedown" => Some(Scroll::PageDown),
+                "home" => Some(Scroll::Top),
+                "end" => Some(Scroll::Bottom),
+                _ => None,
+            };
+            if let Some(s) = scroll {
+                self.term.lock().scroll_display(s);
+                cx.notify();
+                return;
+            }
+        }
+
         let mode: TermMode = *self.term.lock().mode();
         if let Some(bytes) = encode_key(&ev.keystroke, mode) {
             self.backend.write(&bytes);
-            // Typing while scrolled back should snap to the bottom (Phase 3 will
-            // refine this); harmless no-op at offset 0.
+            // Typing while scrolled back should snap to the bottom.
+            self.term
+                .lock()
+                .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+        }
+    }
+
+    /// Mouse-down: start a selection. Click type (Simple / Semantic /
+    /// Lines) comes from the platform's `click_count`. A right-click
+    /// starts nothing — we use it only to clear any existing selection
+    /// in the future (Phase 5+ context-menu work).
+    fn on_mouse_down(
+        &mut self,
+        ev: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ev.button != MouseButton::Left {
+            return;
+        }
+        // Snap the screen point to a grid point using the last paint's
+        // cell metrics. If the canvas hasn't measured yet (very first
+        // frame) we still know enough: the defaults are 80×24 cols/rows
+        // and we approximate cell size as 0 so the snap produces a
+        // well-defined (0, 0) — alacritty then expands the selection
+        // from the cursor on the next mouse move.
+        let pt = selection::screen_to_grid(
+            f32::from(ev.position.x),
+            f32::from(ev.position.y),
+            self.last_cell_w,
+            self.last_cell_h,
+            self.last_cols,
+            self.last_rows,
+            {
+                let t = self.term.lock();
+                t.grid().display_offset()
+            },
+        );
+        let side = selection::side_for(
+            f32::from(ev.position.x),
+            self.last_cell_w,
+            pt.column.0,
+            self.last_cols,
+        );
+        let ty = selection::selection_type_for_click(ev.click_count)
+            .expect("selection_type_for_click is total");
+        {
+            let mut t = self.term.lock();
+            selection::start(&mut t, pt, side, ty);
+        }
+        self.selection_dragging = Some(ty);
+        // While the user is mid-drag we want fresh paints on every move,
+        // so propagate to GPUI. The drag flag also keeps render from
+        // re-asserting a stale cursor.
+        cx.notify();
+    }
+
+    /// Mouse-move during a left-button drag: extend the selection. We
+    /// ignore moves while no drag is active (gpui fires moves whenever
+    /// the cursor is over the view).
+    fn on_mouse_move(
+        &mut self,
+        ev: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_dragging.is_none() {
+            return;
+        }
+        let pt = selection::screen_to_grid(
+            f32::from(ev.position.x),
+            f32::from(ev.position.y),
+            self.last_cell_w,
+            self.last_cell_h,
+            self.last_cols,
+            self.last_rows,
+            {
+                let t = self.term.lock();
+                t.grid().display_offset()
+            },
+        );
+        let side = selection::side_for(
+            f32::from(ev.position.x),
+            self.last_cell_w,
+            pt.column.0,
+            self.last_cols,
+        );
+        {
+            let mut t = self.term.lock();
+            selection::update(&mut t, pt, side);
+        }
+        cx.notify();
+    }
+
+    /// Mouse-up: end the drag. For Semantic / Lines selections, keep
+    /// the selection (so the user can copy it with a follow-up shortcut
+    /// or by re-clicking inside it on some terminals — we keep it
+    /// unconditionally, simpler and matches alacritty). For Simple
+    /// selections, we also keep; the explicit Ctrl+Shift+C path
+    /// handles copy intent.
+    fn on_mouse_up(
+        &mut self,
+        _ev: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selection_dragging.is_some() {
+            self.selection_dragging = None;
+            // Sync the cached selection text into the system clipboard.
+            // This is the "select to copy" behaviour most terminal
+            // emulators (including gnome-terminal, iTerm2, and alacritty
+            // itself) ship by default; users who want explicit copy
+            // only still have Ctrl+Shift+C.
+            self.copy_selection_to_clipboard(cx);
+            cx.notify();
+        }
+    }
+
+    /// Scroll wheel: drive the alacritty grid's `display_offset`.
+    fn on_scroll_wheel(
+        &mut self,
+        ev: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let scroll = match ev.delta {
+            ScrollDelta::Pixels(p) => {
+                scrollback::delta_from_pixels(f32::from(p.y), self.last_cell_h)
+            }
+            ScrollDelta::Lines(p) => scrollback::delta_from_lines(p.y),
+        };
+        {
+            let mut t = self.term.lock();
+            scrollback::apply(&mut t, scroll);
+        }
+        cx.notify();
+    }
+
+    /// Middle-click: paste from the primary selection (X11) — on
+    /// non-Linux platforms this falls back to the regular clipboard
+    /// since gpui doesn't expose a primary-selection reader there.
+    fn on_middle_click(
+        &mut self,
+        _ev: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.paste_from_clipboard(cx);
+    }
+
+    /// Copy the current selection to the system clipboard. No-op when
+    /// the selection is empty / absent.
+    fn copy_selection_to_clipboard(&self, cx: &mut Context<Self>) {
+        let text = {
+            let t = self.term.lock();
+            selection::selected_text(&t)
+        };
+        if let Some(s) = text {
+            cx.write_to_clipboard(ClipboardItem::new_string(s));
+        }
+    }
+
+    /// Paste from the system clipboard. Honours the term's
+    /// `BRACKETED_PASTE` mode by wrapping the payload in
+    /// `ESC[200~…ESC[201~`.
+    fn paste_from_clipboard(&self, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        let Some(text) = item.text() else {
+            return;
+        };
+        let mode: TermMode = *self.term.lock().mode();
+        if let Some(bytes) = encode_paste(&text, mode, PastePayload::Clipboard) {
+            self.backend.write(&bytes);
+            // Snapping the viewport on paste is consistent with
+            // on_key_down's behaviour; the user is now interacting
+            // with the live area.
             self.term
                 .lock()
                 .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
@@ -204,12 +465,19 @@ impl Focusable for TerminalView {
 
 impl Render for TerminalView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
         div()
             .track_focus(&self.focus_handle)
             .key_context("Terminal")
             .size_full()
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_click))
+            .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .child(terminal_canvas(
+                view,
                 self.term.clone(),
                 self.backend.clone(),
                 self.font_config.to_font(),

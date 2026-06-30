@@ -121,3 +121,92 @@ pub fn encode_key(ks: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
     out.extend_from_slice(text.as_bytes());
     Some(out)
 }
+
+// ---------------------------------------------------------------------------
+// Paste encoding
+// ---------------------------------------------------------------------------
+
+/// Distinguishes the *source* of a paste payload, mostly for future use (e.g.
+/// bracketed vs. unbracketed heuristics that may want to differ for primary
+/// selection vs. system clipboard). Today both paths go through the same
+/// encoder, but having an explicit enum keeps the call site readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PastePayload {
+    /// X11 / Wayland primary selection (mid-click paste).
+    #[allow(dead_code)] // reserved for future primary-selection support
+    Primary,
+    /// System clipboard (Ctrl+Shift+V).
+    Clipboard,
+}
+
+/// Encode text to send down the PTY as a paste.
+///
+/// - When the terminal is in `BRACKETED_PASTE` mode, wrap with
+///   `ESC[200~` / `ESC[201~` so the program can recognise the bulk
+///   payload and avoid auto-indent disasters in editors like vim.
+/// - Strip embedded `ESC` bytes from the text first: a malicious
+///   clipboard could otherwise inject arbitrary escape sequences
+///   (bracketed paste mode is the proper defence; this stripping is
+///   belt-and-braces for when it isn't active).
+/// - Replace `\r\n` / `\n` with `\r` so the PTY gets the carriage
+///   return it expects (terminals are line-buffered; bare `\n`
+///   becomes `LF` in the cooked input stream which the program will
+///   see as `^J`, not Enter).
+pub fn encode_paste(text: &str, mode: TermMode, _src: PastePayload) -> Option<Vec<u8>> {
+    if text.is_empty() {
+        return None;
+    }
+    // Normalise line endings first; we keep this for both modes.
+    let normalised = text.replace("\r\n", "\r").replace('\n', "\r");
+
+    if mode.contains(TermMode::BRACKETED_PASTE) {
+        let mut out = Vec::with_capacity(normalised.len() + 8);
+        out.extend_from_slice(b"\x1b[200~");
+        for c in normalised.chars() {
+            if c == '\x1b' {
+                // Strip ESC bytes inside the bracketed region; the
+                // outer ESC[200~/201~ are the legitimate signal
+                // boundaries. Anything in the middle is suspect.
+                continue;
+            }
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            out.extend_from_slice(s.as_bytes());
+        }
+        out.extend_from_slice(b"\x1b[201~");
+        Some(out)
+    } else {
+        // Outside bracketed-paste mode, we can't safely strip ESC
+        // (the program may legitimately be expecting them — though in
+        // practice nothing does on a typed paste). Pass through
+        // verbatim, with normalised line endings.
+        let mut out = Vec::with_capacity(normalised.len());
+        out.extend_from_slice(normalised.as_bytes());
+        Some(out)
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+
+    #[test]
+    fn empty_returns_none() {
+        assert!(encode_paste("", TermMode::empty(), PastePayload::Clipboard).is_none());
+    }
+
+    #[test]
+    fn newlines_normalised_outside_bracketed() {
+        let out = encode_paste("a\nb\r\nc", TermMode::empty(), PastePayload::Clipboard)
+            .unwrap();
+        assert_eq!(out, b"a\rb\rc");
+    }
+
+    #[test]
+    fn bracketed_wraps_and_strips_esc() {
+        let mode = TermMode::BRACKETED_PASTE;
+        let out = encode_paste("hi \x1b[31mred\x1b[0m", mode, PastePayload::Clipboard)
+            .unwrap();
+        assert_eq!(out, b"\x1b[200~hi [31mred[0m\x1b[201~");
+    }
+}

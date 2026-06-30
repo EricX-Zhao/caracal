@@ -201,3 +201,14 @@ pub fn resolve_color(color: Color, colors: &alacritty_terminal::term::color::Col
 pub fn default_bg_hsla() -> Hsla {
     rgb_to_hsla(DEFAULT_BG)
 }
+
+/// Background highlight for selected cells. A muted blue-grey that reads against
+/// both the default background and typical ANSI colors; the cell's own
+/// foreground stays on top for legibility.
+pub fn selection_bg_hsla() -> Hsla {
+    rgb_to_hsla(Rgb {
+        r: 0x3a,
+        g: 0x55,
+        b: 0x7a,
+    })
+}
