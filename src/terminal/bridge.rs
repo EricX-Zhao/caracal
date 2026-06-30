@@ -4,7 +4,8 @@
 //!
 //! Two responsibilities:
 //!   1. `run_feeder` — a blocking thread that drains raw PTY bytes into the
-//!      `Term` through the ANSI parser, batching queued chunks under one lock.
+//!      `Term` through the ANSI parser, batching queued chunks under one lock up
+//!      to a bounded budget so the renderer can paint intermediate frames.
 //!   2. `run_drain` — a GPUI-side async task that consumes terminal `Event`s and
 //!      coalesces redraws: at most one `cx.notify()` per frame (~16ms), so a
 //!      `cat` of a huge file can't melt the UI thread.
@@ -24,6 +25,15 @@ use crate::terminal::view::TerminalView;
 /// interval collapse into a single `cx.notify()`.
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
+/// Upper bound on how many bytes the feeder parses while holding the `Term`
+/// lock in one go. Without this, a fast producer (e.g. `cat` of a large file)
+/// floods `bytes_rx` and the inner drain loop never exits — the whole file is
+/// parsed under one lock, the renderer is starved until it finishes, and the
+/// grid jumps straight to the final screen ("all at once"). Capping the batch
+/// lets the renderer interleave and show the scroll progressively, while still
+/// batching enough to stay efficient (the drain task throttles redraws anyway).
+const MAX_BATCH_BYTES: usize = 64 * 1024;
+
 /// Run the parser/feeder loop. Blocking; meant to own a dedicated OS thread.
 ///
 /// Reads raw byte chunks from `bytes_rx`, feeds them through the ANSI parser into
@@ -33,11 +43,19 @@ pub fn run_feeder(term: SharedTerm, bytes_rx: flume::Receiver<Vec<u8>>, events: 
     while let Ok(chunk) = bytes_rx.recv() {
         {
             let mut term = term.lock();
+            let mut processed = chunk.len();
             parser.advance(&mut *term, &chunk);
-            // Batch everything already queued under the same lock to minimize
-            // lock churn and wakeups during heavy output.
-            while let Ok(more) = bytes_rx.try_recv() {
-                parser.advance(&mut *term, &more);
+            // Coalesce already-queued chunks under the same lock, but only up to
+            // a bounded budget so we periodically release the lock and let the
+            // renderer paint an intermediate frame (see MAX_BATCH_BYTES).
+            while processed < MAX_BATCH_BYTES {
+                match bytes_rx.try_recv() {
+                    Ok(more) => {
+                        processed += more.len();
+                        parser.advance(&mut *term, &more);
+                    }
+                    Err(_) => break,
+                }
             }
         }
         if events.send(Event::Wakeup).is_err() {
