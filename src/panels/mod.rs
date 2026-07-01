@@ -4,4 +4,5 @@
 //! logic lives here (CLAUDE.md §1).
 
 pub mod session_list;
+pub mod sftp;
 pub mod terminal;

@@ -17,6 +17,8 @@ use crate::terminal::ssh::SshConfig;
 pub enum SessionSpec {
     Local,
     Ssh(SshConfig),
+    /// SFTP file browser sharing the same connection as the host's shell.
+    Sftp(SshConfig),
 }
 
 /// One entry in the list.
@@ -37,6 +39,13 @@ impl SessionItem {
         Self {
             label: label.into(),
             spec: SessionSpec::Ssh(config),
+        }
+    }
+
+    pub fn sftp(label: impl Into<SharedString>, config: SshConfig) -> Self {
+        Self {
+            label: label.into(),
+            spec: SessionSpec::Sftp(config),
         }
     }
 }

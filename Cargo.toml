@@ -41,11 +41,14 @@ portable-pty = "0.9.0"
 # (see terminal/ssh.rs). Default crypto backend is aws-lc-rs (needs cmake/clang,
 # which the build env has).
 russh = "0.61"
+# SFTP subsystem over the *same* russh connection (Phase 7). Stream-based, so
+# decoupled from russh's exact version (we hand it channel.into_stream()).
+russh-sftp = "2.3"
 
 # Bridge plumbing (the only place cross-context channels live — see
 # `terminal/bridge.rs` and CLAUDE.md §2). flume straddles blocking + async.
 flume = "0.12.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
 
 # Misc
 anyhow = "1"

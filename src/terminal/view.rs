@@ -16,14 +16,14 @@ use gpui::{
     Window, div, font, px,
 };
 
-use crate::terminal::backend::{LocalPty, NullBackend, PtyBackend};
+use crate::terminal::backend::{LocalPty, PtyBackend};
 use crate::terminal::bridge::{run_drain, run_feeder};
 use crate::terminal::keymap::{PastePayload, encode_key, encode_paste};
 use crate::terminal::model::{SharedTerm, new_term};
 use crate::terminal::render::terminal_canvas;
 use crate::terminal::scrollback;
 use crate::terminal::selection;
-use crate::terminal::ssh::{SshBackend, SshConfig};
+use crate::terminal::ssh::SshSession;
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
@@ -139,20 +139,15 @@ impl TerminalView {
         })
     }
 
-    /// A terminal backed by an SSH session. On connection failure the error is
-    /// written into the grid (so the user sees it) and the backend is a no-op,
-    /// keeping the entity valid instead of panicking (CLAUDE.md: clean error).
-    pub fn new_ssh(window: &mut Window, cx: &mut Context<Self>, config: SshConfig) -> Self {
+    /// A terminal backed by a shell channel on an already-connected [`SshSession`]
+    /// (shared with the SFTP panel — one connection per host, CLAUDE.md §2).
+    pub fn new_ssh_shell(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        session: Arc<SshSession>,
+    ) -> Self {
         Self::with_backend(window, cx, move |cols, rows, bytes_tx| {
-            match SshBackend::spawn(config, cols, rows, bytes_tx.clone()) {
-                Ok(backend) => Arc::new(backend),
-                Err(e) => {
-                    let _ = bytes_tx.send(
-                        format!("\r\n\x1b[1;31mSSH connection failed:\x1b[0m {e}\r\n").into_bytes(),
-                    );
-                    Arc::new(NullBackend)
-                }
-            }
+            session.open_shell(cols, rows, bytes_tx)
         })
     }
 

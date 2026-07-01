@@ -1,14 +1,16 @@
 //! Top-level workspace: hosts the `gpui_component` `DockArea`, a left-dock
-//! session list, and the central terminal tabs. Subscribes to the session list
-//! and opens a new terminal tab per request (Phase 6).
+//! session list, and the central tabs (terminals + SFTP browsers). Subscribes to
+//! the session list and opens the requested panel.
+//!
+//! One connection per host (CLAUDE.md §2): SSH sessions are cached by host key in
+//! `ssh_sessions`, so a host's shell tab and SFTP tab share a single russh
+//! connection instead of dialing twice.
 //!
 //! Background drain: every `TerminalView` owns its feeder thread + drain task,
-//! which keep running while the entity is alive — and the dock keeps every
-//! panel's entity alive even when its tab isn't visible. flume channels are
-//! unbounded, so a backgrounded tab never back-pressures its IO thread
-//! (CLAUDE.md §2). So switching back to a background tab shows the latest output
-//! with no extra wiring here.
+//! kept alive while the dock holds the panel entity; unbounded event channels
+//! mean a backgrounded tab never back-pressures. Switching back shows the latest.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
@@ -18,12 +20,15 @@ use gpui::{
 use gpui_component::dock::{DockArea, DockItem, DockPlacement};
 
 use crate::panels::session_list::{SessionItem, SessionList, SessionListEvent, SessionSpec};
+use crate::panels::sftp::SftpPanel;
 use crate::panels::terminal::TerminalPanel;
-use crate::terminal::ssh::SshConfig;
+use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::view::TerminalView;
 
 pub struct Workspace {
     dock_area: Entity<DockArea>,
+    /// Shared SSH connections, keyed by `user@host:port`.
+    ssh_sessions: HashMap<String, Arc<SshSession>>,
     _subscription: Subscription,
 }
 
@@ -33,11 +38,12 @@ impl Workspace {
         let weak = dock_area.downgrade();
 
         // Left dock: the session list. Always offers a local shell, plus the
-        // SSH host from the environment if one was configured.
+        // configured SSH host as both a shell and an SFTP entry.
         let mut items = vec![SessionItem::local()];
         if let Some(config) = initial_ssh.clone() {
             let label = format!("{}@{}", config.user, config.host);
-            items.push(SessionItem::ssh(label, config));
+            items.push(SessionItem::ssh(label.clone(), config.clone()));
+            items.push(SessionItem::sftp(format!("{label} (sftp)"), config));
         }
         let session_list = cx.new(|cx| SessionList::new(items, cx));
 
@@ -59,6 +65,7 @@ impl Workspace {
 
         let mut this = Self {
             dock_area,
+            ssh_sessions: HashMap::new(),
             _subscription: subscription,
         };
 
@@ -72,17 +79,59 @@ impl Workspace {
         this
     }
 
-    /// Build a terminal for `spec` and add it as a new central tab. The new
-    /// terminal grabs focus in its own constructor.
-    fn open_session(&mut self, spec: SessionSpec, window: &mut Window, cx: &mut Context<Self>) {
-        let terminal = cx.new(|cx| match spec {
-            SessionSpec::Local => TerminalView::new(window, cx),
-            SessionSpec::Ssh(config) => TerminalView::new_ssh(window, cx, config),
-        });
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+    /// Get the shared connection for `config`, connecting on first use. Returns
+    /// `None` (and logs) on connection failure.
+    fn ssh_session(&mut self, config: &SshConfig) -> Option<Arc<SshSession>> {
+        let key = config.key();
+        if let Some(session) = self.ssh_sessions.get(&key) {
+            return Some(session.clone());
+        }
+        match SshSession::connect(config.clone()) {
+            Ok(session) => {
+                self.ssh_sessions.insert(key, session.clone());
+                Some(session)
+            }
+            Err(e) => {
+                log::error!("SSH connect to {} failed: {e}", config.key());
+                None
+            }
+        }
+    }
 
+    /// Build the requested panel and add it as a new central tab. New terminals
+    /// grab focus in their own constructor.
+    fn open_session(&mut self, spec: SessionSpec, window: &mut Window, cx: &mut Context<Self>) {
+        match spec {
+            SessionSpec::Local => {
+                let terminal = cx.new(|cx| TerminalView::new(window, cx));
+                let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+                self.add_center(Arc::new(panel), window, cx);
+            }
+            SessionSpec::Ssh(config) => {
+                if let Some(session) = self.ssh_session(&config) {
+                    let terminal = cx.new(|cx| TerminalView::new_ssh_shell(window, cx, session));
+                    let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+                    self.add_center(Arc::new(panel), window, cx);
+                }
+            }
+            SessionSpec::Sftp(config) => {
+                if let Some(session) = self.ssh_session(&config) {
+                    let label = format!("{}@{}", config.user, config.host);
+                    let panel = cx.new(|cx| SftpPanel::new(session, label, cx));
+                    self.add_center(Arc::new(panel), window, cx);
+                }
+            }
+        }
+    }
+
+    fn add_center(
+        &mut self,
+        panel: Arc<dyn gpui_component::dock::PanelView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel(Arc::new(panel), DockPlacement::Center, None, window, cx);
+            dock_area.add_panel(panel, DockPlacement::Center, None, window, cx);
         });
     }
 }
