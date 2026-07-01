@@ -6,6 +6,7 @@
 //! the `application()` factory in `gpui_platform` `#[cfg]`-gates the right
 //! platform implementation (`gpui_linux` / `gpui_macos` / `gpui_windows`).
 
+mod assets;
 mod config;
 mod panels;
 mod terminal;
@@ -15,8 +16,9 @@ use std::borrow::Cow;
 
 use gpui::{App, AppContext, Bounds, KeyBinding, Styled, WindowBounds, WindowOptions, px, size};
 use gpui_component::{ActiveTheme, Root};
-use gpui_component_assets::Assets;
 use gpui_platform::application;
+
+use crate::assets::CaracalAssets;
 
 use terminal::ssh::SshConfig;
 use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
@@ -54,9 +56,11 @@ fn main() {
 
     #[cfg(target_os = "linux")]
 
-    // `Assets` bundles the Lucide icon SVGs `IconName` resolves against;
-    // without registering it, `Icon::new(..)` renders blank.
-    application().with_assets(Assets).run(|cx: &mut App| {
+    // `CaracalAssets` wraps `gpui_component_assets::Assets` (the standard
+    // Lucide icon set) and adds two project-local SVGs (sftp-upload /
+    // sftp-download). Without registering it, every `Icon::new(..)` —
+    // including the project-local SVGs — renders blank.
+    application().with_assets(CaracalAssets).run(|cx: &mut App| {
         // Must run before using any gpui-component feature (theme/overlay/etc.).
         gpui_component::init(cx);
 

@@ -7,7 +7,7 @@ use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
     ParentElement, Render, StatefulInteractiveElement, Styled, WeakEntity, Window, div,
 };
-use gpui_component::dock::{Panel, PanelEvent, PanelView, TabPanel};
+use gpui_component::dock::{Panel, PanelControl, PanelEvent, PanelView, TabPanel};
 use gpui_component::{ActiveTheme, Icon, IconName};
 use std::sync::Arc;
 
@@ -71,6 +71,19 @@ impl gpui::EventEmitter<PanelEvent> for TerminalPanel {}
 impl Panel for TerminalPanel {
     fn panel_name(&self) -> &'static str {
         "TerminalPanel"
+    }
+
+    /// Hide the "Expand / Zoom" icon in the tab strip. gpui-component's
+    /// `TabPanel::render_toolbar` only renders that icon when `zoomable`
+    /// returns `Some(PanelControl::Both | Toolbar)`; returning `None`
+    /// makes the entire zoom branch fall through to `None` and no icon is
+    /// emitted. The tab strip's "..." menu still offers Zoom In/Out as
+    /// menu actions, so the feature isn't lost — just demoted to a less
+    /// visible spot. We don't use TabPanel's tab-strip close button either
+    /// (this gpui-component revision doesn't ship one), hence our own `X`
+    /// in `title()`.
+    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
+        None
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
