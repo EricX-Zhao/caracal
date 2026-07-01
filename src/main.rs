@@ -6,6 +6,7 @@
 //! the `application()` factory in `gpui_platform` `#[cfg]`-gates the right
 //! platform implementation (`gpui_linux` / `gpui_macos` / `gpui_windows`).
 
+mod config;
 mod panels;
 mod terminal;
 mod workspace;
@@ -14,6 +15,7 @@ use std::borrow::Cow;
 
 use gpui::{App, AppContext, Bounds, KeyBinding, Styled, WindowBounds, WindowOptions, px, size};
 use gpui_component::{ActiveTheme, Root};
+use gpui_component_assets::Assets;
 use gpui_platform::application;
 
 use terminal::ssh::SshConfig;
@@ -45,9 +47,16 @@ fn ssh_config_from_env() -> Option<SshConfig> {
 }
 
 fn main() {
+    // Without a logger backend installed, every `log::error!`/`warn!`/`info!`
+    // call in the app is silently dropped. Default to `info` so SSH/SFTP
+    // failures are visible; override with `RUST_LOG=debug` for more.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     #[cfg(target_os = "linux")]
 
-    application().run(|cx: &mut App| {
+    // `Assets` bundles the Lucide icon SVGs `IconName` resolves against;
+    // without registering it, `Icon::new(..)` renders blank.
+    application().with_assets(Assets).run(|cx: &mut App| {
         // Must run before using any gpui-component feature (theme/overlay/etc.).
         gpui_component::init(cx);
 

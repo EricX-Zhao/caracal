@@ -100,6 +100,8 @@ pub fn terminal_canvas(
                     f32::from(metrics.height),
                     cols,
                     rows,
+                    f32::from(bounds.origin.x),
+                    f32::from(bounds.origin.y),
                 );
             });
 

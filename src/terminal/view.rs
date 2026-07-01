@@ -121,6 +121,15 @@ pub struct TerminalView {
     last_cell_h: f32,
     last_cols: usize,
     last_rows: usize,
+    /// The canvas's on-screen origin from the last paint, in *window*
+    /// coordinates — the same space `gpui::MouseDownEvent::position` uses.
+    /// Mouse handlers must subtract this before converting to grid
+    /// coordinates, since the canvas is rarely flush with the window's
+    /// top-left corner (docks, status bar). Missing this subtraction was a
+    /// real bug: selections landed on the cell down-and-right of the actual
+    /// click, offset by exactly however far the canvas sits from (0, 0).
+    last_origin_x: f32,
+    last_origin_y: f32,
     /// `Some(ty)` while a left-button drag is in progress; the type was
     /// chosen from the originating `MouseDownEvent::click_count`. We keep
     /// it as an `Option` here (not on the alacritty `Term`) because the
@@ -205,6 +214,8 @@ impl TerminalView {
             last_cell_h: 0.0,
             last_cols: 0,
             last_rows: 0,
+            last_origin_x: 0.0,
+            last_origin_y: 0.0,
             selection_dragging: None,
             _drain_task: drain_task,
         }
@@ -268,11 +279,15 @@ impl TerminalView {
         cell_h: f32,
         cols: usize,
         rows: usize,
+        origin_x: f32,
+        origin_y: f32,
     ) {
         self.last_cell_w = cell_w;
         self.last_cell_h = cell_h;
         self.last_cols = cols;
         self.last_rows = rows;
+        self.last_origin_x = origin_x;
+        self.last_origin_y = origin_y;
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -370,9 +385,11 @@ impl TerminalView {
         // and we approximate cell size as 0 so the snap produces a
         // well-defined (0, 0) — alacritty then expands the selection
         // from the cursor on the next mouse move.
+        let local_x = f32::from(ev.position.x) - self.last_origin_x;
+        let local_y = f32::from(ev.position.y) - self.last_origin_y;
         let pt = selection::screen_to_grid(
-            f32::from(ev.position.x),
-            f32::from(ev.position.y),
+            local_x,
+            local_y,
             self.last_cell_w,
             self.last_cell_h,
             self.last_cols,
@@ -382,12 +399,7 @@ impl TerminalView {
                 t.grid().display_offset()
             },
         );
-        let side = selection::side_for(
-            f32::from(ev.position.x),
-            self.last_cell_w,
-            pt.column.0,
-            self.last_cols,
-        );
+        let side = selection::side_for(local_x, self.last_cell_w, pt.column.0, self.last_cols);
         let ty = selection::selection_type_for_click(ev.click_count)
             .expect("selection_type_for_click is total");
         {
@@ -413,9 +425,11 @@ impl TerminalView {
         if self.selection_dragging.is_none() {
             return;
         }
+        let local_x = f32::from(ev.position.x) - self.last_origin_x;
+        let local_y = f32::from(ev.position.y) - self.last_origin_y;
         let pt = selection::screen_to_grid(
-            f32::from(ev.position.x),
-            f32::from(ev.position.y),
+            local_x,
+            local_y,
             self.last_cell_w,
             self.last_cell_h,
             self.last_cols,
@@ -425,12 +439,7 @@ impl TerminalView {
                 t.grid().display_offset()
             },
         );
-        let side = selection::side_for(
-            f32::from(ev.position.x),
-            self.last_cell_w,
-            pt.column.0,
-            self.last_cols,
-        );
+        let side = selection::side_for(local_x, self.last_cell_w, pt.column.0, self.last_cols);
         {
             let mut t = self.term.lock();
             selection::update(&mut t, pt, side);

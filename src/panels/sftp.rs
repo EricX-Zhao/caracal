@@ -178,6 +178,54 @@ impl Panel for SftpPanel {
     }
 }
 
+/// Shown in the left "SFTP" dock when the focused terminal has no SFTP
+/// browser to show — no terminal focused yet, or the focused one isn't SSH
+/// (local shell / serial). `Workspace` swaps this in and out as focus moves
+/// between terminal tabs, so the dock always holds exactly one tab.
+pub struct SftpPlaceholder {
+    focus_handle: FocusHandle,
+}
+
+impl SftpPlaceholder {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+        }
+    }
+}
+
+impl Focusable for SftpPlaceholder {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl gpui::EventEmitter<PanelEvent> for SftpPlaceholder {}
+
+impl Panel for SftpPlaceholder {
+    fn panel_name(&self) -> &'static str {
+        "SftpPlaceholder"
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("SFTP")
+    }
+}
+
+impl Render for SftpPlaceholder {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .track_focus(&self.focus_handle)
+            .flex()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("当前终端不是 SSH 会话 — 切换到一个 SSH 终端标签,或在「已保存的连接」中点击文件夹图标")
+    }
+}
+
 impl Render for SftpPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Header: path + upload.

@@ -3,6 +3,6 @@
 //! `terminal/` entity, delegates focus to it, and exposes a title. No business
 //! logic lives here (CLAUDE.md §1).
 
-pub mod session_list;
+pub mod saved_connections;
 pub mod sftp;
 pub mod terminal;

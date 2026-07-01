@@ -33,6 +33,10 @@ gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d
 # gpui. Only `panels/` and `workspace.rs` may import it (CLAUDE.md §1); the
 # `terminal/` world stays free of it.
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+# Bundled Lucide icon SVGs (MIT) that `IconName` resolves against. Must be
+# registered via `Application::with_assets` in main.rs or every `Icon::new(..)`
+# renders blank (no error — just an empty svg).
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
 
 # Terminal model + transport
 alacritty_terminal = "0.26.0"
@@ -50,6 +54,15 @@ russh-sftp = "2.3"
 flume = "0.12.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
 
+# Saved-connections persistence (~/.config/caracal/connections.toml). Pure Rust,
+# lives in `config.rs` — no gpui_component (CLAUDE.md §1 boundary).
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
 # Misc
 anyhow = "1"
 log = "0.4"
+# `log::error!`/`warn!` calls throughout the app were silently swallowed with no
+# logger backend installed — this wires them to stderr (`RUST_LOG=debug cargo
+# run` for verbose output).
+env_logger = "0.11"

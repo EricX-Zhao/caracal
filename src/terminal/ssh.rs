@@ -260,9 +260,14 @@ async fn command_loop(handle: Handle<ClientHandler>, cmd_rx: flume::Receiver<Ses
             },
             SessionCmd::Sftp(request) => {
                 if sftp.is_none() {
+                    log::info!("sftp: opening subsystem channel (first use on this connection)");
                     match open_sftp(&handle).await {
-                        Ok(s) => sftp = Some(s),
+                        Ok(s) => {
+                            log::info!("sftp: subsystem channel ready");
+                            sftp = Some(s);
+                        }
                         Err(e) => {
+                            log::error!("sftp: open failed: {e:#}");
                             reply_sftp_error(request, anyhow!("open sftp failed: {e}"));
                             continue;
                         }
@@ -284,9 +289,13 @@ async fn open_shell_channel(
     rows: u16,
 ) -> Result<Channel<Msg>> {
     let channel = handle.channel_open_session().await?;
-    let term = std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string());
+    // Report the type Caracal's own renderer (`alacritty_terminal`) actually
+    // understands, not the host's local `$TERM` (e.g. Ghostty sets
+    // `xterm-ghostty`, which most remote hosts lack a terminfo entry for —
+    // "unknown terminal type" from `top`/`clear`/etc). Matches the local-PTY
+    // backend's hardcoded value (backend.rs).
     channel
-        .request_pty(false, &term, cols as u32, rows as u32, 0, 0, &[])
+        .request_pty(false, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
         .await?;
     channel.request_shell(true).await?;
     Ok(channel)
@@ -347,16 +356,32 @@ async fn shell_pump(
 }
 
 async fn open_sftp(handle: &Handle<ClientHandler>) -> Result<SftpSession> {
-    let channel = handle.channel_open_session().await?;
-    channel.request_subsystem(true, "sftp").await?;
-    let sftp = SftpSession::new(channel.into_stream()).await?;
+    let channel = handle
+        .channel_open_session()
+        .await
+        .map_err(|e| anyhow!("channel_open_session: {e}"))?;
+    log::info!("sftp: channel opened, requesting \"sftp\" subsystem");
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| anyhow!("request_subsystem(sftp): {e}"))?;
+    log::info!("sftp: subsystem accepted, starting SftpSession handshake");
+    let sftp = SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| anyhow!("SftpSession::new (INIT/VERSION handshake): {e}"))?;
     Ok(sftp)
 }
 
 async fn service_sftp(sftp: &SftpSession, request: SftpRequest) {
     match request {
         SftpRequest::ReadDir { path, reply } => {
-            let _ = reply.send(sftp_read_dir(sftp, &path).await);
+            log::info!("sftp: read_dir {path:?}");
+            let result = sftp_read_dir(sftp, &path).await;
+            match &result {
+                Ok(entries) => log::info!("sftp: read_dir {path:?} -> {} entries", entries.len()),
+                Err(e) => log::error!("sftp: read_dir {path:?} failed: {e:#}"),
+            }
+            let _ = reply.send(result);
         }
         SftpRequest::Download {
             remote,
