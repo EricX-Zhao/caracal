@@ -14,9 +14,7 @@
 
 use std::sync::Arc;
 
-use alacritty_terminal::term::TermMode;
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
+use alacritty_terminal::vte::ansi::CursorShape;
 
 use gpui::{
     App, Bounds, Entity, FocusHandle, Font, Hsla, Pixels, Point, Styled, TextAlign, TextRun,
@@ -24,9 +22,9 @@ use gpui::{
 };
 
 use crate::terminal::backend::PtyBackend;
-use crate::terminal::model::{
-    SharedTerm, TermDimensions, default_bg_hsla, resolve_color, selection_bg_hsla,
-};
+use crate::terminal::batching::{batch_bg_rects, batch_text_runs};
+use crate::terminal::grid_snapshot::snapshot_content;
+use crate::terminal::model::{SharedTerm, TermDimensions, default_bg_hsla};
 use crate::terminal::view::TerminalView;
 
 /// Metrics passed from prepaint to paint.
@@ -135,103 +133,52 @@ fn paint_grid(
     // Whole-area default background.
     window.paint_quad(fill(bounds, default_bg_hsla()));
 
-    let term = term.lock();
-    let content = term.renderable_content();
-    let colors = content.colors;
-    let selection = content.selection;
-    let display_offset = content.display_offset as i32;
-    let show_cursor = focused
-        && content.mode.contains(TermMode::SHOW_CURSOR)
-        && content.cursor.shape != CursorShape::Hidden;
-    let cur_row = content.cursor.point.line.0 + display_offset;
-    let cur_col = content.cursor.point.column.0 as i32;
+    // The only lock acquisition in the paint path — dropped before we do
+    // any shaping/painting, so the feeder thread is never blocked by a
+    // slow frame (see grid_snapshot::snapshot_content's doc comment).
+    let snapshot = snapshot_content(term, focused);
 
-    let bold_font = font.clone().bold();
-
-    for cell in content.display_iter {
-        let flags = cell.flags;
-        // Skip the dummy cell that trails a wide (CJK) glyph.
-        if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-            continue;
-        }
-        if flags.contains(Flags::HIDDEN) {
-            continue;
-        }
-
-        let row = cell.point.line.0 + display_offset;
-        let col = cell.point.column.0 as i32;
-        if row < 0 || col < 0 {
-            continue;
-        }
-
-        let x = origin.x + cw * col as f32;
-        let y = origin.y + ch * row as f32;
-
-        let is_cursor_block = show_cursor
-            && row == cur_row
-            && col == cur_col
-            && content.cursor.shape == CursorShape::Block;
-
-        // Resolve colors, applying INVERSE and a block cursor as a swap.
-        let mut fg = resolve_color(cell.fg, colors);
-        let mut bg = resolve_color(cell.bg, colors);
-        let swap = flags.contains(Flags::INVERSE) ^ is_cursor_block;
-        if swap {
-            std::mem::swap(&mut fg, &mut bg);
-        }
-
-        let width_cells = if flags.contains(Flags::WIDE_CHAR) { 2.0 } else { 1.0 };
-
-        // Selection highlight takes precedence over the cell's own background;
-        // the glyph foreground is left untouched so the text stays legible.
-        let selected = selection
-            .as_ref()
-            .is_some_and(|range| range.contains(cell.point));
-
-        // Background quad when the cell isn't the plain default.
-        let is_default_bg = !swap && matches!(cell.bg, Color::Named(NamedColor::Background));
-        if selected {
+    // Background rects: one paint_quad per merged run instead of per cell.
+    for row in 0..snapshot.rows {
+        for span in batch_bg_rects(snapshot.row(row)) {
             let cell_bounds = Bounds {
-                origin: point(x, y),
-                size: gpui::size(cw * width_cells, ch),
+                origin: point(origin.x + cw * span.start_col as f32, origin.y + ch * row as f32),
+                size: gpui::size(cw * span.num_cells as f32, ch),
             };
-            window.paint_quad(fill(cell_bounds, selection_bg_hsla()));
-        } else if !is_default_bg {
-            let cell_bounds = Bounds {
-                origin: point(x, y),
-                size: gpui::size(cw * width_cells, ch),
-            };
-            window.paint_quad(fill(cell_bounds, bg));
+            window.paint_quad(fill(cell_bounds, span.color));
         }
-
-        // Non-block cursors: thin overlay.
-        if show_cursor && row == cur_row && col == cur_col && !is_cursor_block {
-            paint_cursor_overlay(window, content.cursor.shape, point(x, y), cw, ch, fg);
-        }
-
-        let c = if cell.c == '\0' { ' ' } else { cell.c };
-        if c == ' ' {
-            continue;
-        }
-
-        // Shape with the primary (or bold) font; its fallback chain resolves Nerd
-        // Font / powerline glyphs. force_width pins the advance to the cell so a
-        // proportional fallback glyph can't shift the rest of the line.
-        let run_font = if flags.contains(Flags::BOLD) {
-            &bold_font
-        } else {
-            font
-        };
-        let (text, run) = text_run(c, run_font, fg);
-        let shaped = ts.shape_line(text, font_size, &[run], Some(cw * width_cells));
-        let _ = shaped.paint(point(x, y), ch, TextAlign::Left, None, window, cx);
     }
-    drop(term);
+
+    // Non-block cursor overlays (block cursors are already baked into the
+    // swapped fg/bg colors inside the snapshot).
+    if let Some(cursor) = &snapshot.cursor
+        && cursor.shape != CursorShape::Block
+    {
+        let p = point(
+            origin.x + cw * cursor.col as f32,
+            origin.y + ch * cursor.row as f32,
+        );
+        paint_cursor_overlay(window, cursor.shape, p, cw, ch, cursor.color);
+    }
+
+    // Text runs: one shape_line + paint per merged run instead of per glyph.
+    let bold_font = font.clone().bold();
+    for row in 0..snapshot.rows {
+        for span in batch_text_runs(snapshot.row(row)) {
+            let run_font = if span.style.bold { &bold_font } else { font };
+            let (text, run) = text_run(&span.text, run_font, span.style.fg);
+            let shaped = ts.shape_line(text, font_size, &[run], Some(cw));
+            let x = origin.x + cw * span.start_col as f32;
+            let y = origin.y + ch * row as f32;
+            let _ = shaped.paint(point(x, y), ch, TextAlign::Left, None, window, cx);
+        }
+    }
 }
 
-/// Build a single-glyph `(text, TextRun)` pair.
-fn text_run(c: char, font: &Font, color: Hsla) -> (gpui::SharedString, TextRun) {
-    let text: gpui::SharedString = c.to_string().into();
+/// Build a `(text, TextRun)` pair for a whole batched span (one or more
+/// characters sharing the same style).
+fn text_run(text: &str, font: &Font, color: Hsla) -> (gpui::SharedString, TextRun) {
+    let text: gpui::SharedString = text.to_string().into();
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
