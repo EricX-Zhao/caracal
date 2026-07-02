@@ -3,6 +3,7 @@
 //! must return nothing.
 
 pub mod backend;
+pub mod batching;
 pub mod bridge;
 pub mod grid_snapshot;
 pub mod keymap;
