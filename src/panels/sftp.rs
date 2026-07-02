@@ -25,13 +25,16 @@ use std::time::Instant;
 
 use gpui::{
     App, AppContext, AsyncApp, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
+    InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement,
+    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+
+use crate::panels::icons::{AppIcon, icon};
+
 
 use crate::terminal::ssh::{
     SftpEntry, SshSession, TransferDirection, TransferEvent, TransferHandle,
@@ -44,6 +47,7 @@ enum TransferStatus {
     Active,
     Done,
     Failed(String),
+    Cancelled,
 }
 
 /// One row in the transfer list (the bottom section of the panel).
@@ -73,29 +77,39 @@ impl Transfer {
     }
 }
 
+/// Kind of pending new-fs-item creation. When set, an inline name-entry
+/// row is rendered below the toolbar; Enter commits the operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingOpKind {
+    NewFile,
+    NewFolder,
+}
+
 pub struct SftpPanel {
     session: Arc<SshSession>,
     label: SharedString,
     focus_handle: FocusHandle,
-    /// Current remote directory (starts at the login dir, ".").
     path: String,
     entries: Vec<SftpEntry>,
     status: String,
-    /// Live + completed transfers shown in the bottom section.
     transfers: Vec<Transfer>,
-    /// Editable path-bar input. Built lazily on the first render because
-    /// `InputState::new` needs a `&mut Window`, and `Entity::new`'s
-    /// closure only gives us `&mut Context`. Render always has `Window`.
     path_input: Option<Entity<InputState>>,
-    /// Subscription for `InputEvent::PressEnter` on `path_input`. Kept
-    /// alive for the panel's lifetime; the input is created once on first
-    /// render and never replaced, so the subscription never needs to be
-    /// re-issued.
     _path_sub: Option<Subscription>,
-    /// Index into `entries` of the currently selected row (single-select).
-    /// Driven by single-click; double-click fires the row action and keeps
-    /// the selection.
     selected: Option<usize>,
+    transfers_height: Pixels,
+    drag_start: Option<(Pixels, Pixels)>,
+    file_list_scroll_handle: ScrollHandle,
+    /// 4-column widths (name, mtime, size, perms). Initialised to sensible
+    /// defaults; updated when the user drags a column divider.
+    col_widths: [Pixels; 4],
+    /// While the user drags a column divider: (index of the column to the
+    /// left of the divider, the column's width when the drag started, the
+    /// mouse x when the drag started).
+    col_drag: Option<(usize, Pixels, Pixels)>,
+    /// Inline name-entry row: shown when the user clicks 新建文件 / 新建文件夹.
+    pending_op: Option<(PendingOpKind, Entity<InputState>)>,
+    /// Default local download directory. Editable in the bottom bar.
+    download_dir: PathBuf,
 }
 
 impl SftpPanel {
@@ -104,6 +118,7 @@ impl SftpPanel {
         label: impl Into<SharedString>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let download_dir = download_default_dir();
         let mut this = Self {
             session,
             label: label.into(),
@@ -115,8 +130,41 @@ impl SftpPanel {
             path_input: None,
             _path_sub: None,
             selected: None,
+            transfers_height: px(200.0),
+            drag_start: None,
+            file_list_scroll_handle: ScrollHandle::new(),
+            col_widths: [px(150.0), px(110.0), px(64.0), px(72.0)],
+            col_drag: None,
+            pending_op: None,
+            download_dir,
         };
         this.refresh(cx);
+
+        // Resolve "." → absolute home dir so the bottom path bar and top
+        // path input show e.g. /home/user immediately. The path input is
+        // lazy-inited on first render and reads `self.path` at creation, so
+        // just updating `self.path` here is enough — `ensure_path_input`
+        // will pick up the resolved value before it ever paints ".".
+        // Falls back silently to "." if the server can't canonicalize.
+        let session = this.session.clone();
+        cx.spawn(async move |this, cx| {
+            let rx = session.sftp_realpath(".".to_string());
+            if let Ok(Ok(resolved)) = rx.recv_async().await {
+                let fin = resolved.trim_end_matches('/').to_string();
+                let fin = if fin.is_empty() { "/".to_string() } else { fin };
+                let _ = this.update(cx, |this, cx| {
+                    if fin != this.path {
+                        this.path = fin;
+                    }
+                    // Refresh now that the path is absolute — the initial
+                    // refresh (using ".") is overwritten harmlessly.
+                    this.refresh(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
         this
     }
 
@@ -239,19 +287,15 @@ impl SftpPanel {
         }
     }
 
-    /// Download `name` (a file in `self.path`) to a user-chosen local path.
-    /// Inserts a `Queued` transfer row immediately and wires up a pump task
-    /// that listens to the new background-transfer events.
+    /// Download `name` (a file in `self.path`) directly into the default
+    /// download directory. Inserts a `Queued` transfer row immediately and
+    /// wires up a pump task that listens to the new background-transfer events.
     fn download(&mut self, name: &str, cx: &mut Context<Self>) {
         let remote = remote_join(&self.path, name);
         let display_name = name.to_string();
-        let dir = home_dir();
-        let rx = cx.prompt_for_new_path(&dir, Some(name));
+        let local = self.download_dir.join(name);
         let session = self.session.clone();
 
-        // Insert a placeholder row so the UI shows the transfer immediately.
-        // `id = 0` is a sentinel meaning "the real id hasn't arrived yet" —
-        // it gets patched in once the handle is received.
         let placeholder_ix = self.transfers.len();
         self.transfers.push(Transfer {
             id: 0,
@@ -262,24 +306,12 @@ impl SftpPanel {
             status: TransferStatus::Queued,
             started_at: Instant::now(),
         });
-        log::info!(
-            "sftp.download: pushed placeholder ix={placeholder_ix} for {display_name:?}, \
-             waiting on save dialog"
-        );
         cx.notify();
 
+        // Ensure the download dir exists (best-effort, may fail on permission).
+        let _ = std::fs::create_dir_all(&self.download_dir);
+
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(local))) = rx.await else {
-                // User cancelled the save dialog.
-                this.update(cx, |this, cx| {
-                    if let Some(t) = this.transfers.get_mut(placeholder_ix) {
-                        t.status = TransferStatus::Failed("cancelled".into());
-                    }
-                    cx.notify();
-                })
-                .ok();
-                return;
-            };
             let hrx = session.sftp_download(remote, local.clone());
             let handle = match hrx.recv_async().await {
                 Ok(h) => h,
@@ -295,8 +327,6 @@ impl SftpPanel {
                 }
             };
             let TransferHandle { id, events } = handle;
-            // Patch in the real id and update display name (now includes the
-            // chosen local filename).
             let final_name = local
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
@@ -307,20 +337,6 @@ impl SftpPanel {
                         t.id = id;
                         t.name = final_name.clone();
                         t.status = TransferStatus::Active;
-                        log::info!(
-                            "sftp.download: patched placeholder ix={placeholder_ix} -> id={id} \
-                             name={final_name:?}, starting pump"
-                        );
-                    } else {
-                        // Out-of-bounds placeholder_ix would mean transfers
-                        // got reshuffled between the push and the patch —
-                        // shouldn't happen since we only `push`. Log so
-                        // we notice if it does.
-                        log::warn!(
-                            "sftp.download: placeholder ix={placeholder_ix} out of bounds \
-                             (transfers len={}); events will not update UI",
-                            this.transfers.len()
-                        );
                     }
                     cx.notify();
                 })
@@ -333,38 +349,24 @@ impl SftpPanel {
     }
 
     /// Toolbar Download button handler. Downloads `self.entries[self.selected]`
-    /// if the user has a selection. Folders are skipped for v1 (recursive
-    /// folder download isn't supported yet — would require walking the
-    /// remote tree via SFTP). The row-click double-click flow handles
-    /// direct file downloads and stays as-is; this is the toolbar
-    /// equivalent for keyboard-style "select then act" workflows.
+    /// if the user has a selection.
     fn download_selected(&mut self, cx: &mut Context<Self>) {
         let Some(ix) = self.selected else {
-            // No selection — surface a hint via `status` so the user
-            // knows the click registered but had no target.
             self.status = "请先选中一个文件再点下载".to_string();
             cx.notify();
             return;
         };
         let Some(entry) = self.entries.get(ix) else {
-            // Selection is stale (e.g. entries reloaded after the user
-            // clicked something). Clear it and hint.
             self.selected = None;
             self.status = "选中的条目已不在列表里,请重新选择".to_string();
             cx.notify();
             return;
         };
         if entry.is_dir {
-            // Folder download would need recursive SFTP walk — out of
-            // scope for v1. Drop a hint in `status` instead of
-            // silently doing nothing.
             self.status = "暂不支持下载文件夹".to_string();
             cx.notify();
             return;
         }
-        // Re-use the existing `download` flow (same placeholder + pump
-        // wiring). `download` reads `self.selected`-agnostic state, so
-        // passing the name is all that's needed.
         let name = entry.name.clone();
         self.download(&name, cx);
     }
@@ -441,9 +443,132 @@ impl SftpPanel {
         .detach();
     }
 
+    /// Show the inline name-entry row for creating a new file.
+    fn new_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
+        // Subscribe to Enter on the pending-op input.
+        cx.subscribe_in(&entity, window, |this: &mut Self, _state, event, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.commit_pending_op(window, cx);
+            }
+        })
+        .detach();
+        self.pending_op = Some((PendingOpKind::NewFile, entity));
+        cx.notify();
+    }
+
+    /// Show the inline name-entry row for creating a new folder.
+    fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
+        cx.subscribe_in(&entity, window, |this: &mut Self, _state, event, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.commit_pending_op(window, cx);
+            }
+        })
+        .detach();
+        self.pending_op = Some((PendingOpKind::NewFolder, entity));
+        cx.notify();
+    }
+
+    /// Commit the pending new-file or new-folder name entry.
+    fn commit_pending_op(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some((kind, input)) = self.pending_op.as_ref() else {
+            return;
+        };
+        let name = input.read(cx).value().trim().to_string();
+        let kind = *kind;
+        self.pending_op = None;
+        cx.notify();
+        if name.is_empty() {
+            return;
+        }
+        let remote = remote_join(&self.path, &name);
+        let session = self.session.clone();
+        match kind {
+            PendingOpKind::NewFile => {
+                cx.spawn(async move |this, cx| {
+                    let rx = session.sftp_create_file(remote);
+                    let _ = rx.recv_async().await;
+                    this.update(cx, |this, cx| {
+                        this.refresh(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            PendingOpKind::NewFolder => {
+                cx.spawn(async move |this, cx| {
+                    let rx = session.sftp_mkdir(remote);
+                    let _ = rx.recv_async().await;
+                    this.update(cx, |this, cx| {
+                        this.refresh(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Delete the currently selected remote file or directory (recursive).
+    fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(ix) = self.selected else {
+            self.status = "请先选中要删除的条目".to_string();
+            cx.notify();
+            return;
+        };
+        let Some(entry) = self.entries.get(ix) else {
+            self.selected = None;
+            cx.notify();
+            return;
+        };
+        let name = entry.name.clone();
+        let remote = remote_join(&self.path, &name);
+        let recursive = entry.is_dir;
+        let session = self.session.clone();
+
+        self.selected = None;
+        self.status = "删除中…".to_string();
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let rx = session.sftp_remove(remote, recursive);
+            match rx.recv_async().await {
+                Ok(Ok(())) => {
+                    this.update(cx, |this, cx| {
+                        this.refresh(cx);
+                        cx.notify();
+                    })
+                }
+                Ok(Err(e)) => {
+                    this.update(cx, |this, cx| {
+                        this.status = format!("删除失败: {e}");
+                        cx.notify();
+                    })
+                }
+                Err(_) => {
+                    this.update(cx, |this, cx| {
+                        this.status = "删除失败: session closed".to_string();
+                        cx.notify();
+                    })
+                }
+            }
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Cancel an in-progress transfer by id.
+    fn cancel_transfer(&self, id: u64) {
+        self.session.sftp_cancel(id);
+    }
+
     /// Background pump: drains `TransferEvent`s from the handle's channel
     /// and updates the matching `Transfer` row. Runs until the channel
-    /// closes (which the session thread does after the final Done/Failed).
+    /// closes (which the session thread does after the final
+    /// Done/Failed/Cancelled).
     async fn pump_events(
         this: gpui::WeakEntity<Self>,
         id: u64,
@@ -453,7 +578,9 @@ impl SftpPanel {
         while let Ok(event) = events.recv_async().await {
             let done = matches!(
                 event,
-                TransferEvent::Done { .. } | TransferEvent::Failed { .. }
+                TransferEvent::Done { .. }
+                    | TransferEvent::Failed { .. }
+                    | TransferEvent::Cancelled { .. }
             );
             let updated = this
                 .update(cx, |this, cx| {
@@ -474,6 +601,10 @@ impl SftpPanel {
                         }
                         TransferEvent::Failed { error } => {
                             t.status = TransferStatus::Failed(error);
+                        }
+                        TransferEvent::Cancelled { transferred } => {
+                            t.transferred = transferred;
+                            t.status = TransferStatus::Cancelled;
                         }
                     }
                     cx.notify();
@@ -563,18 +694,76 @@ impl Render for SftpPlaceholder {
 
 // --- main render ----------------------------------------------------------
 
+/// Layout (vertical):
+///   Root: flex-col, pinned `size_full`.
+///     ├─ TOP pane (flex_1 fill): title bar + toolbar + path bar + column
+///     │    header + file list (internal scroll) + status row.
+///     ├─ Draggable splitter (4px).
+///     ├─ BOTTOM pane (height driven by `self.transfers_height`): transfer
+///     │    section header + list + default download dir.
 impl Render for SftpPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Lazy-init the path-bar input (needs `Window`; constructor
-        // only has `Context`). No-op after the first render.
         let path_input = self.ensure_path_input(window, cx);
-        let toolbar = self.render_toolbar(cx);
+        self.sync_path_input(window, cx);
+
+        let title_bar = self.render_title_bar(cx);
+        let toolbar = self.render_toolbar(window, cx);
+        let pending_op = self.render_pending_op_row(cx);
         let path_bar = self.render_path_bar(&path_input, cx);
         let column_header = self.render_column_header(cx);
         let file_list = self.render_file_list(cx);
         let status_row = self.render_status_row(cx);
-        let transfers = self.render_transfers_section(cx);
-        let bottom = self.render_bottom(cx);
+
+        let transfer_header = self.render_transfer_header(cx);
+        let transfer_body = self.render_transfer_body(cx);
+        let download_dir_bar = self.render_download_dir_bar(cx);
+
+        let splitter = div()
+            .id("sftp-splitter")
+            .h(px(4.0))
+            .w_full()
+            .bg(cx.theme().border)
+            .hover(|s| s.bg(cx.theme().accent))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _window, _cx| {
+                this.drag_start = Some((this.transfers_height, event.position.y));
+            }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                let Some((initial_height, initial_y)) = this.drag_start else { return };
+                let dy = event.position.y - initial_y;
+                let new_h = initial_height + dy;
+                let clamped = new_h.clamp(px(80.0), px(600.0));
+                if clamped != this.transfers_height {
+                    this.transfers_height = clamped;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                if this.drag_start.is_some() {
+                    this.drag_start = None;
+                    cx.notify();
+                }
+            }));
+
+        let top_pane = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .child(title_bar)
+            .child(toolbar)
+            .child(pending_op)
+            .child(path_bar)
+            .child(column_header)
+            .child(file_list)
+            .child(status_row);
+
+        let bottom_pane = div()
+            .h(self.transfers_height)
+            .flex()
+            .flex_col()
+            .child(transfer_header)
+            .child(transfer_body)
+            .child(download_dir_bar);
 
         div()
             .track_focus(&self.focus_handle)
@@ -582,139 +771,148 @@ impl Render for SftpPanel {
             .flex_col()
             .size_full()
             .text_sm()
-            .child(toolbar)
-            .child(path_bar)
-            .child(column_header)
-            .child(file_list)
-            .child(status_row)
-            .child(transfers)
-            .child(bottom)
+            .child(top_pane)
+            .child(splitter)
+            .child(bottom_pane)
     }
 }
 
 // --- render sub-sections --------------------------------------------------
 
 impl SftpPanel {
-    fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
-        // Toolbar pattern: each icon is a small clickable div. Behavior
-        // wiring:
-        //   Open / Delete        — visual only for v1 (no multi-select
-        //     state wired — delete would need selection + remote rm).
-        //   Upload              — opens a system file picker.
-        //   Download            — downloads `self.entries[self.selected]`.
-        //     Single-click a file first to populate the selection;
-        //     double-click works as before too (the row handler also
-        //     triggers download on `click_count >= 2`).
-        //   Up                  — `go_up` (parent directory).
-        //   Refresh             — `refresh` (re-list current dir).
-        //   Search / Fullscreen — visual only for v1.
-        // The Save / floppy button from the reference is dropped: there is
-        // no "save remote listing to disk" action we expose, and the
-        // asset bundle has no save/floppy SVG to match the reference icon.
-        //
-        // We inline each button rather than extract a helper because Rust
-        // closures don't allow `impl Trait` in parameters; the helper
-        // would have to take a `Box<dyn Fn(...)>`, which adds an
-        // allocation per toolbar render.
+    fn render_title_bar(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().muted)
+            .text_sm()
+            .text_color(cx.theme().foreground)
+            .child("文件浏览器")
+    }
 
+    fn render_pending_op_row(&self, cx: &Context<Self>) -> impl IntoElement {
+        let Some((kind, input)) = self.pending_op.as_ref() else {
+            return div().into_any_element();
+        };
+        let label = match kind {
+            PendingOpKind::NewFile => "新建文件:",
+            PendingOpKind::NewFolder => "新建文件夹:",
+        };
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap_1()
-            .px_1()
+            .px_3()
             .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().background)
             .child(
                 div()
-                    .id("sftp-open")
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            )
+            .child(div().flex_1().child(Input::new(input).xsmall()))
+            .into_any_element()
+    }
+
+    fn render_toolbar(&self, _window: &mut Window, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
+                // 新建文件
+                div()
+                    .id("sftp-new-file")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::Folder)),
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(icon(AppIcon::NewFile).size(px(14.0)))
+                    .on_click(cx.listener(|this, _e, window, cx| this.new_file(window, cx))),
             )
             .child(
+                // 新建文件夹
+                div()
+                    .id("sftp-new-folder")
+                    .p_1()
+                    .rounded_sm()
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(icon(AppIcon::NewFolder).size(px(14.0)))
+                    .on_click(cx.listener(|this, _e, window, cx| this.new_folder(window, cx))),
+            )
+            .child(
+                // 上传
                 div()
                     .id("sftp-upload")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    // Custom SVG (lucide `arrow-up-from-line`) — has the
-                    // baseline that the basic `IconName::ArrowUp` lacks.
-                    // Loaded from `assets/icons/sftp-upload.svg` via our
-                    // `CaracalAssets` wrapper (see `src/assets.rs`).
-                    .child(Icon::empty().path("icons/sftp-upload.svg"))
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(icon(AppIcon::Upload).size(px(14.0)))
                     .on_click(cx.listener(|this, _e, _w, cx| this.upload(cx))),
             )
             .child(
+                // 下载
                 div()
                     .id("sftp-download")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    // Custom SVG (lucide `arrow-down-to-line`).
-                    .child(Icon::empty().path("icons/sftp-download.svg"))
-                    // Download whatever the user has currently selected.
-                    // No-op if nothing is selected (the user is expected
-                    // to single-click a file first to populate
-                    // `self.selected`).
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(icon(AppIcon::Download).size(px(14.0)))
                     .on_click(cx.listener(|this, _e, _w, cx| this.download_selected(cx))),
             )
             .child(
+                div().w(px(1.)).h(px(20.)).bg(cx.theme().border),
+            )
+            .child(
+                // 删除
                 div()
                     .id("sftp-delete")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::Delete)),
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
+                    .child(icon(AppIcon::Delete).size(px(14.0)))
+                    .on_click(cx.listener(|this, _e, _w, cx| this.delete_selected(cx))),
             )
             .child(
+                // 向上一级
                 div()
                     .id("sftp-up")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::ChevronUp))
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(icon(AppIcon::Up).size(px(14.0)))
                     .on_click(cx.listener(|this, _e, window, cx| this.go_up(window, cx))),
             )
             .child(
+                // 刷新
                 div()
                     .id("sftp-refresh")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::Redo))
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(icon(AppIcon::Refresh).size(px(14.0)))
                     .on_click(cx.listener(|this, _e, _w, cx| this.refresh(cx))),
-            )
-            // Spacer to push the trailing icons to the right edge
-            // (matches the reference layout: action icons left,
-            // search/fullscreen right).
-            .child(div().flex_1())
-            .child(
-                div()
-                    .id("sftp-search")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::Search)),
-            )
-            .child(
-                div()
-                    .id("sftp-fullscreen")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::Maximize)),
             )
     }
 
@@ -723,80 +921,93 @@ impl SftpPanel {
         path_input: &Entity<InputState>,
         cx: &Context<Self>,
     ) -> impl IntoElement {
-        // Single-row bar: an editable path input on the left (Enter
-        // commits — wired in `ensure_path_input`), a copy-path icon
-        // button on the right. The input's value is kept in sync with
-        // `self.path` by `enter_dir` / `go_up` / `commit_path`.
         div()
             .flex()
             .flex_row()
             .items_center()
             .gap_1()
-            .px_2()
+            .px_3()
             .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
+            .bg(cx.theme().background)
             .child(div().flex_1().child(Input::new(path_input).xsmall()))
             .child(
                 div()
                     .id("sftp-copy-path")
                     .p_1()
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                    .child(Icon::new(IconName::Copy))
+                    .text_color(cx.theme().foreground)
+                    .hover(|s| s.bg(cx.theme().accent))
+                    .child(Icon::new(IconName::Copy).size(px(14.0)))
                     .on_click(cx.listener(|this, _e, _w, cx| this.copy_path(cx))),
             )
     }
 
     fn render_column_header(&self, cx: &Context<Self>) -> impl IntoElement {
+        static HEADERS: [&str; 4] = ["名称", "修改时间", "大小", "权限"];
+        let mut cells: Vec<gpui::AnyElement> = Vec::new();
+        for (i, &header_label) in HEADERS.iter().enumerate() {
+            cells.push(
+                div()
+                    .w(self.col_widths[i])
+                    .min_w(px(32.0))
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .when(i == 2, |d| d.text_right())
+                    .child(header_label)
+                    .into_any_element(),
+            );
+            if i < 3 {
+                let i_divider = i;
+                cells.push(
+                    div()
+                        .h_full()
+                        .w(px(4.0))
+                        .hover(|s| s.bg(cx.theme().accent))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &gpui::MouseDownEvent, _window, _cx| {
+                                this.col_drag = Some((
+                                    i_divider,
+                                    this.col_widths[i_divider],
+                                    event.position.x,
+                                ));
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
+                            let Some((idx, initial_w, initial_x)) = this.col_drag else {
+                                return;
+                            };
+                            let dx = event.position.x - initial_x;
+                            let new_w = (initial_w + dx).clamp(px(32.0), px(400.0));
+                            if new_w != this.col_widths[idx] {
+                                this.col_widths[idx] = new_w;
+                                cx.notify();
+                            }
+                        }))
+                        .on_mouse_up(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                            if this.col_drag.is_some() {
+                                this.col_drag = None;
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
+
         div()
             .flex()
             .flex_row()
             .items_center()
-            .px_2()
-            .py_0p5()
-            .gap_2()
+            .px_3()
+            .py_1()
+            .gap_0()
             .border_b_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .child(
-                div()
-                    .flex_grow(2.0)
-                    .flex_basis(px(0.0))
-                    .min_w(px(0.0))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("名称 ↓"),
-            )
-            .child(
-                div()
-                    .flex_grow(1.0)
-                    .flex_basis(px(0.0))
-                    .min_w(px(0.0))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("修改时间"),
-            )
-            .child(
-                div()
-                    .flex_grow(1.0)
-                    .flex_basis(px(0.0))
-                    .min_w(px(0.0))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .text_right()
-                    .child("大小"),
-            )
-            .child(
-                div()
-                    .flex_grow(1.0)
-                    .flex_basis(px(0.0))
-                    .min_w(px(0.0))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("权"),
-            )
+            .bg(cx.theme().background)
+            .children(cells)
     }
 
     fn render_file_list(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -815,39 +1026,33 @@ impl SftpPanel {
             };
             let mtime_text = human_mtime(entry.mtime);
             let perms_text = human_perms(entry.perms);
-            let icon_label = if is_dir { "📁" } else { "📄" };
+            let file_icon = if is_dir { AppIcon::Folder } else { AppIcon::NewFile };
 
             div()
                 .id(("sftp-row", ix))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_2()
-                .px_2()
+                .gap_0()
+                .px_3()
                 .py_0p5()
                 .text_color(cx.theme().foreground)
-                // Selected row: persistent accent background.
-                // Hover: lighter accent (also kept for discoverability).
-                // Both stack — selection wins over hover — but
-                // `bg()` overrides, so we just apply whichever the
-                // current state calls for.
-                .when(self.selected == Some(ix), |d| d.bg(cx.theme().accent))
-                .hover(|s| s.bg(cx.theme().accent))
+                .when(self.selected == Some(ix), |d| d.bg(cx.theme().list_active))
+                .hover(|s| s.bg(cx.theme().list_hover))
                 .child(
-                    // Name column: icon + name. flex_grow(2) gives it
-                    // priority over the three data columns when the
-                    // dock is narrow (and `min_w(0)` lets the data
-                    // columns shrink first if needed).
                     div()
-                        .flex_grow(2.0)
-                        .flex_basis(px(0.0))
-                        .min_w(px(0.0))
+                        .w(self.col_widths[0])
+                        .min_w(px(32.0))
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap_1()
                         .overflow_hidden()
-                        .child(div().text_xs().child(icon_label))
+                        .child(
+                            icon(file_icon)
+                                .size(px(12.0))
+                                .text_color(cx.theme().muted_foreground),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -859,47 +1064,32 @@ impl SftpPanel {
                 )
                 .child(
                     div()
-                        .flex_grow(1.0)
-                        .flex_basis(px(0.0))
-                        .min_w(px(0.0))
+                        .w(self.col_widths[1])
+                        .min_w(px(32.0))
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(SharedString::from(mtime_text)),
                 )
                 .child(
                     div()
-                        .flex_grow(1.0)
-                        .flex_basis(px(0.0))
-                        .min_w(px(0.0))
+                        .w(self.col_widths[2])
+                        .min_w(px(32.0))
                         .text_xs()
-                        .text_color(cx.theme().muted_foreground)
                         .text_right()
+                        .text_color(cx.theme().muted_foreground)
                         .child(SharedString::from(size_text)),
                 )
                 .child(
                     div()
-                        .flex_grow(1.0)
-                        .flex_basis(px(0.0))
-                        .min_w(px(0.0))
+                        .w(self.col_widths[3])
+                        .min_w(px(32.0))
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(SharedString::from(perms_text)),
                 )
-                // Single-click selects the row (stored as `selected` in
-                // the panel so we can paint the accent background).
-                // Double-click fires the row action (enter dir for
-                // directories, download for files). We use `on_mouse_down`
-                // instead of `on_click` so we can branch on
-                // `event.click_count` directly — `on_click` fires on
-                // every click including the second of a double, which
-                // would force "select + immediately act" with no way
-                // to observe the selection first.
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        // Update selection on the first click of any
-                        // sequence; harmless on the second click of a
-                        // double (we re-select the same row).
                         this.selected = Some(ix);
                         if event.click_count >= 2 {
                             if is_dir {
@@ -914,10 +1104,13 @@ impl SftpPanel {
         });
 
         div()
-            .flex_1()
+            .id("sftp-file-list")
             .flex()
             .flex_col()
-            .overflow_y_scrollbar()
+            .flex_1()
+            .min_h(px(0.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.file_list_scroll_handle)
             .children(rows)
     }
 
@@ -934,110 +1127,38 @@ impl SftpPanel {
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
-            .px_2()
+            .px_3()
             .py_1()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().muted)
             .child(
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(summary)),
             )
-            .child(
-                // Small action icon group on the right (visual only — these
-                // mirror the transfer-section icons in the reference).
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .id("sftp-status-pause")
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("⏸"),
-                    )
-                    .child(
-                        div()
-                            .id("sftp-status-play")
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("▶"),
-                    )
-                    .child(
-                        div()
-                            .id("sftp-status-clear")
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("⟳"),
-                    ),
-            )
     }
 
-    fn render_transfers_section(&self, cx: &Context<Self>) -> impl IntoElement {
-        let header = div()
+    fn render_transfer_header(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
-            .px_2()
+            .px_3()
             .py_1()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().foreground)
-                    .child("文件传输"),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .id("sftp-tr-pause")
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("⏸"),
-                    )
-                    .child(
-                        div()
-                            .id("sftp-tr-play")
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("▶"),
-                    )
-                    .child(
-                        div()
-                            .id("sftp-tr-clear")
-                            .px_1()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("✕"),
-                    ),
-            );
+            .bg(cx.theme().muted)
+            .text_color(cx.theme().foreground)
+            .child("文件传输")
+    }
 
-        let body: gpui::AnyElement = if self.transfers.is_empty() {
+    fn render_transfer_body(&self, cx: &Context<Self>) -> impl IntoElement {
+        if self.transfers.is_empty() {
             div()
+                .flex_1()
+                .min_h(px(0.0))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -1061,18 +1182,25 @@ impl SftpPanel {
                     ),
                     TransferStatus::Done => format!("完成 {}", human_size(t.transferred)),
                     TransferStatus::Failed(e) => format!("失败: {e}"),
+                    TransferStatus::Cancelled => "已取消".to_string(),
                 };
                 let progress = t.progress();
                 let bar_color = match t.status {
                     TransferStatus::Failed(_) => cx.theme().danger,
                     TransferStatus::Done => cx.theme().success,
-                    _ => cx.theme().accent,
+                    TransferStatus::Cancelled => cx.theme().muted_foreground,
+                    _ => cx.theme().primary,
                 };
+                let is_running = matches!(
+                    t.status,
+                    TransferStatus::Queued | TransferStatus::Active
+                );
+                let transfer_id = t.id;
                 div()
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .px_2()
+                    .px_3()
                     .py_1()
                     .border_b_1()
                     .border_color(cx.theme().border)
@@ -1102,10 +1230,28 @@ impl SftpPanel {
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
                                     .child(SharedString::from(status_text)),
-                            ),
+                            )
+                            .when(is_running, |d| {
+                                d.child(
+                                    div()
+                                        .px_1()
+                                        .rounded_sm()
+                                        .text_xs()
+                                        .text_color(cx.theme().foreground)
+                                        .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
+                                        .child(icon(AppIcon::Delete).size(px(14.0)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(
+                                                move |this, _event: &gpui::MouseDownEvent, _w, _cx| {
+                                                    this.cancel_transfer(transfer_id);
+                                                },
+                                            ),
+                                        ),
+                                )
+                            }),
                     )
                     .child(
-                        // Thin progress bar: full-width track + filled portion.
                         div()
                             .h(px(3.0))
                             .w_full()
@@ -1120,46 +1266,41 @@ impl SftpPanel {
                             ),
                     )
             });
-            div().flex().flex_col().children(rows).into_any_element()
-        };
-
-        // The body wraps the live transfer list (or the empty-state
-        // placeholder) in a `flex_1` slot so it fills the remaining
-        // 140px - header_height space. `overflow_y_scrollbar` keeps
-        // multiple transfers contained inside the fixed section
-        // height rather than overflowing downward.
-        let body_container = div()
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scrollbar()
-            .child(body);
-
-        // Fixed-height transfers section: the file list (above) is the
-        // only `flex_1` slot, so this section stays at a stable 140px
-        // regardless of how many transfers exist. The body uses
-        // `overflow_y_scrollbar` so multiple transfers scroll inside
-        // rather than pushing the section taller (which would push
-        // the bottom path bar off the dock).
-        div()
-            .flex()
-            .flex_col()
-            .h(px(140.0))
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .child(header)
-            .child(body_container)
+            div().id("sftp-transfer-list").flex().flex_col().flex_1().min_h(px(0.0)).overflow_y_scroll().children(rows).into_any_element()
+        }
     }
 
-    fn render_bottom(&self, cx: &Context<Self>) -> impl IntoElement {
+    /// Render the bottom bar showing the default download directory.
+    fn render_download_dir_bar(
+        &self,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let path_str = self.download_dir.to_string_lossy().to_string();
         div()
-            .px_2()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_3()
             .py_1()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().secondary)
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(SharedString::from(self.path.clone()))
+            .bg(cx.theme().muted)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("下载到:"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_xs()
+                    .text_color(cx.theme().foreground)
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(SharedString::from(path_str)),
+            )
     }
 }
 
@@ -1169,6 +1310,16 @@ fn home_dir() -> PathBuf {
     std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn download_default_dir() -> PathBuf {
+    let p = home_dir();
+    let downloads = p.join("Downloads");
+    if downloads.is_dir() {
+        downloads
+    } else {
+        p
+    }
 }
 
 /// Join a remote directory and a child name (POSIX paths).

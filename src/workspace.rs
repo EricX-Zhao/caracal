@@ -55,7 +55,7 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(initial_ssh: Option<SshConfig>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let dock_area = cx.new(|cx| DockArea::new("caracal-main", Some(1), window, cx));
         let weak = dock_area.downgrade();
 
@@ -97,12 +97,6 @@ impl Workspace {
             left_dock_content: LeftDockContent::Placeholder(sftp_placeholder),
             _subscriptions: vec![saved_sub],
         };
-
-        // Open the initial central tab (the configured SSH host, else local).
-        match initial_ssh {
-            Some(config) => this.open_ssh(config, window, cx),
-            None => this.open_local(window, cx),
-        }
 
         this
     }
@@ -244,7 +238,7 @@ impl Workspace {
     fn dock_toggle_button(
         &self,
         id: &'static str,
-        icon: IconName,
+        icon_name: IconName,
         placement: DockPlacement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
@@ -263,9 +257,9 @@ impl Workspace {
             .size(px(40.0))
             .rounded_md()
             .text_color(text_color)
-            .when(selected, |this| this.bg(cx.theme().accent))
+            .when(selected, |this| this.bg(cx.theme().list_active))
             .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-            .child(Icon::new(icon).large())
+            .child(Icon::new(icon_name).large())
             .on_click(cx.listener(move |this, _ev, window, cx| {
                 this.dock_area.update(cx, |dock_area, cx| {
                     dock_area.toggle_dock(placement, window, cx);
@@ -283,7 +277,7 @@ impl Workspace {
             .w(px(44.0))
             .h_full()
             .py_2()
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().muted)
             .border_r_1()
             .border_color(cx.theme().border)
             .child(self.dock_toggle_button("edge-sftp", IconName::File, DockPlacement::Left, cx))
@@ -299,7 +293,7 @@ impl Workspace {
             .w(px(44.0))
             .h_full()
             .py_2()
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().muted)
             .border_l_1()
             .border_color(cx.theme().border)
             .child(self.dock_toggle_button(
@@ -316,7 +310,7 @@ impl Workspace {
         div()
             .w_full()
             .h(px(22.0))
-            .bg(cx.theme().secondary)
+            .bg(cx.theme().muted)
             .border_t_1()
             .border_color(cx.theme().border)
     }

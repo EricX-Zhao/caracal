@@ -11,7 +11,9 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::{ActiveTheme, Icon, IconName};
+use gpui_component::ActiveTheme;
+
+use crate::panels::icons::{AppIcon, icon};
 
 use crate::config::{self, AppConfig, SavedConnection};
 use crate::terminal::ssh::SshConfig;
@@ -202,7 +204,7 @@ impl Render for SavedConnectionsPanel {
             .flex_row()
             .items_center()
             .justify_end()
-            .px_2()
+            .px_3()
             .py_1()
             .child(
                 div()
@@ -216,7 +218,7 @@ impl Render for SavedConnectionsPanel {
                     .rounded_md()
                     .text_color(cx.theme().foreground)
                     .hover(|s| s.bg(cx.theme().accent))
-                    .child(Icon::new(IconName::Plus))
+                    .child(icon(AppIcon::Plus))
                     .child("新增")
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         this.toggle_form(window, cx)
@@ -233,10 +235,10 @@ impl Render for SavedConnectionsPanel {
                 .flex()
                 .flex_row()
                 .items_center()
-                .px_2()
+                .px_3()
                 .py_1()
                 .rounded_md()
-                .hover(|s| s.bg(cx.theme().accent))
+                .hover(|s| s.bg(cx.theme().list_hover))
                 .child(
                     // Clickable part (icon + labels) → open the connection.
                     div()
@@ -247,8 +249,8 @@ impl Render for SavedConnectionsPanel {
                         .gap_2()
                         .flex_1()
                         .child(
-                            Icon::new(IconName::SquareTerminal)
-                                .text_color(cx.theme().muted_foreground),
+                            icon(AppIcon::Terminal)
+                                .text_color(cx.theme().foreground),
                         )
                         .child(
                             div()
@@ -274,7 +276,7 @@ impl Render for SavedConnectionsPanel {
                         .rounded_sm()
                         .text_color(cx.theme().muted_foreground)
                         .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-                        .child(Icon::new(IconName::Folder))
+                        .child(icon(AppIcon::Folder))
                         .on_click(cx.listener(move |_this, _ev: &ClickEvent, _w, cx| {
                             cx.emit(SavedConnectionsEvent::OpenSftp(sftp_spec.clone()));
                         })),
@@ -287,7 +289,7 @@ impl Render for SavedConnectionsPanel {
                         .rounded_sm()
                         .text_color(cx.theme().muted_foreground)
                         .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
-                        .child(Icon::new(IconName::Delete))
+                        .child(icon(AppIcon::Delete))
                         .on_click(cx.listener(move |this, _ev: &ClickEvent, _w, cx| {
                             this.delete(ix, cx)
                         })),

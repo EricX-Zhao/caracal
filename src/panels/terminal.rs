@@ -8,7 +8,9 @@ use gpui::{
     ParentElement, Render, StatefulInteractiveElement, Styled, WeakEntity, Window, div,
 };
 use gpui_component::dock::{Panel, PanelControl, PanelEvent, PanelView, TabPanel};
-use gpui_component::{ActiveTheme, Icon, IconName};
+use gpui_component::ActiveTheme;
+
+use crate::panels::icons::{AppIcon, icon};
 use std::sync::Arc;
 
 use crate::terminal::view::TerminalView;
@@ -98,9 +100,9 @@ impl Panel for TerminalPanel {
                 div()
                     .id(("close-terminal", cx.entity_id()))
                     .rounded_sm()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_color(cx.theme().foreground)
                     .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
-                    .child(Icon::new(IconName::Close))
+                    .child(icon(AppIcon::Delete))
                     .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                         // Don't also let the tab strip's own click handler fire
                         // (it would select this tab right before we remove it).
