@@ -1,20 +1,22 @@
-//! Top-level workspace: hosts the `gpui_component` `DockArea` — a left-dock
-//! SFTP browser, a right-dock saved-connections list, central terminal tabs,
-//! and two edge-mounted vertical icon strips that toggle the left/right docks.
-//! A slim bottom status bar is reserved for future info (connection state,
-//! cwd, …) — currently empty.
+//! Top-level workspace: a nyaterm-style VSCode shell built on `gpui_component`.
+//! An in-app Header sits on top; below it a row of
+//! `[left activity bar] [left side region] [center DockArea] [right side region] [right activity bar]`
+//! sits above a slim status bar.
 //!
-//! One connection per host (CLAUDE.md §2): SSH sessions are cached by host key in
-//! `ssh_sessions`, so a host's shell tab and SFTP tab share a single russh
-//! connection instead of dialing twice.
+//! The `DockArea` is used for the CENTER only (terminal tabs, plus future
+//! splits — it keeps its tab drag-docking). The left/right side regions are
+//! single-panel containers whose content is chosen by the activity bars and
+//! whose widths are controlled by an `h_resizable` group surrounding the body.
 //!
-//! SFTP follows terminal focus and the left dock holds exactly one tab: when
-//! focus moves to an SSH terminal, its host's SFTP browser replaces whatever
-//! was showing; when focus moves to a non-SSH terminal (local shell — serial,
-//! once it exists), the browser is swapped back out for a placeholder, since
-//! SFTP only makes sense over an SSH connection. See `show_sftp` /
-//! `show_sftp_placeholder`. The folder icon in "已保存的连接" still works too,
-//! as a manual way to browse a host without opening its terminal.
+//! One connection per host (CLAUDE.md §2): SSH sessions are cached by host key
+//! in `ssh_sessions`, so a host's shell tab and SFTP browser share a single
+//! russh connection instead of dialing twice.
+//!
+//! SFTP follows terminal focus: focusing an SSH terminal opens/updates the
+//! left SFTP panel bound to that host; focusing a non-SSH terminal swaps the
+//! SFTP slot back to the "no SFTP available" placeholder (see `show_sftp` /
+//! `show_sftp_placeholder`). The saved-connections folder icon still works as a
+//! manual way to browse a host too.
 //!
 //! Background drain: every `TerminalView` owns its feeder thread + drain task,
 //! kept alive while the dock holds the panel entity; unbounded event channels
@@ -24,43 +26,62 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement,
-    Render, StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder,
-    px,
+    AnyView, App, AppContext, Context, Entity, Focusable, IntoElement, ParentElement,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
+    div, prelude::FluentBuilder, px,
 };
-use gpui_component::dock::{DockArea, DockItem, DockPlacement};
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
+use gpui_component::dock::{DockArea, DockPlacement};
+use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
+use gpui_component::ActiveTheme;
 
 use crate::config;
+use crate::panels::activity_bar::{PanelId, Side, activity_button, side_items};
+use crate::panels::header::render_header;
 use crate::panels::saved_connections::{SavedConnectionsEvent, SavedConnectionsPanel};
+use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
+use crate::panels::stub::StubPanel;
 use crate::panels::terminal::TerminalPanel;
 use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::view::TerminalView;
 
-/// What's currently occupying the left dock's single tab.
-enum LeftDockContent {
-    Placeholder(Entity<SftpPlaceholder>),
-    Sftp { key: String, panel: Entity<SftpPanel> },
-}
-
 pub struct Workspace {
+    /// Hosts the CENTER terminal tabs only (no side docks anymore).
     dock_area: Entity<DockArea>,
     /// Shared SSH connections, keyed by `user@host:port`.
     ssh_sessions: HashMap<String, Arc<SshSession>>,
-    /// The left dock's one live tab (never more, never fewer) — see the
-    /// module doc comment on SFTP focus-follow.
-    left_dock_content: LeftDockContent,
+
+    // --- panel registry -----------------------------------------------------
+    /// The right-dock "已保存的连接" list (real panel).
+    saved_panel: AnyView,
+    /// Placeholder panels for the not-yet-implemented nyaterm categories.
+    stub_panels: HashMap<PanelId, AnyView>,
+    /// One SFTP browser per host key (created on first use, reused after).
+    sftp_panels: HashMap<String, AnyView>,
+    /// Shown in the SFTP slot when no SSH host is active.
+    sftp_placeholder: AnyView,
+    /// Host key whose SFTP browser the `PanelId::Sftp` slot resolves to.
+    active_sftp: Option<String>,
+
+    // --- active slots (one per side) ----------------------------------------
+    left_active: Option<PanelId>,
+    right_active: Option<PanelId>,
+
+    // --- horizontal body resize state ---------------------------------------
+    body_resize: Entity<ResizableState>,
+
+    /// Focused terminal's title, shown centered in the header.
+    active_title: SharedString,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // Center-only dock: terminal tabs live here. No left/right docks.
         let dock_area = cx.new(|cx| DockArea::new("caracal-main", Some(1), window, cx));
-        let weak = dock_area.downgrade();
 
-        // Right dock: the persisted "已保存的连接" list. Loaded from disk; clicking
-        // a row opens the SSH terminal or its SFTP browser.
+        // The persisted "已保存的连接" list. Clicking a row opens the SSH terminal
+        // or its SFTP browser.
         let saved = cx.new(|cx| SavedConnectionsPanel::new(config::load().connections, cx));
         let saved_sub =
             cx.subscribe_in(&saved, window, |this, _panel, event, window, cx| match event {
@@ -70,35 +91,39 @@ impl Workspace {
                 }
             });
 
-        // Left dock: exactly one tab, an SFTP browser or (initially, and
-        // whenever a non-SSH terminal is focused) this placeholder.
-        let sftp_placeholder = cx.new(|cx| SftpPlaceholder::new(cx));
+        let sftp_placeholder: AnyView = cx.new(|cx| SftpPlaceholder::new(cx)).into();
 
-        dock_area.update(cx, |dock_area, cx| {
-            dock_area.set_left_dock(
-                DockItem::tab(sftp_placeholder.clone(), &weak, window, cx),
-                Some(px(260.0)),
-                false,
-                window,
-                cx,
-            );
-            dock_area.set_right_dock(
-                DockItem::tab(saved, &weak, window, cx),
-                Some(px(240.0)),
-                true,
-                window,
-                cx,
-            );
-        });
+        // One stub panel per not-yet-implemented category.
+        let mut stub_panels: HashMap<PanelId, AnyView> = HashMap::new();
+        for pid in [
+            PanelId::Network,
+            PanelId::Security,
+            PanelId::Sessions,
+            PanelId::History,
+            PanelId::Monitor,
+        ] {
+            let view: AnyView = cx.new(|cx| StubPanel::new(pid.label(), cx)).into();
+            stub_panels.insert(pid, view);
+        }
 
-        let mut this = Self {
+        let body_resize = cx.new(|_| ResizableState::default());
+
+        Self {
             dock_area,
             ssh_sessions: HashMap::new(),
-            left_dock_content: LeftDockContent::Placeholder(sftp_placeholder),
+            saved_panel: saved.into(),
+            stub_panels,
+            sftp_panels: HashMap::new(),
+            sftp_placeholder,
+            active_sftp: None,
+            // Defaults: left panel closed until an SSH terminal is focused (see
+            // `show_sftp`) or the user opens it manually; saved connections on the right.
+            left_active: None,
+            right_active: Some(PanelId::SavedConnections),
+            body_resize,
+            active_title: "Caracal".into(),
             _subscriptions: vec![saved_sub],
-        };
-
-        this
+        }
     }
 
     /// Get the shared connection for `config`, connecting on first use. Returns
@@ -121,94 +146,71 @@ impl Workspace {
     }
 
     /// Open a local-shell terminal as a new central tab, and wire it so
-    /// focusing it swaps the left dock back to the SFTP placeholder (SFTP
-    /// only makes sense over SSH).
-    fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// focusing it swaps the SFTP slot back to the placeholder (SFTP only makes
+    /// sense over SSH) and updates the header title.
+    pub fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = cx.new(|cx| TerminalView::new(window, cx));
         let handle = terminal.read(cx).focus_handle(cx);
-        let sub = cx.on_focus(&handle, window, |this, window, cx| {
+        let term_weak = terminal.downgrade();
+        let sub = cx.on_focus(&handle, window, move |this, window, cx| {
+            this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         self.add_center(Arc::new(panel), window, cx);
-        // The terminal already grabbed focus inside its own constructor —
-        // before the `on_focus` listener above existed to observe it — so the
-        // very first open needs an explicit follow-up call (mirrors `open_ssh`).
         self.show_sftp_placeholder(window, cx);
     }
 
     /// Open an SSH shell terminal (reusing the host's shared connection) as a
     /// new central tab, and wire it so refocusing it later swaps its host's
-    /// SFTP browser into the left dock.
-    fn open_ssh(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
+    /// SFTP browser into the left region and updates the header title.
+    pub fn open_ssh(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(session) = self.ssh_session(&config) {
             let terminal = cx.new(|cx| TerminalView::new_ssh_shell(window, cx, session));
             let follow = config.clone();
             let handle = terminal.read(cx).focus_handle(cx);
+            let term_weak = terminal.downgrade();
             let sub = cx.on_focus(&handle, window, move |this, window, cx| {
+                this.set_active_title_from(&term_weak, cx);
                 this.show_sftp(follow.clone(), window, cx);
             });
             self._subscriptions.push(sub);
             let panel = cx.new(|_cx| TerminalPanel::new(terminal));
             self.add_center(Arc::new(panel), window, cx);
-            // The terminal already grabbed focus inside its own constructor —
-            // before the `on_focus` listener above existed to observe it — so
-            // the very first open needs an explicit follow-up call.
             self.show_sftp(config, window, cx);
         }
     }
 
-    /// Swap the left dock's one tab to `config`'s SFTP browser (reusing the
-    /// host's shared connection) and force the dock open. No-op if that
-    /// host's browser is already showing.
+    /// Update the header's active title from a (possibly-dropped) terminal.
+    fn set_active_title_from(&mut self, term: &WeakEntity<TerminalView>, cx: &App) {
+        if let Some(t) = term.upgrade() {
+            self.active_title = t.read(cx).title().to_string().into();
+        }
+    }
+
+    /// Bind the SFTP slot to `config`'s host (reusing the shared connection,
+    /// creating the browser once) and force the left slot to show it.
     fn show_sftp(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
         let key = config.key();
-        if let LeftDockContent::Sftp { key: current, .. } = &self.left_dock_content {
-            if *current == key {
-                self.reveal_left(window, cx);
+        if !self.sftp_panels.contains_key(&key) {
+            let Some(session) = self.ssh_session(&config) else {
                 return;
-            }
+            };
+            let label = format!("{}@{}", config.user, config.host);
+            let panel: AnyView = cx.new(|cx| SftpPanel::new(session, label, window, cx)).into();
+            self.sftp_panels.insert(key.clone(), panel);
         }
-        let Some(session) = self.ssh_session(&config) else {
-            return;
-        };
-        let label = format!("{}@{}", config.user, config.host);
-        let panel = cx.new(|cx| SftpPanel::new(session, label, cx));
-        self.replace_left(Arc::new(panel.clone()), window, cx);
-        self.left_dock_content = LeftDockContent::Sftp { key, panel };
-        self.reveal_left(window, cx);
+        self.active_sftp = Some(key);
+        self.left_active = Some(PanelId::Sftp);
+        cx.notify();
     }
 
-    /// Swap the left dock's one tab back to the "no SFTP available" hint
-    /// (the focused terminal isn't SSH). No-op if already showing it. Unlike
-    /// `show_sftp`, this does not force the dock open — switching to a local
-    /// tab shouldn't pop a dock the user closed on purpose.
-    fn show_sftp_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.left_dock_content, LeftDockContent::Placeholder(_)) {
-            return;
-        }
-        let placeholder = cx.new(|cx| SftpPlaceholder::new(cx));
-        self.replace_left(Arc::new(placeholder.clone()), window, cx);
-        self.left_dock_content = LeftDockContent::Placeholder(placeholder);
-    }
-
-    /// Remove whatever the left dock is currently showing and add `panel` in
-    /// its place, so the dock always holds exactly one tab.
-    fn replace_left(
-        &mut self,
-        panel: Arc<dyn gpui_component::dock::PanelView>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let old: Arc<dyn gpui_component::dock::PanelView> = match &self.left_dock_content {
-            LeftDockContent::Placeholder(p) => Arc::new(p.clone()),
-            LeftDockContent::Sftp { panel, .. } => Arc::new(panel.clone()),
-        };
-        self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.remove_panel(old, DockPlacement::Left, window, cx);
-            dock_area.add_panel(panel, DockPlacement::Left, None, window, cx);
-        });
+    /// Detach the SFTP slot from any host so it resolves to the "no SFTP
+    /// available" placeholder. Does NOT force the left slot open.
+    fn show_sftp_placeholder(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_sftp = None;
+        cx.notify();
     }
 
     fn add_center(
@@ -222,91 +224,147 @@ impl Workspace {
         });
     }
 
-    /// Force the left "SFTP" dock open, regardless of prior `toggle_dock` state.
-    fn reveal_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(dock) = self.dock_area.read(cx).left_dock().cloned() {
-            dock.update(cx, |dock, cx| dock.set_open(true, window, cx));
+    // --- panel registry / slots ---------------------------------------------
+
+    /// Resolve a [`PanelId`] to its live view (SFTP falls back to the
+    /// placeholder when no host is active).
+    fn resolve(&self, id: PanelId) -> Option<AnyView> {
+        match id {
+            PanelId::Sftp => Some(
+                self.active_sftp
+                    .as_ref()
+                    .and_then(|k| self.sftp_panels.get(k).cloned())
+                    .unwrap_or_else(|| self.sftp_placeholder.clone()),
+            ),
+            PanelId::SavedConnections => Some(self.saved_panel.clone()),
+            other => self.stub_panels.get(&other).cloned(),
         }
+    }
+
+    /// Toggle `id` in its side's single slot: open it if it isn't the active
+    /// panel, otherwise close the slot.
+    fn toggle_panel(&mut self, id: PanelId, _window: &mut Window, cx: &mut Context<Self>) {
+        let slot = match id.side() {
+            Side::Left => &mut self.left_active,
+            Side::Right => &mut self.right_active,
+        };
+        if *slot == Some(id) {
+            *slot = None;
+        } else {
+            *slot = Some(id);
+        }
+        cx.notify();
     }
 }
 
 impl Workspace {
-    /// One edge-strip toggle button: a fixed icon (VSCode-activity-bar style —
-    /// the glyph doesn't change, only its color/background do) that flips
-    /// `placement` open/closed via `DockArea::toggle_dock`. Selected (dock
-    /// open) shows a persistent highlight; hover shows a lighter one.
-    fn dock_toggle_button(
-        &self,
-        id: &'static str,
-        icon_name: IconName,
-        placement: DockPlacement,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let selected = self.dock_area.read(cx).is_dock_open(placement, cx);
-        let text_color = if selected {
-            cx.theme().foreground
-        } else {
-            cx.theme().muted_foreground
+    /// One edge-strip activity bar (single column, full-width).
+    fn render_activity_bar(&self, side: Side, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let border = cx.theme().border;
+        let bg = cx.theme().muted;
+        let active_id = match side {
+            Side::Left => self.left_active,
+            Side::Right => self.right_active,
         };
 
-        div()
-            .id(id)
+        let mut col = div()
             .flex()
+            .flex_col()
             .items_center()
-            .justify_center()
-            .size(px(40.0))
-            .rounded_md()
-            .text_color(text_color)
-            .when(selected, |this| this.bg(cx.theme().list_active))
-            .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
-            .child(Icon::new(icon_name).large())
-            .on_click(cx.listener(move |this, _ev, window, cx| {
-                this.dock_area.update(cx, |dock_area, cx| {
-                    dock_area.toggle_dock(placement, window, cx);
-                });
-            }))
-    }
+            .gap_1()
+            .pt_1()
+            .w_full();
+        for &pid in side_items(side) {
+            let active = active_id == Some(pid);
+            col = col.child(
+                activity_button(pid, active, side, cx)
+                    .on_click(cx.listener(move |this, _ev, window, cx| {
+                        this.toggle_panel(pid, window, cx)
+                    })),
+            );
+        }
 
-    /// Far-left vertical icon strip: toggles the left "SFTP" dock (VSCode
-    /// Explorer-style icon).
-    fn render_left_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
             .items_center()
             .w(px(44.0))
             .h_full()
-            .py_2()
-            .bg(cx.theme().muted)
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .child(self.dock_toggle_button("edge-sftp", IconName::File, DockPlacement::Left, cx))
+            .bg(bg)
+            .when(matches!(side, Side::Left), |d| {
+                d.border_r_1().border_color(border)
+            })
+            .when(matches!(side, Side::Right), |d| {
+                d.border_l_1().border_color(border)
+            })
+            .child(col)
     }
 
-    /// Far-right vertical icon strip: toggles the right "已保存的连接" dock
-    /// (VSCode Remote-Explorer-style icon).
-    fn render_right_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .w(px(44.0))
-            .h_full()
-            .py_2()
-            .bg(cx.theme().muted)
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .child(self.dock_toggle_button(
-                "edge-saved",
-                IconName::Network,
-                DockPlacement::Right,
-                cx,
-            ))
+    /// The body row between the two activity bars: an `h_resizable` group
+    /// containing three panels (left region | center | right region).
+    ///
+    /// The left/right panels are ALWAYS present as group children — toggling
+    /// `left_active`/`right_active` only flips `.visible(..)` — instead of
+    /// conditionally adding/removing them. `ResizableState` indexes its
+    /// per-panel sizes positionally, and `sync_panels_count` only ever
+    /// extends/truncates the *end* of that list; if the left panel's
+    /// `resizable_panel()` came and went, a later re-add would land at index
+    /// 0 but inherit whatever size used to live at that index (the center
+    /// dock's, typically most of the window width) — hence a freshly-opened
+    /// SFTP panel rendering full-width. Keeping a stable 3-panel identity
+    /// (the pattern gpui-component's own resizable story uses for a
+    /// collapsible sidebar) avoids the index shift entirely.
+    fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let border = cx.theme().border;
+        let left_view = self.left_active.and_then(|id| self.resolve(id));
+        let right_view = self.right_active.and_then(|id| self.resolve(id));
+
+        let group = h_resizable("body-split")
+            .with_state(&self.body_resize)
+            .child(
+                resizable_panel()
+                    .visible(left_view.is_some())
+                    // Wide enough that the SFTP file list's 名称/修改时间/大小
+                    // columns are visible without resizing on first open.
+                    .size(px(200.0))
+                    .size_range(px(180.0)..px(560.0))
+                    .child(
+                        left_view
+                            .map(|view| side_region_content(view, border, true))
+                            .unwrap_or_else(|| div().into_any_element()),
+                    ),
+            )
+            .child(
+                resizable_panel().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(self.dock_area.clone()),
+                ),
+            )
+            .child(
+                resizable_panel()
+                    .visible(right_view.is_some())
+                    .size(px(240.0))
+                    .size_range(px(180.0)..px(560.0))
+                    .child(
+                        right_view
+                            .map(|view| side_region_content(view, border, false))
+                            .unwrap_or_else(|| div().into_any_element()),
+                    ),
+            );
+
+        // Wrap in a flex_1 container so the group fills the remaining row width
+        // alongside the two fixed 44px activity bars.
+        div().flex_1().min_w(px(0.0)).child(group)
     }
 
-    /// Bottom status bar — reserved for future info (connection state, cwd,
-    /// …). Empty for now; the dock-toggle icons live in the edge strips.
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Bottom status bar — reserved for future info (connection state, cwd, …).
+    /// Empty for now.
+    fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
         div()
             .w_full()
             .h(px(22.0))
@@ -317,21 +375,29 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let header = render_header(cx.entity().downgrade(), self.active_title.clone(), cx);
+        let left_bar = self.render_activity_bar(Side::Left, cx);
+        let right_bar = self.render_activity_bar(Side::Right, cx);
+        let body = self.render_body(cx);
+        let status_bar = self.render_status_bar(cx);
+
         div()
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
-            .child(self.render_left_bar(cx))
+            .child(header)
             .child(
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
                     .flex_1()
-                    .overflow_hidden()
-                    .child(div().flex_1().overflow_hidden().child(self.dock_area.clone()))
-                    .child(self.render_status_bar(cx)),
+                    .min_h(px(0.0))
+                    .child(left_bar)
+                    .child(body)
+                    .child(right_bar),
             )
-            .child(self.render_right_bar(cx))
+            .child(status_bar)
+            .children(gpui_component::Root::render_notification_layer(window, cx))
     }
 }

@@ -20,7 +20,6 @@ use gpui_platform::application;
 
 use crate::assets::CaracalAssets;
 
-use terminal::ssh::SshConfig;
 use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::Workspace;
 

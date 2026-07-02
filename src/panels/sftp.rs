@@ -1,17 +1,20 @@
 //! `SftpPanel`: remote file browser over the SFTP subsystem of an existing
 //! [`SshSession`] (the *same* connection as the terminal — CLAUDE.md §2: one
-//! Session, one connection). Renders a 7-section layout matching the
-//! reference screenshot:
+//! Session, one connection). Renders a layout driven by gpui-component
+//! primitives:
 //!
-//! 1. Toolbar — icon buttons (open / upload / download / delete / up /
-//!    refresh) + search input slot + fullscreen toggle.
+//! 1. Toolbar — `Button` icon buttons (new file / new folder / upload /
+//!    download / delete / up / refresh) with tooltips.
 //! 2. Path bar — current remote path + copy-path button.
-//! 3. Column header — 名称 / 修改时间 / 大小 / 权.
-//! 4. File list — scrollable 4-column table with 📁/📄 icon per row.
-//! 5. Status row — total item count + total bytes.
-//! 6. Transfers section — header + live list of background downloads/uploads
+//! 3. File list — `DataTable` with 4 columns (name / mtime / size / perms),
+//!    sortable, keyboard-navigable, virtual-scrolled.
+//! 4. Status row — total item count + total bytes.
+//! 5. Transfers section — header + live list of background downloads/uploads
 //!    with progress bars (or empty-state "无传输记录").
-//! 7. Bottom path bar — full path echo.
+//! 6. Bottom path bar — full path echo.
+//!
+//! The top (file browser) and bottom (transfers) panes are split by a
+//! draggable `v_resizable` handle.
 //!
 //! Background transfers (CLAUDE.md §2 + the SshSession refactor): every
 //! download/upload runs as a tokio task spawned by the session thread, so the
@@ -25,16 +28,18 @@ use std::time::Instant;
 
 use gpui::{
     App, AppContext, AsyncApp, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement,
-    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Window, div, prelude::FluentBuilder, px,
+    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
 };
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable};
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::notification::NotificationType;
+use gpui_component::resizable::{resizable_panel, v_resizable, ResizableState};
+use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState};
+use gpui_component::{ActiveTheme, Disableable, IconName, Sizable, WindowExt};
 
 use crate::panels::icons::{AppIcon, icon};
-
 
 use crate::terminal::ssh::{
     SftpEntry, SshSession, TransferDirection, TransferEvent, TransferHandle,
@@ -85,27 +90,145 @@ enum PendingOpKind {
     NewFolder,
 }
 
+/// Delegate that feeds the `DataTable` from the panel's `entries` vec.
+struct FileTableDelegate {
+    entries: Vec<SftpEntry>,
+    columns: Vec<Column>,
+}
+
+impl FileTableDelegate {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            columns: vec![
+                Column::new("name", "名称").width(px(150.)).sortable(),
+                Column::new("mtime", "修改时间").width(px(110.)),
+                Column::new("size", "大小").width(px(64.)).sortable().text_right(),
+                Column::new("perms", "权限").width(px(72.)),
+            ],
+        }
+    }
+}
+
+impl TableDelegate for FileTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.entries.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        self.columns[col_ix].clone()
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let entry = &self.entries[row_ix];
+        let col = &self.columns[col_ix];
+
+        match col.key.as_ref() {
+            "name" => {
+                let display_name = if entry.is_dir {
+                    format!("{}/", entry.name)
+                } else {
+                    entry.name.clone()
+                };
+                let file_icon = if entry.is_dir {
+                    AppIcon::Folder
+                } else {
+                    AppIcon::NewFile
+                };
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .overflow_hidden()
+                    .child(
+                        icon(file_icon)
+                            .size(px(12.0))
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(SharedString::from(display_name)),
+                    )
+                    .into_any_element()
+            }
+            "mtime" => div()
+                .w_full()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(human_mtime(entry.mtime)))
+                .into_any_element(),
+            "size" => div()
+                .w_full()
+                .text_xs()
+                .text_right()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(if entry.is_dir {
+                    "—".to_string()
+                } else {
+                    human_size(entry.size)
+                }))
+                .into_any_element(),
+            "perms" => div()
+                .w_full()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(human_perms(entry.perms)))
+                .into_any_element(),
+            _ => div().into_any_element(),
+        }
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        let key = self.columns[col_ix].key.as_ref();
+        match (key, sort) {
+            ("name", ColumnSort::Ascending) => self.entries.sort_by(|a, b| a.name.cmp(&b.name)),
+            ("name", ColumnSort::Descending) => self.entries.sort_by(|a, b| b.name.cmp(&a.name)),
+            ("size", ColumnSort::Ascending) => self.entries.sort_by_key(|e| e.size),
+            ("size", ColumnSort::Descending) => {
+                self.entries.sort_by_key(|e| std::cmp::Reverse(e.size))
+            }
+            ("mtime", ColumnSort::Ascending) => self.entries.sort_by_key(|e| e.mtime),
+            ("mtime", ColumnSort::Descending) => {
+                self.entries.sort_by_key(|e| std::cmp::Reverse(e.mtime))
+            }
+            _ => {}
+        }
+    }
+}
+
 pub struct SftpPanel {
     session: Arc<SshSession>,
     label: SharedString,
     focus_handle: FocusHandle,
     path: String,
-    entries: Vec<SftpEntry>,
+    table_state: Entity<TableState<FileTableDelegate>>,
     status: String,
     transfers: Vec<Transfer>,
     path_input: Option<Entity<InputState>>,
     _path_sub: Option<Subscription>,
-    selected: Option<usize>,
-    transfers_height: Pixels,
-    drag_start: Option<(Pixels, Pixels)>,
-    file_list_scroll_handle: ScrollHandle,
-    /// 4-column widths (name, mtime, size, perms). Initialised to sensible
-    /// defaults; updated when the user drags a column divider.
-    col_widths: [Pixels; 4],
-    /// While the user drags a column divider: (index of the column to the
-    /// left of the divider, the column's width when the drag started, the
-    /// mouse x when the drag started).
-    col_drag: Option<(usize, Pixels, Pixels)>,
+    resize_state: Entity<ResizableState>,
     /// Inline name-entry row: shown when the user clicks 新建文件 / 新建文件夹.
     pending_op: Option<(PendingOpKind, Entity<InputState>)>,
     /// Default local download directory. Editable in the bottom bar.
@@ -116,37 +239,41 @@ impl SftpPanel {
     pub fn new(
         session: Arc<SshSession>,
         label: impl Into<SharedString>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let download_dir = download_default_dir();
+        let delegate = FileTableDelegate::new();
+        let table_state = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .row_selectable(true)
+                .col_resizable(true)
+                .sortable(true)
+        });
+        let resize_state = cx.new(|_| ResizableState::default());
         let mut this = Self {
             session,
             label: label.into(),
             focus_handle: cx.focus_handle(),
             path: ".".to_string(),
-            entries: Vec::new(),
+            table_state,
             status: "Loading…".to_string(),
             transfers: Vec::new(),
             path_input: None,
             _path_sub: None,
-            selected: None,
-            transfers_height: px(200.0),
-            drag_start: None,
-            file_list_scroll_handle: ScrollHandle::new(),
-            col_widths: [px(150.0), px(110.0), px(64.0), px(72.0)],
-            col_drag: None,
+            resize_state,
             pending_op: None,
             download_dir,
         };
+        // Wire double-click → enter dir / download. Needs `window`, so we
+        // call it here in `new()` before `refresh`.
+        this.wire_table_events(window, cx);
         this.refresh(cx);
 
         // Resolve "." → absolute home dir so the bottom path bar and top
-        // path input show e.g. /home/user immediately. The path input is
-        // lazy-inited on first render and reads `self.path` at creation, so
-        // just updating `self.path` here is enough — `ensure_path_input`
-        // will pick up the resolved value before it ever paints ".".
-        // Falls back silently to "." if the server can't canonicalize.
+        // path input show e.g. /home/user immediately.
         let session = this.session.clone();
+        let _table_state = this.table_state.clone();
         cx.spawn(async move |this, cx| {
             let rx = session.sftp_realpath(".".to_string());
             if let Ok(Ok(resolved)) = rx.recv_async().await {
@@ -156,8 +283,6 @@ impl SftpPanel {
                     if fin != this.path {
                         this.path = fin;
                     }
-                    // Refresh now that the path is absolute — the initial
-                    // refresh (using ".") is overwritten harmlessly.
                     this.refresh(cx);
                     cx.notify();
                 });
@@ -184,9 +309,6 @@ impl SftpPanel {
         entity.update(cx, |s, cx| {
             s.set_value(initial, window, cx);
         });
-        // Subscribe to Enter on the new input. `subscribe_in` needs a
-        // `Window` (the input internally reads window focus state), so we
-        // use it here at create time.
         let sub = cx.subscribe_in(&entity, window, |this, _state, event, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.commit_path(window, cx);
@@ -197,10 +319,6 @@ impl SftpPanel {
         entity
     }
 
-    /// Read the path-bar input, normalize `~` → `.`, and re-list that
-    /// directory. Called on Enter in the path input. The input is
-    /// guaranteed to exist by the time we get the Enter event (it can
-    /// only be sent after the first render, which created the entity).
     fn commit_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self
             .path_input
@@ -212,12 +330,8 @@ impl SftpPanel {
         } else {
             raw.trim().to_string()
         };
-        self.selected = None;
         self.path = new;
         self.status = "Loading…".to_string();
-        // Sync the input back (covers the case where the user typed `~`
-        // and we mapped it to `.`). Skip the write if the value already
-        // matches — avoids moving the caret on every Enter.
         let synced = self.path.clone();
         if input.read(cx).value().as_ref() != synced.as_str() {
             input.update(cx, |s, cx| {
@@ -231,13 +345,17 @@ impl SftpPanel {
     /// Re-list the current directory.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let rx = self.session.sftp_read_dir(self.path.clone());
+        let table_state = self.table_state.clone();
         cx.spawn(async move |this, cx| {
             let result = rx.recv_async().await;
             this.update(cx, |this, cx| {
                 match result {
                     Ok(Ok(entries)) => {
                         this.status = format!("{} item(s)", entries.len());
-                        this.entries = entries;
+                        table_state.update(cx, |state, cx| {
+                            state.delegate_mut().entries = entries;
+                            state.refresh(cx);
+                        });
                     }
                     Ok(Err(e)) => this.status = format!("read_dir failed: {e}"),
                     Err(_) => this.status = "session closed".to_string(),
@@ -252,7 +370,6 @@ impl SftpPanel {
     fn enter_dir(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.path = remote_join(&self.path, name);
         self.status = "Loading…".to_string();
-        self.selected = None;
         self.sync_path_input(window, cx);
         self.refresh(cx);
         cx.notify();
@@ -261,19 +378,11 @@ impl SftpPanel {
     fn go_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.path = remote_parent(&self.path);
         self.status = "Loading…".to_string();
-        self.selected = None;
         self.sync_path_input(window, cx);
         self.refresh(cx);
         cx.notify();
     }
 
-    /// Push the current `self.path` into the path-bar input if they
-    /// differ. Called whenever navigation changes `self.path` outside
-    /// of the input itself (so the editable field stays in sync with
-    /// the canonical state). Skipped when the values already match so
-    /// we don't move the caret mid-edit. The early-return for None
-    /// handles the brief window before the first render creates the
-    /// entity.
     fn sync_path_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(input) = self.path_input.as_ref() else {
             return;
@@ -287,9 +396,6 @@ impl SftpPanel {
         }
     }
 
-    /// Download `name` (a file in `self.path`) directly into the default
-    /// download directory. Inserts a `Queued` transfer row immediately and
-    /// wires up a pump task that listens to the new background-transfer events.
     fn download(&mut self, name: &str, cx: &mut Context<Self>) {
         let remote = remote_join(&self.path, name);
         let display_name = name.to_string();
@@ -308,7 +414,6 @@ impl SftpPanel {
         });
         cx.notify();
 
-        // Ensure the download dir exists (best-effort, may fail on permission).
         let _ = std::fs::create_dir_all(&self.download_dir);
 
         cx.spawn(async move |this, cx| {
@@ -348,31 +453,32 @@ impl SftpPanel {
         .detach();
     }
 
-    /// Toolbar Download button handler. Downloads `self.entries[self.selected]`
-    /// if the user has a selection.
-    fn download_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else {
-            self.status = "请先选中一个文件再点下载".to_string();
-            cx.notify();
-            return;
+    fn download_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, is_dir) = {
+            let state = self.table_state.read(cx);
+            let Some(ix) = state.selected_row() else {
+                window.push_notification(
+                    (NotificationType::Warning, "请先选中一个文件再点下载"),
+                    cx,
+                );
+                return;
+            };
+            let entries = &state.delegate().entries;
+            let Some(entry) = entries.get(ix) else {
+                return;
+            };
+            (entry.name.clone(), entry.is_dir)
         };
-        let Some(entry) = self.entries.get(ix) else {
-            self.selected = None;
-            self.status = "选中的条目已不在列表里,请重新选择".to_string();
-            cx.notify();
-            return;
-        };
-        if entry.is_dir {
-            self.status = "暂不支持下载文件夹".to_string();
-            cx.notify();
+        if is_dir {
+            window.push_notification(
+                (NotificationType::Warning, "暂不支持下载文件夹"),
+                cx,
+            );
             return;
         }
-        let name = entry.name.clone();
         self.download(&name, cx);
     }
 
-    /// Upload the user-chosen local file to `self.path` on the remote.
-    /// Mirror of `download` but with reversed direction.
     fn upload(&mut self, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -397,9 +503,11 @@ impl SftpPanel {
 
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
+                // Dialog was cancelled (or errored) before any file was picked —
+                // drop the placeholder row instead of showing a spurious failure.
                 this.update(cx, |this, cx| {
-                    if let Some(t) = this.transfers.get_mut(placeholder_ix) {
-                        t.status = TransferStatus::Failed("cancelled".into());
+                    if placeholder_ix < this.transfers.len() {
+                        this.transfers.remove(placeholder_ix);
                     }
                     cx.notify();
                 })
@@ -407,6 +515,13 @@ impl SftpPanel {
                 return;
             };
             let Some(local) = paths.into_iter().next() else {
+                this.update(cx, |this, cx| {
+                    if placeholder_ix < this.transfers.len() {
+                        this.transfers.remove(placeholder_ix);
+                    }
+                    cx.notify();
+                })
+                .ok();
                 return;
             };
             let name = local
@@ -443,10 +558,8 @@ impl SftpPanel {
         .detach();
     }
 
-    /// Show the inline name-entry row for creating a new file.
     fn new_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
-        // Subscribe to Enter on the pending-op input.
         cx.subscribe_in(&entity, window, |this: &mut Self, _state, event, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) {
                 this.commit_pending_op(window, cx);
@@ -457,7 +570,6 @@ impl SftpPanel {
         cx.notify();
     }
 
-    /// Show the inline name-entry row for creating a new folder.
     fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.new(|cx| InputState::new(window, cx).submit_on_enter(true));
         cx.subscribe_in(&entity, window, |this: &mut Self, _state, event, window, cx| {
@@ -470,7 +582,6 @@ impl SftpPanel {
         cx.notify();
     }
 
-    /// Commit the pending new-file or new-folder name entry.
     fn commit_pending_op(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some((kind, input)) = self.pending_op.as_ref() else {
             return;
@@ -512,63 +623,92 @@ impl SftpPanel {
         }
     }
 
-    /// Delete the currently selected remote file or directory (recursive).
-    fn delete_selected(&mut self, cx: &mut Context<Self>) {
-        let Some(ix) = self.selected else {
-            self.status = "请先选中要删除的条目".to_string();
-            cx.notify();
-            return;
+    fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (name, is_dir) = {
+            let state = self.table_state.read(cx);
+            let Some(ix) = state.selected_row() else {
+                window.push_notification(
+                    (NotificationType::Warning, "请先选中要删除的条目"),
+                    cx,
+                );
+                return;
+            };
+            let entries = &state.delegate().entries;
+            let Some(entry) = entries.get(ix) else {
+                return;
+            };
+            (entry.name.clone(), entry.is_dir)
         };
-        let Some(entry) = self.entries.get(ix) else {
-            self.selected = None;
-            cx.notify();
-            return;
-        };
-        let name = entry.name.clone();
-        let remote = remote_join(&self.path, &name);
-        let recursive = entry.is_dir;
+
         let session = self.session.clone();
+        let path = self.path.clone();
+        let table_state = self.table_state.clone();
+        let weak_panel = cx.entity().downgrade();
+        let delete_name = name.clone();
 
-        self.selected = None;
-        self.status = "删除中…".to_string();
-        cx.notify();
-
-        cx.spawn(async move |this, cx| {
-            let rx = session.sftp_remove(remote, recursive);
-            match rx.recv_async().await {
-                Ok(Ok(())) => {
-                    this.update(cx, |this, cx| {
-                        this.refresh(cx);
-                        cx.notify();
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            // `open_alert_dialog`'s builder is an `Fn` (invoked on every render of
+            // the dialog), so it must not move its captures out. Clone them into
+            // locals here and let the `on_ok` closure move the locals instead.
+            let weak_panel = weak_panel.clone();
+            let session = session.clone();
+            let table_state = table_state.clone();
+            let delete_name = delete_name.clone();
+            let path = path.clone();
+            alert
+                .title("确认删除")
+                .description(format!(
+                    "确定要删除「{name}」吗？{}此操作不可撤销。",
+                    if is_dir { "文件夹及其所有内容都会被删除，" } else { "" }
+                ))
+                .confirm()
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    let weak_panel = weak_panel.clone();
+                    let session = session.clone();
+                    let table_state = table_state.clone();
+                    let name = delete_name.clone();
+                    let remote = remote_join(&path, &name);
+                    cx.spawn(async move |cx| {
+                        weak_panel.update(cx, |this, cx| {
+                            this.status = "删除中…".to_string();
+                            cx.notify();
+                        }).ok();
+                        let rx = session.sftp_remove(remote, is_dir);
+                        match rx.recv_async().await {
+                            Ok(Ok(())) => {
+                                weak_panel.update(cx, |_this, cx| {
+                                    table_state.update(cx, |state, cx| {
+                                        state.delegate_mut().entries.retain(|e| e.name != name);
+                                        state.refresh(cx);
+                                    });
+                                    cx.notify();
+                                }).ok();
+                            }
+                            Ok(Err(e)) => {
+                                weak_panel.update(cx, |this, cx| {
+                                    this.status = format!("删除失败: {e}");
+                                    cx.notify();
+                                }).ok();
+                            }
+                            Err(_) => {
+                                weak_panel.update(cx, |this, cx| {
+                                    this.status = "删除失败: session closed".to_string();
+                                    cx.notify();
+                                }).ok();
+                            }
+                        }
                     })
-                }
-                Ok(Err(e)) => {
-                    this.update(cx, |this, cx| {
-                        this.status = format!("删除失败: {e}");
-                        cx.notify();
-                    })
-                }
-                Err(_) => {
-                    this.update(cx, |this, cx| {
-                        this.status = "删除失败: session closed".to_string();
-                        cx.notify();
-                    })
-                }
-            }
-            .ok();
-        })
-        .detach();
+                    .detach();
+                    true
+                })
+        });
     }
 
-    /// Cancel an in-progress transfer by id.
     fn cancel_transfer(&self, id: u64) {
         self.session.sftp_cancel(id);
     }
 
-    /// Background pump: drains `TransferEvent`s from the handle's channel
-    /// and updates the matching `Transfer` row. Runs until the channel
-    /// closes (which the session thread does after the final
-    /// Done/Failed/Cancelled).
     async fn pump_events(
         this: gpui::WeakEntity<Self>,
         id: u64,
@@ -617,8 +757,6 @@ impl SftpPanel {
         }
     }
 
-    /// Copy the current remote path to the system clipboard. Wired to the
-    /// small button in the path bar.
     fn copy_path(&mut self, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(self.path.clone()));
     }
@@ -644,10 +782,6 @@ impl Panel for SftpPanel {
 
 // --- placeholder for non-SSH focused terminals -----------------------------
 
-/// Shown in the left "SFTP" dock when the focused terminal has no SFTP
-/// browser to show — no terminal focused yet, or the focused one isn't SSH
-/// (local shell / serial). `Workspace` swaps this in and out as focus moves
-/// between terminal tabs, so the dock always holds exactly one tab.
 pub struct SftpPlaceholder {
     focus_handle: FocusHandle,
 }
@@ -694,13 +828,6 @@ impl Render for SftpPlaceholder {
 
 // --- main render ----------------------------------------------------------
 
-/// Layout (vertical):
-///   Root: flex-col, pinned `size_full`.
-///     ├─ TOP pane (flex_1 fill): title bar + toolbar + path bar + column
-///     │    header + file list (internal scroll) + status row.
-///     ├─ Draggable splitter (4px).
-///     ├─ BOTTOM pane (height driven by `self.transfers_height`): transfer
-///     │    section header + list + default download dir.
 impl Render for SftpPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let path_input = self.ensure_path_input(window, cx);
@@ -710,7 +837,6 @@ impl Render for SftpPanel {
         let toolbar = self.render_toolbar(window, cx);
         let pending_op = self.render_pending_op_row(cx);
         let path_bar = self.render_path_bar(&path_input, cx);
-        let column_header = self.render_column_header(cx);
         let file_list = self.render_file_list(cx);
         let status_row = self.render_status_row(cx);
 
@@ -718,62 +844,37 @@ impl Render for SftpPanel {
         let transfer_body = self.render_transfer_body(cx);
         let download_dir_bar = self.render_download_dir_bar(cx);
 
-        let splitter = div()
-            .id("sftp-splitter")
-            .h(px(4.0))
-            .w_full()
-            .bg(cx.theme().border)
-            .hover(|s| s.bg(cx.theme().accent))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &gpui::MouseDownEvent, _window, _cx| {
-                this.drag_start = Some((this.transfers_height, event.position.y));
-            }))
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                let Some((initial_height, initial_y)) = this.drag_start else { return };
-                let dy = event.position.y - initial_y;
-                let new_h = initial_height + dy;
-                let clamped = new_h.clamp(px(80.0), px(600.0));
-                if clamped != this.transfers_height {
-                    this.transfers_height = clamped;
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                if this.drag_start.is_some() {
-                    this.drag_start = None;
-                    cx.notify();
-                }
-            }));
-
         let top_pane = div()
             .flex()
             .flex_col()
             .flex_1()
+            .min_w(px(0.0))
             .min_h(px(0.0))
             .child(title_bar)
             .child(toolbar)
             .child(pending_op)
             .child(path_bar)
-            .child(column_header)
             .child(file_list)
             .child(status_row);
 
         let bottom_pane = div()
-            .h(self.transfers_height)
             .flex()
             .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
             .child(transfer_header)
             .child(transfer_body)
             .child(download_dir_bar);
 
-        div()
-            .track_focus(&self.focus_handle)
-            .flex()
-            .flex_col()
-            .size_full()
-            .text_sm()
-            .child(top_pane)
-            .child(splitter)
-            .child(bottom_pane)
+        v_resizable("sftp-layout")
+            .with_state(&self.resize_state)
+            .child(resizable_panel().child(top_pane))
+            .child(
+                resizable_panel()
+                    .size(px(200.))
+                    .size_range(px(80.)..px(600.))
+                    .child(bottom_pane),
+            )
     }
 }
 
@@ -824,6 +925,8 @@ impl SftpPanel {
     }
 
     fn render_toolbar(&self, _window: &mut Window, cx: &Context<Self>) -> impl IntoElement {
+        let has_selection = self.table_state.read(cx).selected_row().is_some();
+
         div()
             .flex()
             .flex_row()
@@ -835,84 +938,65 @@ impl SftpPanel {
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
-                // 新建文件
-                div()
-                    .id("sftp-new-file")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(icon(AppIcon::NewFile).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, window, cx| this.new_file(window, cx))),
+                Button::new("sftp-new-file")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::NewFile))
+                    .tooltip("新建文件")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_file(window, cx))),
             )
             .child(
-                // 新建文件夹
-                div()
-                    .id("sftp-new-folder")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(icon(AppIcon::NewFolder).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, window, cx| this.new_folder(window, cx))),
+                Button::new("sftp-new-folder")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::NewFolder))
+                    .tooltip("新建文件夹")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
             )
             .child(
-                // 上传
-                div()
-                    .id("sftp-upload")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(icon(AppIcon::Upload).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, _w, cx| this.upload(cx))),
+                Button::new("sftp-upload")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Upload))
+                    .tooltip("上传")
+                    .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             )
             .child(
-                // 下载
-                div()
-                    .id("sftp-download")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(icon(AppIcon::Download).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, _w, cx| this.download_selected(cx))),
+                Button::new("sftp-download")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Download))
+                    .tooltip("下载")
+                    .disabled(!has_selection)
+                    .on_click(cx.listener(|this, _, window, cx| this.download_selected(window, cx))),
             )
             .child(
                 div().w(px(1.)).h(px(20.)).bg(cx.theme().border),
             )
             .child(
-                // 删除
-                div()
-                    .id("sftp-delete")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
-                    .child(icon(AppIcon::Delete).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, _w, cx| this.delete_selected(cx))),
+                Button::new("sftp-delete")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Delete))
+                    .tooltip("删除")
+                    .disabled(!has_selection)
+                    .on_click(cx.listener(|this, _, window, cx| this.delete_selected(window, cx))),
             )
             .child(
-                // 向上一级
-                div()
-                    .id("sftp-up")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(icon(AppIcon::Up).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, window, cx| this.go_up(window, cx))),
+                Button::new("sftp-up")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Up))
+                    .tooltip("向上一级")
+                    .on_click(cx.listener(|this, _, window, cx| this.go_up(window, cx))),
             )
             .child(
-                // 刷新
-                div()
-                    .id("sftp-refresh")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(icon(AppIcon::Refresh).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, _w, cx| this.refresh(cx))),
+                Button::new("sftp-refresh")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Refresh))
+                    .tooltip("刷新")
+                    .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
             )
     }
 
@@ -933,195 +1017,65 @@ impl SftpPanel {
             .bg(cx.theme().background)
             .child(div().flex_1().child(Input::new(path_input).xsmall()))
             .child(
-                div()
-                    .id("sftp-copy-path")
-                    .p_1()
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().accent))
-                    .child(Icon::new(IconName::Copy).size(px(14.0)))
-                    .on_click(cx.listener(|this, _e, _w, cx| this.copy_path(cx))),
+                Button::new("sftp-copy-path")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::Copy)
+                    .tooltip("复制路径")
+                    .on_click(cx.listener(|this, _, _w, cx| this.copy_path(cx))),
             )
     }
 
-    fn render_column_header(&self, cx: &Context<Self>) -> impl IntoElement {
-        static HEADERS: [&str; 4] = ["名称", "修改时间", "大小", "权限"];
-        let mut cells: Vec<gpui::AnyElement> = Vec::new();
-        for (i, &header_label) in HEADERS.iter().enumerate() {
-            cells.push(
-                div()
-                    .w(self.col_widths[i])
-                    .min_w(px(32.0))
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .when(i == 2, |d| d.text_right())
-                    .child(header_label)
-                    .into_any_element(),
-            );
-            if i < 3 {
-                let i_divider = i;
-                cells.push(
-                    div()
-                        .h_full()
-                        .w(px(4.0))
-                        .hover(|s| s.bg(cx.theme().accent))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &gpui::MouseDownEvent, _window, _cx| {
-                                this.col_drag = Some((
-                                    i_divider,
-                                    this.col_widths[i_divider],
-                                    event.position.x,
-                                ));
-                            }),
-                        )
-                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _window, cx| {
-                            let Some((idx, initial_w, initial_x)) = this.col_drag else {
-                                return;
-                            };
-                            let dx = event.position.x - initial_x;
-                            let new_w = (initial_w + dx).clamp(px(32.0), px(400.0));
-                            if new_w != this.col_widths[idx] {
-                                this.col_widths[idx] = new_w;
-                                cx.notify();
-                            }
-                        }))
-                        .on_mouse_up(MouseButton::Left, cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
-                            if this.col_drag.is_some() {
-                                this.col_drag = None;
-                                cx.notify();
-                            }
-                        }))
-                        .into_any_element(),
-                );
-            }
-        }
-
+    fn render_file_list(&self, _cx: &Context<Self>) -> impl IntoElement {
         div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_3()
-            .py_1()
-            .gap_0()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .children(cells)
+            .flex_1()
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .child(DataTable::new(&self.table_state))
     }
 
-    fn render_file_list(&self, cx: &Context<Self>) -> impl IntoElement {
-        let rows = self.entries.iter().enumerate().map(|(ix, entry)| {
-            let name = entry.name.clone();
-            let is_dir = entry.is_dir;
-            let display_name = if is_dir {
-                format!("{}/", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            let size_text = if is_dir {
-                "—".to_string()
-            } else {
-                human_size(entry.size)
-            };
-            let mtime_text = human_mtime(entry.mtime);
-            let perms_text = human_perms(entry.perms);
-            let file_icon = if is_dir { AppIcon::Folder } else { AppIcon::NewFile };
-
-            div()
-                .id(("sftp-row", ix))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_0()
-                .px_3()
-                .py_0p5()
-                .text_color(cx.theme().foreground)
-                .when(self.selected == Some(ix), |d| d.bg(cx.theme().list_active))
-                .hover(|s| s.bg(cx.theme().list_hover))
-                .child(
-                    div()
-                        .w(self.col_widths[0])
-                        .min_w(px(32.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_1()
-                        .overflow_hidden()
-                        .child(
-                            icon(file_icon)
-                                .size(px(12.0))
-                                .text_color(cx.theme().muted_foreground),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .overflow_hidden()
-                                .text_ellipsis()
-                                .child(SharedString::from(display_name)),
-                        ),
-                )
-                .child(
-                    div()
-                        .w(self.col_widths[1])
-                        .min_w(px(32.0))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(mtime_text)),
-                )
-                .child(
-                    div()
-                        .w(self.col_widths[2])
-                        .min_w(px(32.0))
-                        .text_xs()
-                        .text_right()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(size_text)),
-                )
-                .child(
-                    div()
-                        .w(self.col_widths[3])
-                        .min_w(px(32.0))
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(SharedString::from(perms_text)),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
-                        this.selected = Some(ix);
-                        if event.click_count >= 2 {
-                            if is_dir {
-                                this.enter_dir(&name, window, cx);
-                            } else {
-                                this.download(&name, cx);
-                            }
+    /// Wire up table event handlers (double-click to enter/download). Called
+    /// once from `new()` where `window` is available for `subscribe_in`.
+    fn wire_table_events(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let table_state = self.table_state.clone();
+        cx.subscribe_in(&self.table_state, window, move |this, _, event, window, cx| {
+            match event {
+                TableEvent::DoubleClickedRow(ix) => {
+                    let name = {
+                        let state = table_state.read(cx);
+                        state.delegate().entries.get(*ix).map(|e| e.name.clone())
+                    };
+                    if let Some(name) = name {
+                        let is_dir = {
+                            let state = table_state.read(cx);
+                            state.delegate().entries.get(*ix).map(|e| e.is_dir).unwrap_or(false)
+                        };
+                        if is_dir {
+                            this.enter_dir(&name, window, cx);
+                        } else {
+                            this.download(&name, cx);
                         }
-                        cx.notify();
-                    }),
-                )
-        });
-
-        div()
-            .id("sftp-file-list")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h(px(0.0))
-            .overflow_y_scroll()
-            .track_scroll(&self.file_list_scroll_handle)
-            .children(rows)
+                    }
+                }
+                TableEvent::RightClickedRow(Some(ix)) => {
+                    table_state.update(cx, |state, cx| {
+                        state.set_selected_row(*ix, cx);
+                    });
+                }
+                _ => {}
+            }
+        })
+        .detach();
     }
 
     fn render_status_row(&self, cx: &Context<Self>) -> impl IntoElement {
-        let count = self.entries.len();
-        let total_bytes: u64 = self
-            .entries
-            .iter()
-            .filter(|e| !e.is_dir)
-            .map(|e| e.size)
-            .sum();
+        let (count, total_bytes) = {
+            let state = self.table_state.read(cx);
+            let entries = &state.delegate().entries;
+            let count = entries.len();
+            let total_bytes: u64 = entries.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
+            (count, total_bytes)
+        };
         let summary = format!("共 {count} 项 | {}", human_size(total_bytes));
         div()
             .flex()
@@ -1233,21 +1187,16 @@ impl SftpPanel {
                             )
                             .when(is_running, |d| {
                                 d.child(
-                                    div()
-                                        .px_1()
-                                        .rounded_sm()
-                                        .text_xs()
-                                        .text_color(cx.theme().foreground)
-                                        .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
-                                        .child(icon(AppIcon::Delete).size(px(14.0)))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(
-                                                move |this, _event: &gpui::MouseDownEvent, _w, _cx| {
-                                                    this.cancel_transfer(transfer_id);
-                                                },
-                                            ),
-                                        ),
+                                    Button::new(format!("sftp-cancel-{transfer_id}"))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Delete)
+                                        .tooltip("取消传输")
+                                        .on_click(cx.listener(
+                                            move |this, _, _w, _cx| {
+                                                this.cancel_transfer(transfer_id);
+                                            },
+                                        )),
                                 )
                             }),
                     )
@@ -1266,11 +1215,17 @@ impl SftpPanel {
                             ),
                     )
             });
-            div().id("sftp-transfer-list").flex().flex_col().flex_1().min_h(px(0.0)).overflow_y_scroll().children(rows).into_any_element()
+            let list: gpui::Stateful<gpui::Div> = div()
+                .id("sftp-transfer-list")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scroll();
+            list.children(rows).into_any_element()
         }
     }
 
-    /// Render the bottom bar showing the default download directory.
     fn render_download_dir_bar(
         &self,
         cx: &Context<Self>,
@@ -1357,10 +1312,6 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// Render the 9 low-order permission bits as the classic `ls -l` 9-char
-/// string (`rwxr-xr-x`). Accepts either a mode that includes the file-type
-/// bits (`0o100644`) or one with just the 9 perm bits (`0o644`) — we mask
-/// the low 9 bits either way.
 fn human_perms(perms: u32) -> String {
     let p = perms & 0o777;
     let rwx = |bits: u32| -> String {
@@ -1373,12 +1324,9 @@ fn human_perms(perms: u32) -> String {
     format!("{}{}{}", rwx((p >> 6) & 0o7), rwx((p >> 3) & 0o7), rwx(p & 0o7))
 }
 
-/// Format `mtime` (unix seconds) as `YYYY-MM-DD HH:MM`. Returns `—` for 0
-/// (the "server didn't tell us" sentinel). Uses Howard Hinnant's
-/// `days_from_civil` / `civil_from_days` so we don't pull in `chrono`/`time`.
 fn human_mtime(mtime: u32) -> String {
     if mtime == 0 {
-        return "—".into();
+        return "—".to_string();
     }
     let secs = mtime as i64;
     let days = secs.div_euclid(86_400);
@@ -1386,8 +1334,9 @@ fn human_mtime(mtime: u32) -> String {
     let hour = (secs_of_day / 3600) as u32;
     let minute = ((secs_of_day % 3600) / 60) as u32;
 
-    // civil_from_days: convert days-since-1970-01-01 (with -2_719_468
-    // offset to align the civil-day epoch) to (y, m, d).
+    // civil_from_days: convert days-since-1970-01-01 (with +719_468 offset to
+    // align the civil-day epoch) to (y, m, d). Handles leap years / month
+    // lengths correctly, unlike a fixed 365/30 approximation.
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097) as u64;
@@ -1395,9 +1344,9 @@ fn human_mtime(mtime: u32) -> String {
     let y = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let y = if m <= 2 { y + 1 } else { y };
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if month <= 2 { y + 1 } else { y };
 
-    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m, d, hour, minute)
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
