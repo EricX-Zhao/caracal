@@ -24,9 +24,9 @@ pub struct SnapCell {
     pub fg: Hsla,
     pub bg: Hsla,
     pub bold: bool,
-    /// Whether this cell needs its own background quad (selected, or a
-    /// non-default background color). `false` for blank/default cells and
-    /// for the trailing spacer slot of a wide character.
+    /// Whether this cell needs its own background quad (selected, a
+    /// non-default background color, or a block cursor's swapped fill). `false`
+    /// for blank/default cells and for the trailing spacer slot of a wide character.
     pub paint_bg: bool,
     /// Whether this is the *leading* cell of a wide (CJK) character — its
     /// background/overlay should claim two grid columns.
@@ -119,7 +119,7 @@ pub fn snapshot_content(term: &SharedTerm, focused: bool) -> GridSnapshot {
         }
 
         let selected = selection.as_ref().is_some_and(|range| range.contains(cell.point));
-        let is_default_bg = !flags.contains(Flags::INVERSE) && matches!(cell.bg, Color::Named(NamedColor::Background));
+        let is_default_bg = !swap && matches!(cell.bg, Color::Named(NamedColor::Background));
         let (paint_bg, bg) = if selected {
             (true, selection_bg_hsla())
         } else {
@@ -183,7 +183,23 @@ mod tests {
         assert_eq!(snap.row(0)[0].c, 'h');
         assert_eq!(snap.row(0)[1].c, 'i');
         assert_eq!(snap.row(0)[2].c, ' ');
-        assert!(!snap.row(0)[2].paint_bg);
+        // Column 2 is where the cursor sits after typing "hi" — its own
+        // block-cursor fill is asserted separately in
+        // `block_cursor_paints_its_own_background`. Check a blank cell the
+        // cursor does *not* occupy instead.
+        assert!(!snap.row(0)[5].paint_bg);
+    }
+
+    #[test]
+    fn block_cursor_paints_its_own_background() {
+        // The default cursor shape is Block, and paint_cursor_overlay in
+        // render.rs is a no-op for Block — the background quad painted when
+        // `paint_bg` is true (via the fg/bg swap) is the *only* thing that
+        // renders a block cursor's solid fill. A default-background cell
+        // under the cursor must still get paint_bg == true.
+        let term = term_with(b"hi", 10, 3);
+        let snap = snapshot_content(&term, true);
+        assert!(snap.row(0)[2].paint_bg, "block cursor must paint its own background");
     }
 
     #[test]
