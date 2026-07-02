@@ -166,7 +166,7 @@ fn paint_grid(
     for row in 0..snapshot.rows {
         for span in batch_text_runs(snapshot.row(row)) {
             let run_font = if span.style.bold { &bold_font } else { font };
-            let (text, run) = text_run(&span.text, run_font, span.style.fg);
+            let (text, run) = text_run(span.text, run_font, span.style.fg);
             let shaped = ts.shape_line(text, font_size, &[run], Some(cw));
             let x = origin.x + cw * span.start_col as f32;
             let y = origin.y + ch * row as f32;
@@ -177,8 +177,8 @@ fn paint_grid(
 
 /// Build a `(text, TextRun)` pair for a whole batched span (one or more
 /// characters sharing the same style).
-fn text_run(text: &str, font: &Font, color: Hsla) -> (gpui::SharedString, TextRun) {
-    let text: gpui::SharedString = text.to_string().into();
+fn text_run(text: String, font: &Font, color: Hsla) -> (gpui::SharedString, TextRun) {
+    let text: gpui::SharedString = text.into();
     let run = TextRun {
         len: text.len(),
         font: font.clone(),

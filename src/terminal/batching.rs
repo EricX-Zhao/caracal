@@ -28,6 +28,7 @@ pub struct TextSpan {
 pub fn batch_text_runs(row: &[SnapCell]) -> Vec<TextSpan> {
     let mut spans = Vec::new();
     let mut current: Option<TextSpan> = None;
+    let mut end_col: usize = 0;
     let mut col = 0usize;
 
     while col < row.len() {
@@ -43,17 +44,21 @@ pub fn batch_text_runs(row: &[SnapCell]) -> Vec<TextSpan> {
         }
 
         let style = CellStyle { fg: cell.fg, bold: cell.bold };
-        let expected_col = current.as_ref().map(|s| s.start_col + s.text.chars().count());
 
         match &mut current {
-            Some(span) if span.style.matches(&style) && expected_col == Some(col) => {
+            Some(span) if span.style.matches(&style) && end_col == col => {
                 span.text.push(cell.c);
+                // Only increment end_col for narrow cells; wide chars are always last in their span
+                if !cell.wide {
+                    end_col += 1;
+                }
             }
             _ => {
                 if let Some(span) = current.take() {
                     spans.push(span);
                 }
                 current = Some(TextSpan { start_col: col, text: cell.c.to_string(), style });
+                end_col = col + 1;
             }
         }
         col += step;
