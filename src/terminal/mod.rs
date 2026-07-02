@@ -4,6 +4,7 @@
 
 pub mod backend;
 pub mod bridge;
+pub mod grid_snapshot;
 pub mod keymap;
 pub mod model;
 pub mod render;
