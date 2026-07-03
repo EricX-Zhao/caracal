@@ -38,11 +38,12 @@ use gpui::{
     Focusable, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
 };
+use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::menu::ContextMenuExt;
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme, StyledExt, WindowExt};
+use gpui_component::{ActiveTheme, Sizable, StyledExt, WindowExt};
 use serde::Deserialize;
 
 use crate::panels::icons::{AppIcon, icon};
@@ -222,9 +223,6 @@ struct ConnForm {
     parity: String,
     stop_bits: u8,
     flow_control: String,
-    /// Populated by the "刷新" button (`serial::list_ports()`); empty until
-    /// pressed.
-    detected_ports: Vec<String>,
     /// `Some(ix)` when this form is editing an existing connection in place
     /// (opened via the Edit hover icon or context-menu item); `None` when
     /// adding a brand new connection.
@@ -381,7 +379,6 @@ impl SavedConnectionsPanel {
             parity: "none".to_string(),
             stop_bits: 1,
             flow_control: "none".to_string(),
-            detected_ports: Vec::new(),
             edit_ix: None,
             _enter_subs,
         });
@@ -482,7 +479,6 @@ impl SavedConnectionsPanel {
             parity,
             stop_bits,
             flow_control,
-            detected_ports: Vec::new(),
             edit_ix: Some(ix),
             _enter_subs,
         });
@@ -1052,11 +1048,12 @@ impl SavedConnectionsPanel {
     }
 
     /// The serial-only device-path field: a free-text input (so headless /
-    /// manual entry always works) plus a "刷新" button that lists detected
-    /// ports via `serial::list_ports()`.
+    /// manual entry always works) plus a dropdown button that lists
+    /// detected ports (`serial::list_ports()`, queried fresh on every open
+    /// so there's no separate "refresh" step or stored detection state).
     fn serial_port_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
         let target = form.serial_port.clone();
-        let mut col = div()
+        div()
             .flex()
             .flex_col()
             .gap_0p5()
@@ -1069,49 +1066,32 @@ impl SavedConnectionsPanel {
                     .items_center()
                     .child(div().flex_1().child(Input::new(&form.serial_port)))
                     .child(
-                        div()
-                            .id("serial-refresh")
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .hover(|s| s.bg(cx.theme().accent))
-                            .child("刷新")
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                        DropdownButton::new("serial-port-picker")
+                            .small()
+                            .button(Button::new("serial-port-picker-btn").label("选择"))
+                            .dropdown_menu(move |menu, _window, _cx| {
                                 let ports = crate::terminal::serial::list_ports();
-                                if let Some(ref mut f) = this.form {
-                                    f.detected_ports = ports;
+                                if ports.is_empty() {
+                                    return menu.label("未检测到串口设备");
                                 }
-                                cx.notify();
-                            })),
+                                let mut menu = menu;
+                                for path in ports {
+                                    let target = target.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(path.clone()).on_click(
+                                            move |_ev, window, cx| {
+                                                let path = path.clone();
+                                                target.update(cx, |s, cx| {
+                                                    s.set_value(path, window, cx);
+                                                });
+                                            },
+                                        ),
+                                    );
+                                }
+                                menu
+                            }),
                     ),
-            );
-        if !form.detected_ports.is_empty() {
-            col = col.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .children(form.detected_ports.iter().enumerate().map(|(i, path)| {
-                        let path = path.clone();
-                        let target = target.clone();
-                        div()
-                            .id(("detected-port", i))
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .hover(|s| s.bg(cx.theme().accent))
-                            .child(path.clone())
-                            .on_click(cx.listener(move |_this, _ev: &ClickEvent, window, cx| {
-                                target.update(cx, |s, cx| {
-                                    s.set_value(path.clone(), window, cx);
-                                });
-                            }))
-                    })),
-            );
-        }
-        col
+            )
     }
 
     fn data_bits_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
