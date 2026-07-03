@@ -16,7 +16,7 @@ use gpui::{
     Window, div, font, px,
 };
 
-use crate::terminal::backend::{LocalPty, PtyBackend};
+use crate::terminal::backend::{DeadBackend, LocalPty, PtyBackend};
 use crate::terminal::bridge::{run_drain, run_feeder};
 use crate::terminal::keymap::{PastePayload, encode_key, encode_paste};
 use crate::terminal::model::{SharedTerm, new_term};
@@ -183,14 +183,28 @@ impl TerminalView {
     /// second channel to justify a shared connection.
     pub fn new_telnet(window: &mut Window, cx: &mut Context<Self>, config: TelnetConfig) -> Self {
         Self::with_backend(window, cx, move |_cols, _rows, bytes_tx| {
-            Arc::new(TelnetBackend::connect(config, bytes_tx).expect("telnet connect failed"))
+            match TelnetBackend::connect(config, bytes_tx.clone()) {
+                Ok(backend) => Arc::new(backend),
+                Err(e) => {
+                    let _ = bytes_tx
+                        .send(format!("\r\n\x1b[1;31mtelnet connect failed:\x1b[0m {e}\r\n").into_bytes());
+                    Arc::new(DeadBackend)
+                }
+            }
         })
     }
 
     /// A terminal backed by a serial port (`SerialBackend`).
     pub fn new_serial(window: &mut Window, cx: &mut Context<Self>, config: SerialConfig) -> Self {
         Self::with_backend(window, cx, move |_cols, _rows, bytes_tx| {
-            Arc::new(SerialBackend::open(config, bytes_tx).expect("serial open failed"))
+            match SerialBackend::open(config, bytes_tx.clone()) {
+                Ok(backend) => Arc::new(backend),
+                Err(e) => {
+                    let _ = bytes_tx
+                        .send(format!("\r\n\x1b[1;31mserial open failed:\x1b[0m {e}\r\n").into_bytes());
+                    Arc::new(DeadBackend)
+                }
+            }
         })
     }
 

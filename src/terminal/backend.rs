@@ -143,3 +143,16 @@ impl PtyBackend for LocalPty {
         }
     }
 }
+
+/// A backend that discards every write and ignores every resize. Used when a
+/// transport (Telnet, serial) fails to establish: the caller has already
+/// pushed an error message into the terminal's byte stream, and returning
+/// this instead of propagating the error keeps the tab (and the app) alive
+/// — matching how `ssh.rs`'s `command_loop` handles a failed shell-channel
+/// open by writing an error line rather than tearing down the connection.
+pub struct DeadBackend;
+
+impl PtyBackend for DeadBackend {
+    fn write(&self, _bytes: &[u8]) {}
+    fn resize(&self, _cols: u16, _rows: u16) {}
+}
