@@ -42,7 +42,9 @@ use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
 use crate::panels::stub::StubPanel;
 use crate::panels::terminal::TerminalPanel;
+use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
+use crate::terminal::telnet::TelnetConfig;
 use crate::terminal::view::TerminalView;
 
 pub struct Workspace {
@@ -94,6 +96,12 @@ impl Workspace {
                 }
                 SavedConnectionsEvent::OpenLocal(shell, cwd) => {
                     this.open_local_with(shell.clone(), cwd.clone(), window, cx)
+                }
+                SavedConnectionsEvent::OpenTelnet(config) => {
+                    this.open_telnet(config.clone(), window, cx)
+                }
+                SavedConnectionsEvent::OpenSerial(config) => {
+                    this.open_serial(config.clone(), window, cx)
                 }
             });
 
@@ -218,6 +226,39 @@ impl Workspace {
             self.add_center(Arc::new(panel), window, cx);
             self.show_sftp(config, window, cx);
         }
+    }
+
+    /// Open a raw Telnet terminal as a new central tab. No shared-connection
+    /// cache (unlike SSH): telnet has no SFTP-style second channel to
+    /// justify one, so each tab dials its own socket, same as a local shell.
+    pub fn open_telnet(&mut self, config: TelnetConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let terminal = cx.new(|cx| TerminalView::new_telnet(window, cx, config));
+        let handle = terminal.read(cx).focus_handle(cx);
+        let term_weak = terminal.downgrade();
+        let sub = cx.on_focus(&handle, window, move |this, window, cx| {
+            this.set_active_title_from(&term_weak, cx);
+            this.show_sftp_placeholder(window, cx);
+        });
+        self._subscriptions.push(sub);
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        self.add_center(Arc::new(panel), window, cx);
+        self.show_sftp_placeholder(window, cx);
+    }
+
+    /// Open a serial-port terminal as a new central tab. Same
+    /// no-shared-cache rationale as `open_telnet`.
+    pub fn open_serial(&mut self, config: SerialConfig, window: &mut Window, cx: &mut Context<Self>) {
+        let terminal = cx.new(|cx| TerminalView::new_serial(window, cx, config));
+        let handle = terminal.read(cx).focus_handle(cx);
+        let term_weak = terminal.downgrade();
+        let sub = cx.on_focus(&handle, window, move |this, window, cx| {
+            this.set_active_title_from(&term_weak, cx);
+            this.show_sftp_placeholder(window, cx);
+        });
+        self._subscriptions.push(sub);
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        self.add_center(Arc::new(panel), window, cx);
+        self.show_sftp_placeholder(window, cx);
     }
 
     /// Update the header's active title from a (possibly-dropped) terminal.

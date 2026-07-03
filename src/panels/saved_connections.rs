@@ -34,9 +34,9 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    Action, App, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
+    Action, App, AppContext, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
@@ -48,7 +48,9 @@ use serde::Deserialize;
 use crate::panels::icons::{AppIcon, icon};
 
 use crate::config::{self, AppConfig, ConnectionType, SavedConnection, SavedConnectionGroup};
+use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::SshConfig;
+use crate::terminal::telnet::TelnetConfig;
 
 /// Actions dispatched from the connection/folder right-click context menus
 /// (`ContextMenuExt::context_menu`, `gpui_component::menu`). Each carries the
@@ -152,6 +154,25 @@ pub enum SavedConnectionsEvent {
     OpenSftp(SshConfig),
     /// Open a local terminal.
     OpenLocal(String, String),
+    /// Open a raw Telnet terminal.
+    OpenTelnet(TelnetConfig),
+    /// Open a serial-port terminal.
+    OpenSerial(SerialConfig),
+}
+
+/// Build the event that opens `conn`, dispatching on its connection type.
+/// Shared by the row's double-click handler and the context menu's "打开"
+/// action so the two call sites can't drift.
+fn open_event(conn: &SavedConnection) -> SavedConnectionsEvent {
+    match conn.conn_type {
+        ConnectionType::Ssh => SavedConnectionsEvent::Open(conn.to_ssh_config()),
+        ConnectionType::Local => SavedConnectionsEvent::OpenLocal(
+            conn.shell_path.clone().unwrap_or_default(),
+            conn.working_dir.clone().unwrap_or_default(),
+        ),
+        ConnectionType::Telnet => SavedConnectionsEvent::OpenTelnet(conn.to_telnet_config()),
+        ConnectionType::Serial => SavedConnectionsEvent::OpenSerial(conn.to_serial_config()),
+    }
 }
 
 /// Sort mode for the connection list.
@@ -186,7 +207,7 @@ struct ConnForm {
     name: Entity<InputState>,
     conn_type: ConnectionType,
     group_id: Option<String>,
-    // SSH fields
+    // SSH fields (host/port doubly used by Telnet, minus user/password)
     host: Entity<InputState>,
     port: Entity<InputState>,
     user: Entity<InputState>,
@@ -194,6 +215,16 @@ struct ConnForm {
     // Local fields
     shell_path: Entity<InputState>,
     working_dir: Entity<InputState>,
+    // Serial fields
+    serial_port: Entity<InputState>,
+    baud_rate: Entity<InputState>,
+    data_bits: u8,
+    parity: String,
+    stop_bits: u8,
+    flow_control: String,
+    /// Populated by the "刷新" button (`serial::list_ports()`); empty until
+    /// pressed.
+    detected_ports: Vec<String>,
     /// `Some(ix)` when this form is editing an existing connection in place
     /// (opened via the Edit hover icon or context-menu item); `None` when
     /// adding a brand new connection.
@@ -311,6 +342,16 @@ impl SavedConnectionsPanel {
                 .placeholder("工作目录(默认 $HOME)")
                 .submit_on_enter(true)
         });
+        let serial_port = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("/dev/ttyUSB0")
+                .submit_on_enter(true)
+        });
+        let baud_rate = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("115200")
+                .submit_on_enter(true)
+        });
 
         let _enter_subs = vec![
             self.watch_enter_to_submit(&name, window, cx),
@@ -320,6 +361,8 @@ impl SavedConnectionsPanel {
             self.watch_enter_to_submit(&password, window, cx),
             self.watch_enter_to_submit(&shell_path, window, cx),
             self.watch_enter_to_submit(&working_dir, window, cx),
+            self.watch_enter_to_submit(&serial_port, window, cx),
+            self.watch_enter_to_submit(&baud_rate, window, cx),
         ];
 
         self.form = Some(ConnForm {
@@ -332,6 +375,13 @@ impl SavedConnectionsPanel {
             password,
             shell_path,
             working_dir,
+            serial_port,
+            baud_rate,
+            data_bits: 8,
+            parity: "none".to_string(),
+            stop_bits: 1,
+            flow_control: "none".to_string(),
+            detected_ports: Vec::new(),
             edit_ix: None,
             _enter_subs,
         });
@@ -384,6 +434,25 @@ impl SavedConnectionsPanel {
                 .default_value(conn.working_dir.as_deref().unwrap_or(""))
                 .submit_on_enter(true)
         });
+        let serial_port = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("/dev/ttyUSB0")
+                .default_value(conn.serial_port.as_deref().unwrap_or(""))
+                .submit_on_enter(true)
+        });
+        let baud_rate = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("115200")
+                .default_value(conn.baud_rate.unwrap_or(115_200).to_string())
+                .submit_on_enter(true)
+        });
+        let data_bits = conn.data_bits.unwrap_or(8);
+        let parity = conn.parity.clone().unwrap_or_else(|| "none".to_string());
+        let stop_bits = conn.stop_bits.unwrap_or(1);
+        let flow_control = conn
+            .flow_control
+            .clone()
+            .unwrap_or_else(|| "none".to_string());
 
         let _enter_subs = vec![
             self.watch_enter_to_submit(&name, window, cx),
@@ -393,6 +462,8 @@ impl SavedConnectionsPanel {
             self.watch_enter_to_submit(&password, window, cx),
             self.watch_enter_to_submit(&shell_path, window, cx),
             self.watch_enter_to_submit(&working_dir, window, cx),
+            self.watch_enter_to_submit(&serial_port, window, cx),
+            self.watch_enter_to_submit(&baud_rate, window, cx),
         ];
 
         self.form = Some(ConnForm {
@@ -405,6 +476,13 @@ impl SavedConnectionsPanel {
             password,
             shell_path,
             working_dir,
+            serial_port,
+            baud_rate,
+            data_bits,
+            parity,
+            stop_bits,
+            flow_control,
+            detected_ports: Vec::new(),
             edit_ix: Some(ix),
             _enter_subs,
         });
@@ -521,6 +599,12 @@ impl SavedConnectionsPanel {
                     icon: None,
                     shell_path: None,
                     working_dir: None,
+                    serial_port: None,
+                    baud_rate: None,
+                    data_bits: None,
+                    parity: None,
+                    stop_bits: None,
+                    flow_control: None,
                     description: None,
                 }
             }
@@ -538,6 +622,64 @@ impl SavedConnectionsPanel {
                     icon: None,
                     shell_path: if shell_path.is_empty() { None } else { Some(shell_path) },
                     working_dir: if working_dir.is_empty() { None } else { Some(working_dir) },
+                    serial_port: None,
+                    baud_rate: None,
+                    data_bits: None,
+                    parity: None,
+                    stop_bits: None,
+                    flow_control: None,
+                    description: None,
+                }
+            }
+            ConnectionType::Telnet => {
+                let host = form.host.read(cx).value().trim().to_string();
+                if host.is_empty() {
+                    return;
+                }
+                SavedConnection {
+                    name,
+                    host,
+                    port: form.port.read(cx).value().trim().parse().unwrap_or(23),
+                    user: String::new(),
+                    password: String::new(),
+                    group_id,
+                    conn_type,
+                    icon: None,
+                    shell_path: None,
+                    working_dir: None,
+                    serial_port: None,
+                    baud_rate: None,
+                    data_bits: None,
+                    parity: None,
+                    stop_bits: None,
+                    flow_control: None,
+                    description: None,
+                }
+            }
+            ConnectionType::Serial => {
+                let serial_port = form.serial_port.read(cx).value().trim().to_string();
+                if serial_port.is_empty() {
+                    return;
+                }
+                SavedConnection {
+                    name,
+                    host: String::new(),
+                    port: 0,
+                    user: String::new(),
+                    password: String::new(),
+                    group_id,
+                    conn_type,
+                    icon: None,
+                    shell_path: None,
+                    working_dir: None,
+                    serial_port: Some(serial_port),
+                    baud_rate: Some(
+                        form.baud_rate.read(cx).value().trim().parse().unwrap_or(115_200),
+                    ),
+                    data_bits: Some(form.data_bits),
+                    parity: Some(form.parity.clone()),
+                    stop_bits: Some(form.stop_bits),
+                    flow_control: Some(form.flow_control.clone()),
                     description: None,
                 }
             }
@@ -683,13 +825,7 @@ impl SavedConnectionsPanel {
         let Some(conn) = self.connections.get(action.ix) else {
             return;
         };
-        match conn.conn_type {
-            ConnectionType::Ssh => cx.emit(SavedConnectionsEvent::Open(conn.to_ssh_config())),
-            ConnectionType::Local => cx.emit(SavedConnectionsEvent::OpenLocal(
-                conn.shell_path.clone().unwrap_or_default(),
-                conn.working_dir.clone().unwrap_or_default(),
-            )),
-        }
+        cx.emit(open_event(conn));
     }
 
     fn on_action_edit_connection(
@@ -884,13 +1020,282 @@ impl SavedConnectionsPanel {
             .flex()
             .flex_col()
             .gap_0p5()
+            .child(self.field_label(label, cx))
+            .child(Input::new(state))
+    }
+
+    /// Label caption shown above both text-input fields (`field`) and
+    /// pill-group fields (`data_bits_field`/`parity_field`/etc.).
+    fn field_label(&self, label: &str, cx: &App) -> Div {
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(SharedString::from(label.to_string()))
+    }
+
+    /// One toggle pill's visual styling — shared by the connection-type
+    /// selector and the serial data-bits/parity/stop-bits/flow-control
+    /// fields. Callers attach their own `.on_click(...)`.
+    fn pill(id: &'static str, label: &str, active: bool, cx: &App) -> Stateful<Div> {
+        div()
+            .id(id)
+            .px_2()
+            .py_0p5()
+            .rounded_sm()
+            .bg(if active { cx.theme().primary } else { cx.theme().accent })
+            .text_color(if active {
+                cx.theme().primary_foreground
+            } else {
+                cx.theme().foreground
+            })
+            .child(label.to_string())
+    }
+
+    /// The serial-only device-path field: a free-text input (so headless /
+    /// manual entry always works) plus a "刷新" button that lists detected
+    /// ports via `serial::list_ports()`.
+    fn serial_port_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
+        let target = form.serial_port.clone();
+        let mut col = div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(self.field_label("串口设备", cx))
             .child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(label.to_string())),
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().child(Input::new(&form.serial_port)))
+                    .child(
+                        div()
+                            .id("serial-refresh")
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .hover(|s| s.bg(cx.theme().accent))
+                            .child("刷新")
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                let ports = crate::terminal::serial::list_ports();
+                                if let Some(ref mut f) = this.form {
+                                    f.detected_ports = ports;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+        if !form.detected_ports.is_empty() {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .children(form.detected_ports.iter().enumerate().map(|(i, path)| {
+                        let path = path.clone();
+                        let target = target.clone();
+                        div()
+                            .id(("detected-port", i))
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .hover(|s| s.bg(cx.theme().accent))
+                            .child(path.clone())
+                            .on_click(cx.listener(move |_this, _ev: &ClickEvent, window, cx| {
+                                target.update(cx, |s, cx| {
+                                    s.set_value(path.clone(), window, cx);
+                                });
+                            }))
+                    })),
+            );
+        }
+        col
+    }
+
+    fn data_bits_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(self.field_label("数据位", cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Self::pill("data-bits-5", "5", form.data_bits == 5, cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.data_bits = 5;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill("data-bits-6", "6", form.data_bits == 6, cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.data_bits = 6;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill("data-bits-7", "7", form.data_bits == 7, cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.data_bits = 7;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill("data-bits-8", "8", form.data_bits == 8, cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.data_bits = 8;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    ),
             )
-            .child(Input::new(state))
+    }
+
+    fn parity_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(self.field_label("校验位", cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Self::pill("parity-none", "无", form.parity == "none", cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.parity = "none".to_string();
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill("parity-odd", "奇校验", form.parity == "odd", cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.parity = "odd".to_string();
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill("parity-even", "偶校验", form.parity == "even", cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.parity = "even".to_string();
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            )
+    }
+
+    fn stop_bits_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(self.field_label("停止位", cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Self::pill("stop-bits-1", "1", form.stop_bits == 1, cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.stop_bits = 1;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill("stop-bits-2", "2", form.stop_bits == 2, cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.stop_bits = 2;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            )
+    }
+
+    fn flow_control_field(&self, form: &ConnForm, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(self.field_label("流控", cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Self::pill("flow-none", "无", form.flow_control == "none", cx).on_click(
+                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.flow_control = "none".to_string();
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        Self::pill(
+                            "flow-software",
+                            "软件(XON/XOFF)",
+                            form.flow_control == "software",
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            if let Some(ref mut f) = this.form {
+                                f.flow_control = "software".to_string();
+                            }
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        Self::pill(
+                            "flow-hardware",
+                            "硬件(RTS/CTS)",
+                            form.flow_control == "hardware",
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            if let Some(ref mut f) = this.form {
+                                f.flow_control = "hardware".to_string();
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            )
     }
 }
 
@@ -1265,9 +1670,11 @@ impl SavedConnectionsPanel {
                     })),
             );
 
-        // The clickable part (opens the connection)
-        let clickable = if conn.conn_type == ConnectionType::Ssh {
-            let spec = conn.to_ssh_config();
+        // The clickable part (opens the connection). One block for all four
+        // connection types now — `open_event` dispatches on `conn_type`, so
+        // this doesn't need per-type branching the way it used to.
+        let clickable = {
+            let conn_for_click = conn.clone();
             div()
                 .id(("conn", ix))
                 .flex()
@@ -1295,40 +1702,7 @@ impl SavedConnectionsPanel {
                 )
                 .on_click(cx.listener(move |_this, ev: &ClickEvent, _w, cx| {
                     if ev.click_count() >= 2 {
-                        cx.emit(SavedConnectionsEvent::Open(spec.clone()));
-                    }
-                }))
-        } else {
-            let shell = conn.shell_path.clone().unwrap_or_default();
-            let cwd = conn.working_dir.clone().unwrap_or_default();
-            div()
-                .id(("conn", ix))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .flex_1()
-                .child(icon(conn_icon).text_color(cx.theme().foreground))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .child(name),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(subtitle),
-                        ),
-                )
-                .on_click(cx.listener(move |_this, ev: &ClickEvent, _w, cx| {
-                    if ev.click_count() >= 2 {
-                        cx.emit(SavedConnectionsEvent::OpenLocal(shell.clone(), cwd.clone()));
+                        cx.emit(open_event(&conn_for_click));
                     }
                 }))
         };
@@ -1363,6 +1737,7 @@ impl SavedConnectionsPanel {
     /// Render the inline add-connection form.
     fn render_form(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let form = self.form.as_ref()?;
+        let conn_type = form.conn_type.clone();
         Some(
             div()
                 .flex()
@@ -1377,58 +1752,70 @@ impl SavedConnectionsPanel {
                     div()
                         .flex()
                         .flex_row()
+                        .flex_wrap()
                         .gap_2()
                         .child(
-                            div()
-                                .id("type-ssh")
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .bg(if form.conn_type == ConnectionType::Ssh {
-                                    cx.theme().primary
-                                } else {
-                                    cx.theme().accent
-                                })
-                                .text_color(if form.conn_type == ConnectionType::Ssh {
-                                    cx.theme().primary_foreground
-                                } else {
-                                    cx.theme().foreground
-                                })
-                                .child("SSH")
-                                .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            Self::pill("type-ssh", "SSH", conn_type == ConnectionType::Ssh, cx)
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                     if let Some(ref mut f) = this.form {
                                         f.conn_type = ConnectionType::Ssh;
+                                        let port = f.port.clone();
+                                        port.update(cx, |s, cx| {
+                                            s.set_placeholder("端口 (默认 22)", window, cx);
+                                        });
                                     }
                                     cx.notify();
                                 })),
                         )
                         .child(
-                            div()
-                                .id("type-local")
-                                .px_2()
-                                .py_0p5()
-                                .rounded_sm()
-                                .bg(if form.conn_type == ConnectionType::Local {
-                                    cx.theme().primary
-                                } else {
-                                    cx.theme().accent
-                                })
-                                .text_color(if form.conn_type == ConnectionType::Local {
-                                    cx.theme().primary_foreground
-                                } else {
-                                    cx.theme().foreground
-                                })
-                                .child("本地终端")
-                                .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                    if let Some(ref mut f) = this.form {
-                                        f.conn_type = ConnectionType::Local;
-                                    }
-                                    cx.notify();
-                                })),
+                            Self::pill(
+                                "type-local",
+                                "本地终端",
+                                conn_type == ConnectionType::Local,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.conn_type = ConnectionType::Local;
+                                }
+                                cx.notify();
+                            })),
+                        )
+                        .child(
+                            Self::pill(
+                                "type-telnet",
+                                "Telnet",
+                                conn_type == ConnectionType::Telnet,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.conn_type = ConnectionType::Telnet;
+                                    let port = f.port.clone();
+                                    port.update(cx, |s, cx| {
+                                        s.set_placeholder("端口 (默认 23)", window, cx);
+                                    });
+                                }
+                                cx.notify();
+                            })),
+                        )
+                        .child(
+                            Self::pill(
+                                "type-serial",
+                                "串口",
+                                conn_type == ConnectionType::Serial,
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                if let Some(ref mut f) = this.form {
+                                    f.conn_type = ConnectionType::Serial;
+                                }
+                                cx.notify();
+                            })),
                         ),
                 )
                 .child(self.field("名称", &form.name, cx))
-                .children(match form.conn_type {
+                .children(match conn_type {
                     ConnectionType::Ssh => vec![
                         self.field("主机", &form.host, cx).into_any_element(),
                         self.field("端口", &form.port, cx).into_any_element(),
@@ -1438,6 +1825,18 @@ impl SavedConnectionsPanel {
                     ConnectionType::Local => vec![
                         self.field("Shell 路径", &form.shell_path, cx).into_any_element(),
                         self.field("工作目录", &form.working_dir, cx).into_any_element(),
+                    ],
+                    ConnectionType::Telnet => vec![
+                        self.field("主机", &form.host, cx).into_any_element(),
+                        self.field("端口", &form.port, cx).into_any_element(),
+                    ],
+                    ConnectionType::Serial => vec![
+                        self.serial_port_field(form, cx).into_any_element(),
+                        self.field("波特率", &form.baud_rate, cx).into_any_element(),
+                        self.data_bits_field(form, cx).into_any_element(),
+                        self.parity_field(form, cx).into_any_element(),
+                        self.stop_bits_field(form, cx).into_any_element(),
+                        self.flow_control_field(form, cx).into_any_element(),
                     ],
                 })
                 .child(

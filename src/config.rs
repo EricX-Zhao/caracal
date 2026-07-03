@@ -1,4 +1,4 @@
-//! Persisted app config: the list of saved SSH connections shown in the
+//! Persisted app config: the list of saved connections shown in the
 //! right-dock "已保存的连接" panel. Plain Rust — **no `gpui_component`** here
 //! (CLAUDE.md §1 boundary); the panel calls [`load`]/[`save`].
 //!
@@ -14,14 +14,18 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::panels::icons::AppIcon;
+use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::SshConfig;
+use crate::terminal::telnet::TelnetConfig;
 
-/// Connection type: SSH or local terminal.
+/// Connection type: SSH, local terminal, Telnet, or serial port.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionType {
     Ssh,
     Local,
+    Telnet,
+    Serial,
 }
 
 impl Default for ConnectionType {
@@ -60,7 +64,7 @@ pub struct SavedConnection {
     /// Group this connection belongs to. `None` means ungrouped (root level).
     #[serde(default)]
     pub group_id: Option<String>,
-    /// Connection type (SSH or local terminal).
+    /// Connection type (SSH, local terminal, Telnet, or serial port).
     #[serde(default)]
     pub conn_type: ConnectionType,
     /// User-selected icon name. `None` means auto-resolve from `conn_type`.
@@ -72,6 +76,24 @@ pub struct SavedConnection {
     /// Working directory for local terminal connections.
     #[serde(default)]
     pub working_dir: Option<String>,
+    /// Device path, e.g. "/dev/ttyUSB0" or "COM3". Serial only.
+    #[serde(default)]
+    pub serial_port: Option<String>,
+    /// Serial only. Defaults to 115200 if unset.
+    #[serde(default)]
+    pub baud_rate: Option<u32>,
+    /// Serial only: 5/6/7/8. Defaults to 8 if unset.
+    #[serde(default)]
+    pub data_bits: Option<u8>,
+    /// Serial only: "none" | "odd" | "even". Defaults to "none" if unset.
+    #[serde(default)]
+    pub parity: Option<String>,
+    /// Serial only: 1 | 2. Defaults to 1 if unset.
+    #[serde(default)]
+    pub stop_bits: Option<u8>,
+    /// Serial only: "none" | "software" | "hardware". Defaults to "none" if unset.
+    #[serde(default)]
+    pub flow_control: Option<String>,
     /// Optional description shown in tooltip.
     #[serde(default)]
     pub description: Option<String>,
@@ -92,6 +114,31 @@ impl SavedConnection {
         }
     }
 
+    /// Telnet connection parameters. No credentials: telnet login happens
+    /// interactively in the terminal, same as typing at a raw `telnet` prompt.
+    pub fn to_telnet_config(&self) -> TelnetConfig {
+        TelnetConfig {
+            host: self.host.clone(),
+            port: self.port,
+        }
+    }
+
+    /// Serial port parameters, applying the documented defaults (115200 8N1,
+    /// no flow control) for any field that was never set.
+    pub fn to_serial_config(&self) -> SerialConfig {
+        SerialConfig {
+            port: self.serial_port.clone().unwrap_or_default(),
+            baud_rate: self.baud_rate.unwrap_or(115_200),
+            data_bits: self.data_bits.unwrap_or(8),
+            parity: self.parity.clone().unwrap_or_else(|| "none".to_string()),
+            stop_bits: self.stop_bits.unwrap_or(1),
+            flow_control: self
+                .flow_control
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+        }
+    }
+
     /// What to show as the row's primary label.
     pub fn display_name(&self) -> String {
         if self.name.trim().is_empty() {
@@ -102,6 +149,14 @@ impl SavedConnection {
                         shell.split('/').last().unwrap_or(shell).to_string()
                     } else {
                         "local".to_string()
+                    }
+                }
+                ConnectionType::Telnet => format!("{}:{}", self.host, self.port),
+                ConnectionType::Serial => {
+                    if let Some(ref port) = self.serial_port {
+                        port.split('/').last().unwrap_or(port).to_string()
+                    } else {
+                        "serial".to_string()
                     }
                 }
             }
@@ -123,6 +178,12 @@ impl SavedConnection {
                     "local terminal".to_string()
                 }
             }
+            ConnectionType::Telnet => format!("{}:{}", self.host, self.port),
+            ConnectionType::Serial => {
+                let port = self.serial_port.as_deref().unwrap_or("?");
+                let baud = self.baud_rate.unwrap_or(115_200);
+                format!("{port} @ {baud}bps")
+            }
         }
     }
 
@@ -135,6 +196,8 @@ impl SavedConnection {
                 "laptop" | "code" => return AppIcon::LocalTerminal,
                 "server" | "harddrive" => return AppIcon::SavedConnections,
                 "network" => return AppIcon::Network,
+                "telnet" => return AppIcon::Telnet,
+                "serial" | "cpu" => return AppIcon::SerialPort,
                 _ => {}
             }
         }
@@ -142,6 +205,8 @@ impl SavedConnection {
         match self.conn_type {
             ConnectionType::Ssh => AppIcon::Terminal,
             ConnectionType::Local => AppIcon::LocalTerminal,
+            ConnectionType::Telnet => AppIcon::Telnet,
+            ConnectionType::Serial => AppIcon::SerialPort,
         }
     }
 
@@ -162,6 +227,19 @@ impl SavedConnection {
                 if let Some(ref wd) = self.working_dir {
                     lines.push(("Working Dir".to_string(), wd.clone()));
                 }
+            }
+            ConnectionType::Telnet => {
+                lines.push(("Host".to_string(), self.host.clone()));
+                lines.push(("Port".to_string(), self.port.to_string()));
+            }
+            ConnectionType::Serial => {
+                if let Some(ref port) = self.serial_port {
+                    lines.push(("Port".to_string(), port.clone()));
+                }
+                lines.push((
+                    "Baud".to_string(),
+                    self.baud_rate.unwrap_or(115_200).to_string(),
+                ));
             }
         }
         if let Some(ref desc) = self.description {
@@ -219,4 +297,126 @@ pub fn save(cfg: &AppConfig) -> anyhow::Result<()> {
     let text = toml::to_string_pretty(cfg)?;
     std::fs::write(&path, text)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_connection(conn_type: ConnectionType) -> SavedConnection {
+        SavedConnection {
+            name: String::new(),
+            host: "example.com".to_string(),
+            port: 23,
+            user: String::new(),
+            password: String::new(),
+            group_id: None,
+            conn_type,
+            icon: None,
+            shell_path: None,
+            working_dir: None,
+            serial_port: None,
+            baud_rate: None,
+            data_bits: None,
+            parity: None,
+            stop_bits: None,
+            flow_control: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn telnet_display_name_and_subtitle_are_host_port() {
+        let conn = base_connection(ConnectionType::Telnet);
+        assert_eq!(conn.display_name(), "example.com:23");
+        assert_eq!(conn.subtitle(), "example.com:23");
+    }
+
+    #[test]
+    fn telnet_to_telnet_config_carries_host_and_port_only() {
+        let conn = base_connection(ConnectionType::Telnet);
+        let cfg = conn.to_telnet_config();
+        assert_eq!(cfg.host, "example.com");
+        assert_eq!(cfg.port, 23);
+    }
+
+    #[test]
+    fn serial_display_name_uses_last_path_component() {
+        let mut conn = base_connection(ConnectionType::Serial);
+        conn.serial_port = Some("/dev/ttyUSB0".to_string());
+        assert_eq!(conn.display_name(), "ttyUSB0");
+    }
+
+    #[test]
+    fn serial_display_name_falls_back_when_port_unset() {
+        let conn = base_connection(ConnectionType::Serial);
+        assert_eq!(conn.display_name(), "serial");
+    }
+
+    #[test]
+    fn serial_subtitle_shows_port_and_baud() {
+        let mut conn = base_connection(ConnectionType::Serial);
+        conn.serial_port = Some("/dev/ttyUSB0".to_string());
+        conn.baud_rate = Some(9600);
+        assert_eq!(conn.subtitle(), "/dev/ttyUSB0 @ 9600bps");
+    }
+
+    #[test]
+    fn to_serial_config_applies_documented_defaults() {
+        let mut conn = base_connection(ConnectionType::Serial);
+        conn.serial_port = Some("/dev/ttyUSB0".to_string());
+        let cfg = conn.to_serial_config();
+        assert_eq!(cfg.port, "/dev/ttyUSB0");
+        assert_eq!(cfg.baud_rate, 115_200);
+        assert_eq!(cfg.data_bits, 8);
+        assert_eq!(cfg.parity, "none");
+        assert_eq!(cfg.stop_bits, 1);
+        assert_eq!(cfg.flow_control, "none");
+    }
+
+    #[test]
+    fn to_serial_config_honors_explicit_values() {
+        let mut conn = base_connection(ConnectionType::Serial);
+        conn.serial_port = Some("/dev/ttyUSB0".to_string());
+        conn.baud_rate = Some(9600);
+        conn.data_bits = Some(7);
+        conn.parity = Some("even".to_string());
+        conn.stop_bits = Some(2);
+        conn.flow_control = Some("hardware".to_string());
+        let cfg = conn.to_serial_config();
+        assert_eq!(cfg.baud_rate, 9600);
+        assert_eq!(cfg.data_bits, 7);
+        assert_eq!(cfg.parity, "even");
+        assert_eq!(cfg.stop_bits, 2);
+        assert_eq!(cfg.flow_control, "hardware");
+    }
+
+    #[test]
+    fn resolve_icon_auto_resolves_new_connection_types() {
+        assert_eq!(
+            base_connection(ConnectionType::Telnet).resolve_icon(),
+            AppIcon::Telnet
+        );
+        assert_eq!(
+            base_connection(ConnectionType::Serial).resolve_icon(),
+            AppIcon::SerialPort
+        );
+    }
+
+    #[test]
+    fn old_config_without_new_fields_still_deserializes() {
+        // Simulates a `connections.toml` written before this change: no
+        // serial_port/baud_rate/etc keys at all.
+        let toml_text = r#"
+            [[connections]]
+            host = "old.example.com"
+            user = "root"
+            conn_type = "ssh"
+        "#;
+        let cfg: AppConfig =
+            toml::from_str(toml_text).expect("old-format config must still parse");
+        assert_eq!(cfg.connections.len(), 1);
+        assert_eq!(cfg.connections[0].serial_port, None);
+        assert_eq!(cfg.connections[0].baud_rate, None);
+    }
 }
