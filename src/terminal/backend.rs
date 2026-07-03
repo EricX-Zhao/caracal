@@ -51,6 +51,20 @@ impl LocalPty {
     /// Spawn the user's default shell in a fresh PTY. Bytes read from the PTY are
     /// pushed into `bytes_tx`.
     pub fn spawn(cols: u16, rows: u16, bytes_tx: flume::Sender<Vec<u8>>) -> Result<Self> {
+        let (shell, home_var) = default_shell_and_home();
+        let home = std::env::var(home_var).ok();
+        Self::spawn_with(cols, rows, bytes_tx, &shell, home.as_deref())
+    }
+
+    /// Spawn a specific shell with an optional working directory in a fresh PTY.
+    /// Bytes read from the PTY are pushed into `bytes_tx`.
+    pub fn spawn_with(
+        cols: u16,
+        rows: u16,
+        bytes_tx: flume::Sender<Vec<u8>>,
+        shell: &str,
+        working_dir: Option<&str>,
+    ) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -59,10 +73,11 @@ impl LocalPty {
             pixel_height: 0,
         })?;
 
-        let (shell, home_var) = default_shell_and_home();
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
-        if let Ok(home) = std::env::var(home_var) {
+        if let Some(wd) = working_dir {
+            cmd.cwd(wd);
+        } else if let Ok(home) = std::env::var("HOME") {
             cmd.cwd(home);
         }
         let child = pair.slave.spawn_command(cmd)?;

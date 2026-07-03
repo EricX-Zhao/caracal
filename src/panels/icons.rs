@@ -29,6 +29,7 @@ pub fn icon(a: AppIcon) -> Icon {
         AppIcon::NewFolder => Icon::empty().path("icons/folder-plus.svg"),
         AppIcon::Refresh => Icon::empty().path("icons/refresh-cw.svg"),
         AppIcon::Delete => Icon::empty().path("icons/trash-2.svg"),
+        AppIcon::Pencil => Icon::empty().path("icons/pencil.svg"),
         // 其余走上游 IconName 映射
         _ => Icon::new(IconName::from(a)),
     }
@@ -66,6 +67,15 @@ pub enum AppIcon {
     Plus,
     Terminal,
     Folder,
+    // NyaTerm-style panel icons
+    LocalTerminal,
+    QuickConnect,
+    MoreVertical,
+    Copy,
+    Pencil,
+    Sort,
+    ChevronRight,
+    ChevronDown,
 }
 
 impl From<AppIcon> for IconName {
@@ -94,8 +104,16 @@ impl From<AppIcon> for IconName {
             Search => IconName::Search,
             Plus => IconName::Plus,
             Terminal => IconName::SquareTerminal,
-            // Upload / Download are handled by custom SVG in `icon()`, not reachable here.
-            Upload | Download => unreachable!(),
+            // NyaTerm-style icons - use available alternatives or custom SVG
+            LocalTerminal => IconName::SquareTerminal,
+            QuickConnect => IconName::Asterisk,
+            MoreVertical => IconName::EllipsisVertical,
+            Copy => IconName::Copy,
+            Sort => IconName::ChevronsUpDown,
+            ChevronRight => IconName::ChevronRight,
+            ChevronDown => IconName::ChevronDown,
+            // Upload / Download / Pencil are handled by custom SVG in `icon()`, not reachable here.
+            Upload | Download | Pencil => unreachable!(),
         }
     }
 }

@@ -82,12 +82,18 @@ impl Workspace {
 
         // The persisted "已保存的连接" list. Clicking a row opens the SSH terminal
         // or its SFTP browser.
-        let saved = cx.new(|cx| SavedConnectionsPanel::new(config::load().connections, cx));
+        let cfg = config::load();
+        let saved = cx.new(|cx| {
+            SavedConnectionsPanel::new(cfg.connections, cfg.groups, window, cx)
+        });
         let saved_sub =
             cx.subscribe_in(&saved, window, |this, _panel, event, window, cx| match event {
                 SavedConnectionsEvent::Open(config) => this.open_ssh(config.clone(), window, cx),
                 SavedConnectionsEvent::OpenSftp(config) => {
                     this.show_sftp(config.clone(), window, cx)
+                }
+                SavedConnectionsEvent::OpenLocal(shell, cwd) => {
+                    this.open_local_with(shell.clone(), cwd.clone(), window, cx)
                 }
             });
 
@@ -150,6 +156,38 @@ impl Workspace {
     /// sense over SSH) and updates the header title.
     pub fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = cx.new(|cx| TerminalView::new(window, cx));
+        let handle = terminal.read(cx).focus_handle(cx);
+        let term_weak = terminal.downgrade();
+        let sub = cx.on_focus(&handle, window, move |this, window, cx| {
+            this.set_active_title_from(&term_weak, cx);
+            this.show_sftp_placeholder(window, cx);
+        });
+        self._subscriptions.push(sub);
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        self.add_center(Arc::new(panel), window, cx);
+        self.show_sftp_placeholder(window, cx);
+    }
+
+    /// Open a local-shell terminal with custom shell and working directory.
+    pub fn open_local_with(
+        &mut self,
+        shell: String,
+        cwd: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let terminal = if shell.is_empty() && cwd.is_empty() {
+            cx.new(|cx| TerminalView::new(window, cx))
+        } else {
+            cx.new(|cx| {
+                TerminalView::new_local_with(
+                    window,
+                    cx,
+                    &shell,
+                    if cwd.is_empty() { None } else { Some(&cwd) },
+                )
+            })
+        };
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
@@ -399,5 +437,6 @@ impl Render for Workspace {
             )
             .child(status_bar)
             .children(gpui_component::Root::render_notification_layer(window, cx))
+            .children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }

@@ -2,3 +2,5 @@ target
 .DS_Store
 .kilo
 .kilo/*
+.vscode
+.claude

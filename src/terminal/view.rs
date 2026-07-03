@@ -148,6 +148,22 @@ impl TerminalView {
         })
     }
 
+    /// A terminal backed by a local shell with custom shell path and working directory.
+    pub fn new_local_with(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        shell: &str,
+        working_dir: Option<&str>,
+    ) -> Self {
+        let shell = shell.to_string();
+        Self::with_backend(window, cx, move |cols, rows, bytes_tx| {
+            Arc::new(
+                LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)
+                    .expect("failed to spawn local pty"),
+            )
+        })
+    }
+
     /// A terminal backed by a shell channel on an already-connected [`SshSession`]
     /// (shared with the SFTP panel — one connection per host, CLAUDE.md §2).
     pub fn new_ssh_shell(
