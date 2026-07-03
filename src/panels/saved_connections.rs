@@ -102,6 +102,16 @@ struct DeleteGroup {
     group_id: String,
 }
 
+/// Blank-area context menu (right-clicking empty space in the panel, not on
+/// any connection/folder row): root-level "新建连接" / "新建文件夹".
+#[derive(Clone, PartialEq, Action, Deserialize)]
+#[action(namespace = saved_connections, no_json)]
+struct NewRootConnection;
+
+#[derive(Clone, PartialEq, Action, Deserialize)]
+#[action(namespace = saved_connections, no_json)]
+struct NewRootFolder;
+
 /// Drag payload for dragging a connection row onto a folder (or onto the
 /// ungrouped-connections area to un-group it). Rendered as a small pill
 /// following the cursor, mirroring gpui-component's own `DragPanel`
@@ -206,6 +216,9 @@ pub struct SavedConnectionsPanel {
     form: Option<ConnForm>,
     folder_form_target: Option<FolderFormTarget>,
     new_folder_name: Entity<InputState>,
+    /// Kept alive so `new_folder_name`'s `InputEvent::PressEnter` subscription
+    /// (submit-on-Enter, see `open_folder_form`) keeps firing.
+    _folder_enter_sub: Option<Subscription>,
 }
 
 impl SavedConnectionsPanel {
@@ -231,6 +244,7 @@ impl SavedConnectionsPanel {
             form: None,
             folder_form_target: None,
             new_folder_name,
+            _folder_enter_sub: None,
         }
     }
 
@@ -434,11 +448,19 @@ impl SavedConnectionsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.new_folder_name = cx.new(|cx| {
+        let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("文件夹名称")
                 .default_value(initial_name)
+                .submit_on_enter(true)
         });
+        input.update(cx, |state, cx| state.focus(window, cx));
+        self._folder_enter_sub = Some(cx.subscribe_in(&input, window, |this, _state, event, _window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.create_folder(cx);
+            }
+        }));
+        self.new_folder_name = input;
         self.folder_form_target = Some(target);
         cx.notify();
     }
@@ -749,6 +771,24 @@ impl SavedConnectionsPanel {
         self.confirm_delete_group(action.group_id.clone(), window, cx);
     }
 
+    fn on_action_new_root_connection(
+        &mut self,
+        _action: &NewRootConnection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_new_connection_form(None, window, cx);
+    }
+
+    fn on_action_new_root_folder(
+        &mut self,
+        _action: &NewRootFolder,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_folder_form(FolderFormTarget::New(None), "", window, cx);
+    }
+
     /// Cycle the sort mode.
     fn cycle_sort(&mut self, cx: &mut Context<Self>) {
         self.sort_mode = self.sort_mode.cycle();
@@ -1042,6 +1082,23 @@ impl SavedConnectionsPanel {
         }
 
         section
+    }
+
+    /// Fills the leftover space below all rendered rows in the scroll body.
+    /// Deliberately a separate trailing sibling (not overlapping any row's
+    /// hitbox) rather than a context menu on the scroll container itself:
+    /// `ContextMenuExt::context_menu`'s right-click handler doesn't stop
+    /// propagation, so stacking one on top of row-level context menus would
+    /// pop both at once. Right-clicking here (truly blank space) offers the
+    /// root-level "新建连接" / "新建文件夹" actions.
+    fn render_blank_area(&self) -> impl IntoElement {
+        div()
+            .flex_1()
+            .min_h(px(40.0))
+            .context_menu(|menu, _window, _cx| {
+                menu.menu("新建连接", Box::new(NewRootConnection))
+                    .menu("新建文件夹", Box::new(NewRootFolder))
+            })
     }
 
     /// Render a group row and its children.
@@ -1498,6 +1555,8 @@ impl Render for SavedConnectionsPanel {
             .on_action(cx.listener(Self::on_action_new_subfolder))
             .on_action(cx.listener(Self::on_action_rename_group))
             .on_action(cx.listener(Self::on_action_delete_group))
+            .on_action(cx.listener(Self::on_action_new_root_connection))
+            .on_action(cx.listener(Self::on_action_new_root_folder))
             .child(self.render_header(cx))
             .child(self.render_toolbar(cx))
             .child(
@@ -1510,6 +1569,7 @@ impl Render for SavedConnectionsPanel {
                     .flex_1()
                     .overflow_y_scrollbar()
                     .child(self.render_tree(cx))
+                    .child(self.render_blank_area())
                     // Fallback ungroup drop target: any drop that isn't
                     // consumed by a more specific folder-header drop target
                     // (see `render_group`) bubbles up to here and ungroups

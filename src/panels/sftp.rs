@@ -822,7 +822,7 @@ impl Render for SftpPlaceholder {
             .size_full()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child("当前终端不是 SSH 会话 — 切换到一个 SSH 终端标签,或在「已保存的连接」中点击文件夹图标")
+            .child("连接会话以浏览文件")
     }
 }
 
