@@ -37,7 +37,7 @@ pub fn icon(a: AppIcon) -> Icon {
 }
 
 /// 活动栏 / 面板里用到的语义图标。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppIcon {
     // 左栏
     FileExplorer,
@@ -77,6 +77,8 @@ pub enum AppIcon {
     Sort,
     ChevronRight,
     ChevronDown,
+    Telnet,
+    SerialPort,
 }
 
 impl From<AppIcon> for IconName {
@@ -112,6 +114,8 @@ impl From<AppIcon> for IconName {
             Sort => IconName::ChevronsUpDown,
             ChevronRight => IconName::ChevronRight,
             ChevronDown => IconName::ChevronDown,
+            Telnet => IconName::Network,
+            SerialPort => IconName::Cpu,
             // Upload / Download / Pencil / SavedConnections are handled by custom SVG in
             // `icon()`, not reachable here.
             Upload | Download | Pencil | SavedConnections => unreachable!(),
