@@ -3,6 +3,7 @@ name = "caracal"
 version = "0.1.0"
 edition = "2024"
 description = "Native GPUI GPU-accelerated terminal / SSH / serial client"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 
