@@ -1,0 +1,103 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            binary_name: caracal
+            asset_name: caracal-linux-x86_64
+          - os: windows-latest
+            binary_name: caracal.exe
+            asset_name: caracal-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # gpui_platform's x11/wayland/font-kit features and the serialport
+      # crate's device-enumeration support need these dev headers/libs at
+      # build time. Derived from Zed's own `script/linux` (gpui/gpui_platform
+      # come from the Zed repo) and trimmed to what this project's actual
+      # feature set uses — Zed's own list also carries audio/webrtc/sqlite/
+      # git2 packages this project doesn't depend on.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            cmake \
+            pkg-config \
+            libfontconfig-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libvulkan1 \
+            libssl-dev \
+            libudev-dev
+
+      # No extra system packages on Windows: serialport uses the native
+      # Win32 API (no libudev equivalent needed), and wgpu's DX12/Vulkan
+      # backends build against what windows-latest already ships.
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*/*
+          draft: false
+          generate_release_notes: true
