@@ -30,6 +30,7 @@ pub fn icon(a: AppIcon) -> Icon {
         AppIcon::Refresh => Icon::empty().path("icons/refresh-cw.svg"),
         AppIcon::Delete => Icon::empty().path("icons/trash-2.svg"),
         AppIcon::Pencil => Icon::empty().path("icons/pencil.svg"),
+        AppIcon::SavedConnections => Icon::empty().path("icons/server.svg"),
         // 其余走上游 IconName 映射
         _ => Icon::new(IconName::from(a)),
     }
@@ -86,7 +87,6 @@ impl From<AppIcon> for IconName {
             Network => IconName::Network,
             SecurityAuth => IconName::CircleUser,
             SyncBackup => IconName::Inbox,
-            SavedConnections => IconName::HardDrive,
             ActiveSessions => IconName::ExternalLink,
             CommandHistory => IconName::Undo2,
             ResourceMonitor => IconName::ChartPie,
@@ -112,8 +112,9 @@ impl From<AppIcon> for IconName {
             Sort => IconName::ChevronsUpDown,
             ChevronRight => IconName::ChevronRight,
             ChevronDown => IconName::ChevronDown,
-            // Upload / Download / Pencil are handled by custom SVG in `icon()`, not reachable here.
-            Upload | Download | Pencil => unreachable!(),
+            // Upload / Download / Pencil / SavedConnections are handled by custom SVG in
+            // `icon()`, not reachable here.
+            Upload | Download | Pencil | SavedConnections => unreachable!(),
         }
     }
 }
