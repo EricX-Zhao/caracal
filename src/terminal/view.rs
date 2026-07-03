@@ -23,7 +23,9 @@ use crate::terminal::model::{SharedTerm, new_term};
 use crate::terminal::render::terminal_canvas;
 use crate::terminal::scrollback;
 use crate::terminal::selection;
+use crate::terminal::serial::{SerialBackend, SerialConfig};
 use crate::terminal::ssh::SshSession;
+use crate::terminal::telnet::{TelnetBackend, TelnetConfig};
 
 const DEFAULT_COLS: usize = 80;
 const DEFAULT_ROWS: usize = 24;
@@ -173,6 +175,22 @@ impl TerminalView {
     ) -> Self {
         Self::with_backend(window, cx, move |cols, rows, bytes_tx| {
             session.open_shell(cols, rows, bytes_tx)
+        })
+    }
+
+    /// A terminal backed by a raw Telnet connection (`TelnetBackend`). Each
+    /// tab dials its own socket — unlike SSH, telnet has no SFTP-style
+    /// second channel to justify a shared connection.
+    pub fn new_telnet(window: &mut Window, cx: &mut Context<Self>, config: TelnetConfig) -> Self {
+        Self::with_backend(window, cx, move |_cols, _rows, bytes_tx| {
+            Arc::new(TelnetBackend::connect(config, bytes_tx).expect("telnet connect failed"))
+        })
+    }
+
+    /// A terminal backed by a serial port (`SerialBackend`).
+    pub fn new_serial(window: &mut Window, cx: &mut Context<Self>, config: SerialConfig) -> Self {
+        Self::with_backend(window, cx, move |_cols, _rows, bytes_tx| {
+            Arc::new(SerialBackend::open(config, bytes_tx).expect("serial open failed"))
         })
     }
 
