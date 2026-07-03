@@ -4,6 +4,8 @@
 //! same one-tab-one-handle shape as `telnet.rs`.
 
 use std::io::{Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -71,6 +73,12 @@ pub fn list_ports() -> Vec<String> {
 #[derive(Debug)]
 pub struct SerialBackend {
     write_tx: flume::Sender<Vec<u8>>,
+    /// Set by `Drop` and polled by the reader thread (which wakes every
+    /// `read()` timeout regardless of whether data arrived) so closing the
+    /// tab actually releases the OS-level device — without this, the reader
+    /// thread loops forever holding its own `try_clone()`'d port handle open,
+    /// even after every other reference to `SerialBackend` is gone.
+    shutdown: Arc<AtomicBool>,
 }
 
 impl SerialBackend {
@@ -96,11 +104,16 @@ impl SerialBackend {
         let mut reader = port
             .try_clone()
             .map_err(|e| anyhow!("clone serial port for reader: {e}"))?;
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader_shutdown = shutdown.clone();
         std::thread::Builder::new()
             .name("caracal-serial-reader".into())
             .spawn(move || {
                 let mut buf = [0u8; 4096];
                 loop {
+                    if reader_shutdown.load(Ordering::Relaxed) {
+                        break;
+                    }
                     match reader.read(&mut buf) {
                         Ok(0) => continue,
                         Ok(n) => {
@@ -127,7 +140,13 @@ impl SerialBackend {
                 }
             })?;
 
-        Ok(Self { write_tx })
+        Ok(Self { write_tx, shutdown })
+    }
+}
+
+impl Drop for SerialBackend {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
     }
 }
 
