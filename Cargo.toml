@@ -16,6 +16,11 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # Terminal model + transport
 alacritty_terminal = "0.26.0"
 portable-pty = "0.9.0"
+# Serial-port I/O for the serial terminal backend. Default features include
+# `libudev` on Linux for `available_ports()` port detection — requires
+# libudev headers at build time (already present on this dev machine; on a
+# fresh Linux box install `libudev-dev` / `systemd-devel`).
+serialport = "4.9"
 
 russh = "0.61"
 
