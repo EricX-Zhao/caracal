@@ -1,6 +1,7 @@
-//! Backend abstraction: every transport (local PTY, SSH, serial) implements the
-//! same `PtyBackend`. `TerminalView` is agnostic to which one it talks to
-//! (CLAUDE.md §2). Phase 1 only implements `LocalPty`.
+//! Backend abstraction: every transport (local PTY, SSH, Telnet, serial)
+//! implements the same `PtyBackend`. `TerminalView` is agnostic to which one
+//! it talks to — see the per-backend modules `ssh.rs`, `telnet.rs`,
+//! `serial.rs`. This file implements `LocalPty`.
 
 use std::io::{Read, Write};
 use std::sync::Mutex;
