@@ -51,6 +51,7 @@ use serde::Deserialize;
 use crate::panels::icons::{AppIcon, icon};
 
 use crate::config::{self, AppConfig, ConnectionType, SavedConnection, SavedConnectionGroup};
+use crate::panels::new_connection_window::NewConnectionWindow;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::SshConfig;
 use crate::terminal::telnet::TelnetConfig;
@@ -252,8 +253,7 @@ pub struct SavedConnectionsPanel {
     _folder_enter_sub: Option<Subscription>,
     /// The open new-connection/edit window, if any — re-triggering any of
     /// the "新建连接"/"编辑" entry points focuses this instead of opening a
-    /// duplicate. Unused until Task 3 adds the method that opens it.
-    #[allow(dead_code)]
+    /// duplicate (see `open_new_connection_window`).
     new_connection_window: Option<WindowHandle<Root>>,
 }
 
@@ -725,6 +725,48 @@ impl SavedConnectionsPanel {
         }
         self.persist();
         cx.notify();
+    }
+
+    /// Open the new-connection/edit window, or focus it if one is already
+    /// open. `edit_ix` pre-fills the form from `self.connections[edit_ix]`
+    /// for editing; `None` opens a blank form, optionally preset to
+    /// `group_id` (used by the folder context menu's "新建连接").
+    pub(crate) fn open_new_connection_window(
+        &mut self,
+        group_id: Option<String>,
+        edit_ix: Option<usize>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(handle) = &self.new_connection_window {
+            if handle
+                .update(cx, |_root, window, _cx| window.activate_window())
+                .is_ok()
+            {
+                return;
+            }
+        }
+
+        let existing = edit_ix.and_then(|ix| self.connections.get(ix).map(|c| (ix, c.clone())));
+        let panel = cx.entity().downgrade();
+        let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(560.0)), cx);
+        let result = cx.open_window(
+            gpui::WindowOptions {
+                window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                focus: true,
+                ..Default::default()
+            },
+            move |window, cx| {
+                let new_window = cx.new(|cx| {
+                    NewConnectionWindow::new(panel.clone(), existing, group_id.clone(), window, cx)
+                });
+                cx.new(|cx| Root::new(new_window, window, cx).bg(cx.theme().background))
+            },
+        );
+        match result {
+            Ok(handle) => self.new_connection_window = Some(handle),
+            Err(e) => log::error!("failed to open new-connection window: {e}"),
+        }
     }
 
     /// Delete a connection by index.
