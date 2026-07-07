@@ -97,6 +97,12 @@ pub struct Workspace {
 
     /// Focused terminal's title, shown centered in the header.
     active_title: SharedString,
+    /// Forwards the currently-focused terminal's `cx.notify()` into a
+    /// `Workspace`-level `cx.notify()`, so the status bar's cursor-position
+    /// readout repaints on new terminal output/cursor movement, not just on
+    /// focus changes. Replaced (dropping the old subscription) every time
+    /// `set_active_title_from` runs, so only the current focus is observed.
+    _focused_terminal_observation: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -154,6 +160,7 @@ impl Workspace {
             terminal_views: Vec::new(),
             settings_window: None,
             focused_terminal: None,
+            _focused_terminal_observation: None,
             show_quick_commands: false,
             quick_commands_panel,
             saved_panel: saved.into(),
@@ -383,11 +390,19 @@ impl Workspace {
 
     /// Update the header's active title and the focused-terminal pointer
     /// (used by quick commands and the status bar's cursor-position display)
-    /// from a (possibly-dropped) terminal.
-    fn set_active_title_from(&mut self, term: &WeakEntity<TerminalView>, cx: &App) {
+    /// from a (possibly-dropped) terminal. Also (re)subscribes to the
+    /// terminal's own repaint notifications so the status bar's
+    /// cursor-position readout stays live instead of freezing at whatever it
+    /// was when focus last changed — see `_focused_terminal_observation`'s
+    /// doc comment.
+    fn set_active_title_from(&mut self, term: &WeakEntity<TerminalView>, cx: &mut Context<Self>) {
         self.focused_terminal = Some(term.clone());
         if let Some(t) = term.upgrade() {
             self.active_title = t.read(cx).title().to_string().into();
+            self._focused_terminal_observation =
+                Some(cx.observe(&t, |_this, _terminal, cx| {
+                    cx.notify();
+                }));
         }
     }
 

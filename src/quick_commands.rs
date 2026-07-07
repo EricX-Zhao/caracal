@@ -4,6 +4,12 @@
 //!
 //! Stored at `$XDG_CONFIG_HOME/caracal/quick_commands.toml` (else
 //! `~/.config/caracal/quick_commands.toml`).
+//!
+//! ⚠️ SECURITY: `command` is persisted in **plaintext**, same caveat as
+//! `config.rs`'s `SavedConnection::password` — a user-saved command that
+//! embeds a token/password (e.g. a `curl -H "Authorization: Bearer …"`) is
+//! stored unencrypted on disk. A later phase should move secrets to the OS
+//! keyring, same as the connections-password TODO.
 
 use std::path::PathBuf;
 

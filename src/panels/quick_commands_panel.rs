@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, InteractiveElement, IntoElement,
     ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
-    WeakEntity, Window, div, px,
+    WeakEntity, Window, div, prelude::FluentBuilder, px, red,
 };
 use gpui_component::input::{Input, InputState};
 use gpui_component::ActiveTheme;
@@ -32,6 +32,7 @@ pub struct QuickCommandsPanel {
     workspace: WeakEntity<Workspace>,
     commands: Vec<QuickCommand>,
     form: Option<QuickCommandForm>,
+    form_error: Option<SharedString>,
 }
 
 impl QuickCommandsPanel {
@@ -45,6 +46,7 @@ impl QuickCommandsPanel {
             workspace,
             commands: quick_commands::load(),
             form: None,
+            form_error: None,
         }
     }
 
@@ -73,6 +75,7 @@ impl QuickCommandsPanel {
                 edit_id: None,
             });
         }
+        self.form_error = None;
         cx.notify();
     }
 
@@ -86,6 +89,7 @@ impl QuickCommandsPanel {
             execution_mode: cmd.execution_mode,
             edit_id: Some(id),
         });
+        self.form_error = None;
         cx.notify();
     }
 
@@ -94,8 +98,11 @@ impl QuickCommandsPanel {
         let label = form.label.read(cx).value().to_string();
         let command = form.command.read(cx).value().to_string();
         if label.trim().is_empty() || command.trim().is_empty() {
+            self.form_error = Some("名称和命令都不能为空".into());
+            cx.notify();
             return;
         }
+        self.form_error = None;
         if let Some(id) = form.edit_id.clone() {
             if let Some(existing) = self.commands.iter_mut().find(|c| c.id == id) {
                 existing.label = label;
@@ -190,6 +197,14 @@ impl QuickCommandsPanel {
                             ),
                         ),
                 )
+                .when_some(self.form_error.clone(), |el, err| {
+                    el.child(
+                        div()
+                            .text_xs()
+                            .text_color(red())
+                            .child(err),
+                    )
+                })
                 .child(
                     div()
                         .flex()
