@@ -22,7 +22,12 @@ this document only fixes scope boundaries and order, not field-level design.
 
 ## Agreed build order
 
-1. **设置页面 (Settings page)** — built first because it's the foundation everything else
+1. **设置页面 (Settings page)** — ✅ Done (2026-07-07, `docs/superpowers/specs/2026-07-07-settings-page-design.md` /
+   `docs/superpowers/plans/2026-07-07-settings-page.md`). Standalone window confirmed
+   feasible (`cx.open_window` works mid-session, not just at startup) and built with a
+   draft/Apply/Confirm/Cancel model, a new `settings.toml`, and a working Appearance tab
+   (font family/size, theme). General/Terminal tabs are placeholders for items 2 and 6
+   below to fill in. Built first because it's the foundation everything else
    needs a place to configure into (font config already has methods with nowhere to live;
    quick commands, resource-monitor poll intervals, and file-browser preferences will all
    want settings entries too). Also the first place to resolve an open technical question:
