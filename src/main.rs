@@ -9,6 +9,7 @@
 mod assets;
 mod config;
 mod panels;
+mod settings;
 mod terminal;
 mod workspace;
 
