@@ -62,9 +62,11 @@ const CJK_FALLBACK: &str = "Sarasa Mono SC";
 /// kept below for the explicit "reset to system font" path).
 const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
 
-/// User-configurable terminal font. Not hardcoded to any specific family — the
-/// primary defaults to the system monospace; a settings UI can later swap it via
-/// [`TerminalView::set_font_family`] / [`set_font_size`] / [`set_font_config`].
+/// User-configurable terminal font. The primary defaults to a bundled font
+/// (`DEFAULT_FONT_FAMILY`) for consistent cross-platform rendering; a settings
+/// UI can later swap it via [`TerminalView::set_font_family`] /
+/// [`set_font_size`] / [`set_font_config`], and `set_font_family("")` resets
+/// to the system monospace (`system_monospace_family`).
 #[derive(Clone, Debug)]
 pub struct FontConfig {
     /// Primary font family. Empty string means "system monospace".
@@ -104,8 +106,10 @@ impl FontConfig {
 /// (see `DEFAULT_FONT_FAMILY`). We resolve it ourselves (via fontconfig on
 /// Linux, hardcoded on Windows) because gpui doesn't map the generic
 /// `"monospace"` alias to a real family name on either platform — the literal
-/// string `"monospace"` is not a font and fails to resolve. Falls back to the
-/// literal string on macOS/detection failure (unreported there so far).
+/// string `"monospace"` is not a font and fails to resolve. On macOS (and on
+/// any detection failure) it returns the same non-resolving `"monospace"`
+/// literal; macOS was left as-is because no mojibake has been reported there
+/// and the default font no longer routes through this function.
 fn system_monospace_family() -> SharedString {
     #[cfg(target_os = "linux")]
     {
@@ -647,6 +651,8 @@ mod tests {
     #[test]
     fn default_font_config_uses_bundled_fonts() {
         let config = FontConfig::default();
+        // Bare literal (not `DEFAULT_FONT_FAMILY`) is intentional: this pins the
+        // constant against drift rather than restating it.
         assert_eq!(config.family.as_ref(), "JetBrains Mono");
         assert_eq!(
             config.fallbacks,
