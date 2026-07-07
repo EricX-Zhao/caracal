@@ -51,6 +51,17 @@ pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
 /// Nerd Font / powerline glyphs resolve even when the primary font lacks them.
 const SYMBOL_FALLBACK: &str = "Symbols Nerd Font";
 
+/// The bundled CJK font (registered in `main`) used as a fallback so Chinese
+/// glyphs resolve even on a system with no East Asian fonts installed (the
+/// original cause of Windows mojibake — see the design spec).
+const CJK_FALLBACK: &str = "Sarasa Mono SC";
+
+/// The bundled default primary terminal font (registered in `main`). Hardcoded
+/// rather than relying on per-OS "system monospace" detection, which had no
+/// working implementation on Windows/macOS (see `system_monospace_family`,
+/// kept below for the explicit "reset to system font" path).
+const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
+
 /// User-configurable terminal font. Not hardcoded to any specific family — the
 /// primary defaults to the system monospace; a settings UI can later swap it via
 /// [`TerminalView::set_font_family`] / [`set_font_size`] / [`set_font_config`].
@@ -66,9 +77,9 @@ pub struct FontConfig {
 impl Default for FontConfig {
     fn default() -> Self {
         Self {
-            family: system_monospace_family(),
+            family: DEFAULT_FONT_FAMILY.into(),
             size: px(14.0),
-            fallbacks: vec![SYMBOL_FALLBACK.into()],
+            fallbacks: vec![SYMBOL_FALLBACK.into(), CJK_FALLBACK.into()],
         }
     }
 }
@@ -88,9 +99,13 @@ impl FontConfig {
     }
 }
 
-/// The system's default monospace family. We resolve it ourselves (via
-/// fontconfig on Linux) because gpui doesn't map the generic `"monospace"`
-/// alias. Falls back to `"monospace"` if detection fails.
+/// The system's default monospace family, used by
+/// `TerminalView::set_font_family("")` to reset away from the bundled default
+/// (see `DEFAULT_FONT_FAMILY`). We resolve it ourselves (via fontconfig on
+/// Linux, hardcoded on Windows) because gpui doesn't map the generic
+/// `"monospace"` alias to a real family name on either platform — the literal
+/// string `"monospace"` is not a font and fails to resolve. Falls back to the
+/// literal string on macOS/detection failure (unreported there so far).
 fn system_monospace_family() -> SharedString {
     #[cfg(target_os = "linux")]
     {
@@ -105,6 +120,11 @@ fn system_monospace_family() -> SharedString {
             }
         }
     }
+    #[cfg(target_os = "windows")]
+    {
+        return "Consolas".into();
+    }
+    #[allow(unreachable_code)]
     "monospace".into()
 }
 
@@ -617,5 +637,31 @@ impl Render for TerminalView {
                 self.font_config.size,
                 self.focus_handle.clone(),
             ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_font_config_uses_bundled_fonts() {
+        let config = FontConfig::default();
+        assert_eq!(config.family.as_ref(), "JetBrains Mono");
+        assert_eq!(
+            config.fallbacks,
+            vec![
+                SharedString::from(SYMBOL_FALLBACK),
+                SharedString::from(CJK_FALLBACK),
+            ]
+        );
+    }
+
+    #[test]
+    fn to_font_carries_fallback_chain() {
+        let config = FontConfig::default();
+        let font = config.to_font();
+        assert_eq!(font.family.as_ref(), "JetBrains Mono");
+        assert!(font.fallbacks.is_some());
     }
 }
