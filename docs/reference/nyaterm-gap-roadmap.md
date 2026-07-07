@@ -34,8 +34,17 @@ this document only fixes scope boundaries and order, not field-level design.
    does gpui/gpui_platform support opening a second native OS window the way nyaterm's
    "child windows" do, or does settings need to live as an in-window overlay instead? That
    answer shapes every later "standalone window" item below.
-2. **快捷命令 (Quick Commands)** — independent new feature, no dependency on the other 5,
-   lowest-risk place to validate a new panel + new persisted-config pattern end to end.
+2. **快捷命令 (Quick Commands)** — ✅ Done (2026-07-07,
+   `docs/superpowers/specs/2026-07-07-quick-commands-design.md` /
+   `docs/superpowers/plans/2026-07-07-quick-commands.md`). Built as a new bottom drawer
+   (not the `PanelId` side-dock system) toggled from an enhanced status bar, which also
+   gained a live terminal cursor-position readout (`row:col`). Minimal v1: flat list,
+   inline add/edit form, execute-vs-append send modes, persisted to a new
+   `quick_commands.toml` — no categories/search/sort/pin/tags/import/`{{variable}}`
+   templating (deferred). Added two small reusable pieces along the way:
+   `TerminalView::send_text`/`cursor_position`, and `Workspace.focused_terminal`
+   (`WeakEntity`-tracked, same pattern as the settings page's `terminal_views`
+   broadcast list) — both available for later items to build on.
 3. **新建连接 查漏补缺 (New Connection gaps)** — converting the inline form to a standalone
    window reuses whatever window/overlay mechanism gets built for settings.
 4. **已保存连接 查漏补缺 (Saved Connections gaps)** — in-group reorder, hover detail card,
