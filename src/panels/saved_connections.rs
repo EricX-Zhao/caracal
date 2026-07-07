@@ -36,8 +36,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gpui::{
     Action, App, AppContext, ClickEvent, Context, Div, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription, Window,
+    WindowHandle, div, px,
 };
+use gpui_component::Root;
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
@@ -248,6 +250,11 @@ pub struct SavedConnectionsPanel {
     /// Kept alive so `new_folder_name`'s `InputEvent::PressEnter` subscription
     /// (submit-on-Enter, see `open_folder_form`) keeps firing.
     _folder_enter_sub: Option<Subscription>,
+    /// The open new-connection/edit window, if any — re-triggering any of
+    /// the "新建连接"/"编辑" entry points focuses this instead of opening a
+    /// duplicate. Unused until Task 3 adds the method that opens it.
+    #[allow(dead_code)]
+    new_connection_window: Option<WindowHandle<Root>>,
 }
 
 impl SavedConnectionsPanel {
@@ -274,6 +281,7 @@ impl SavedConnectionsPanel {
             folder_form_target: None,
             new_folder_name,
             _folder_enter_sub: None,
+            new_connection_window: None,
         }
     }
 
@@ -698,6 +706,23 @@ impl SavedConnectionsPanel {
             _ => self.connections.push(conn),
         }
         self.form = None;
+        self.persist();
+        cx.notify();
+    }
+
+    /// Push a new connection or replace an existing one at `edit_ix`, persist,
+    /// and repaint. Called by
+    /// [`crate::panels::new_connection_window::NewConnectionWindow`] on Save.
+    pub(crate) fn upsert_connection(
+        &mut self,
+        conn: SavedConnection,
+        edit_ix: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        match edit_ix {
+            Some(ix) if ix < self.connections.len() => self.connections[ix] = conn,
+            _ => self.connections.push(conn),
+        }
         self.persist();
         cx.notify();
     }
