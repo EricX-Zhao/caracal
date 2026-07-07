@@ -331,14 +331,14 @@ impl Workspace {
     }
 
     /// Seed a newly-created terminal's font from persisted settings, so a new
-    /// tab picks up whatever was last applied via Settings → Appearance
-    /// instead of always starting at the compiled-in default.
+    /// tab picks up whatever was last applied via Settings → Terminal instead
+    /// of always starting at the compiled-in default.
     fn seed_font_from_settings(terminal: &Entity<TerminalView>, cx: &mut Context<Self>) {
         let loaded = settings::load();
-        let family = Self::resolved_font_family(&loaded.appearance.font_family);
+        let family = Self::resolved_font_family(&loaded.terminal.font_family);
         terminal.update(cx, |view, cx| {
             view.set_font_family(family, cx);
-            view.set_font_size(px(loaded.appearance.font_size), cx);
+            view.set_font_size(px(loaded.terminal.font_size), cx);
         });
     }
 

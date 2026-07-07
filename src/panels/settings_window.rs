@@ -4,7 +4,7 @@
 //! into a local draft on open; nothing is written to `settings.toml` or applied
 //! live until Apply or Confirm.
 
-/// Parse the Appearance tab's font-size text field. Rejects non-finite,
+/// Parse the Terminal tab's font-size text field. Rejects non-finite,
 /// non-positive, and unreasonably large values (a typo like "1400" should not
 /// silently make every tab's text 100x too big).
 fn parse_font_size(text: &str) -> Option<f32> {
@@ -60,10 +60,10 @@ impl SettingsWindow {
         let font_family_input = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("留空 = 内置默认字体")
-                .default_value(committed.appearance.font_family.clone())
+                .default_value(committed.terminal.font_family.clone())
         });
         let font_size_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(committed.appearance.font_size.to_string())
+            InputState::new(window, cx).default_value(committed.terminal.font_size.to_string())
         });
         Self {
             workspace,
@@ -80,11 +80,11 @@ impl SettingsWindow {
     /// (and sets `self.error`) without mutating the draft further if the
     /// font-size field doesn't parse.
     fn sync_inputs_to_draft(&mut self, cx: &App) -> bool {
-        self.draft.appearance.font_family = self.font_family_input.read(cx).value().to_string();
+        self.draft.terminal.font_family = self.font_family_input.read(cx).value().to_string();
         let size_text = self.font_size_input.read(cx).value();
         match parse_font_size(&size_text) {
             Some(size) => {
-                self.draft.appearance.font_size = size;
+                self.draft.terminal.font_size = size;
                 self.error = None;
                 true
             }
@@ -118,8 +118,8 @@ impl SettingsWindow {
         };
         Theme::change(mode, None, cx);
 
-        let font_family = self.draft.appearance.font_family.clone();
-        let font_size = px(self.draft.appearance.font_size);
+        let font_family = self.draft.terminal.font_family.clone();
+        let font_size = px(self.draft.terminal.font_size);
         let _ = self.workspace.update(cx, |workspace, cx| {
             workspace.apply_font_settings(font_family, font_size, cx);
         });
@@ -217,7 +217,40 @@ impl SettingsWindow {
             .child("此设置尚未实现")
     }
 
+    /// UI-level appearance only (theme). The terminal's own font lives on the
+    /// Terminal tab (`render_terminal_tab`) — it affects terminal content,
+    /// not the application chrome this tab controls.
     fn render_appearance_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("主题"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(self.theme_pill("dark", "深色", cx))
+                            .child(self.theme_pill("light", "浅色", cx)),
+                    ),
+            )
+    }
+
+    /// Terminal-content settings: currently just font family/size, which only
+    /// affect `TerminalView` rendering (see `Workspace::apply_font_settings`),
+    /// not the application chrome.
+    fn render_terminal_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -248,26 +281,6 @@ impl SettingsWindow {
                     )
                     .child(Input::new(&self.font_size_input)),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("主题"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(self.theme_pill("dark", "深色", cx))
-                            .child(self.theme_pill("light", "浅色", cx)),
-                    ),
-            )
     }
 }
 
@@ -277,7 +290,7 @@ impl Render for SettingsWindow {
         let content = match self.active_tab {
             SettingsTab::General => self.render_placeholder_tab("General", cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_tab(cx).into_any_element(),
-            SettingsTab::Terminal => self.render_placeholder_tab("Terminal", cx).into_any_element(),
+            SettingsTab::Terminal => self.render_terminal_tab(cx).into_any_element(),
         };
 
         div()

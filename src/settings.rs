@@ -14,22 +14,31 @@ use serde::{Deserialize, Serialize};
 pub struct AppSettings {
     #[serde(default)]
     pub appearance: AppearanceSettings,
+    #[serde(default)]
+    pub terminal: TerminalSettings,
 }
 
-/// Font + theme settings, editable from Settings → Appearance.
+/// UI-level settings, editable from Settings → Appearance. Affects the
+/// application chrome (menus, panels, buttons), not the terminal content —
+/// see [`TerminalSettings`] for the terminal's own font.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppearanceSettings {
+    /// `"dark"` | `"light"`.
+    #[serde(default = "default_theme_mode")]
+    pub theme_mode: String,
+}
+
+/// Terminal-content settings, editable from Settings → Terminal.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TerminalSettings {
     /// Empty string = bundled default (`terminal::view`'s `DEFAULT_FONT_FAMILY`).
     #[serde(default)]
     pub font_family: String,
     /// Raw point size; `TerminalView::set_font_size` takes `gpui::Pixels`, so
-    /// callers convert via `px(settings.appearance.font_size)` — `Pixels`
+    /// callers convert via `px(settings.terminal.font_size)` — `Pixels`
     /// itself isn't (de)serializable, hence the raw `f32` here.
     #[serde(default = "default_font_size")]
     pub font_size: f32,
-    /// `"dark"` | `"light"`.
-    #[serde(default = "default_theme_mode")]
-    pub theme_mode: String,
 }
 
 fn default_font_size() -> f32 {
@@ -43,9 +52,16 @@ fn default_theme_mode() -> String {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
+            theme_mode: default_theme_mode(),
+        }
+    }
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
             font_family: String::new(),
             font_size: default_font_size(),
-            theme_mode: default_theme_mode(),
         }
     }
 }
@@ -96,8 +112,8 @@ mod tests {
     #[test]
     fn default_settings_have_expected_values() {
         let settings = AppSettings::default();
-        assert_eq!(settings.appearance.font_family, "");
-        assert_eq!(settings.appearance.font_size, 14.0);
+        assert_eq!(settings.terminal.font_family, "");
+        assert_eq!(settings.terminal.font_size, 14.0);
         assert_eq!(settings.appearance.theme_mode, "dark");
     }
 
@@ -105,33 +121,56 @@ mod tests {
     fn round_trip_preserves_fields() {
         let settings = AppSettings {
             appearance: AppearanceSettings {
+                theme_mode: "light".to_string(),
+            },
+            terminal: TerminalSettings {
                 font_family: "Consolas".to_string(),
                 font_size: 16.0,
-                theme_mode: "light".to_string(),
             },
         };
         let text = toml::to_string_pretty(&settings).expect("serialize");
         let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
-        assert_eq!(parsed.appearance.font_family, "Consolas");
-        assert_eq!(parsed.appearance.font_size, 16.0);
+        assert_eq!(parsed.terminal.font_family, "Consolas");
+        assert_eq!(parsed.terminal.font_size, 16.0);
         assert_eq!(parsed.appearance.theme_mode, "light");
     }
 
     #[test]
     fn partial_toml_still_deserializes_with_defaults() {
         // Simulates a settings.toml written before a future field is added:
-        // an empty [appearance] table should still fill in every default.
-        let toml_text = "[appearance]\n";
+        // empty [appearance]/[terminal] tables should still fill in every
+        // default.
+        let toml_text = "[appearance]\n[terminal]\n";
         let settings: AppSettings =
             toml::from_str(toml_text).expect("partial settings must still parse");
-        assert_eq!(settings.appearance.font_family, "");
-        assert_eq!(settings.appearance.font_size, 14.0);
+        assert_eq!(settings.terminal.font_family, "");
+        assert_eq!(settings.terminal.font_size, 14.0);
         assert_eq!(settings.appearance.theme_mode, "dark");
     }
 
     #[test]
     fn empty_file_yields_default_appearance() {
         let settings: AppSettings = toml::from_str("").expect("empty file must still parse");
-        assert_eq!(settings.appearance.font_size, 14.0);
+        assert_eq!(settings.terminal.font_size, 14.0);
+    }
+
+    #[test]
+    fn old_settings_file_without_terminal_table_still_deserializes() {
+        // Simulates a settings.toml written by the pre-split version of this
+        // module, where font lived under [appearance]. The old font keys are
+        // simply dropped (not migrated) — this only proves the file doesn't
+        // fail to parse and the new [terminal] section falls back to
+        // defaults, matching `AppSettings`'s top-level `#[serde(default)]`.
+        let toml_text = r#"
+            [appearance]
+            font_family = "Consolas"
+            font_size = 16.0
+            theme_mode = "light"
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert_eq!(settings.appearance.theme_mode, "light");
+        assert_eq!(settings.terminal.font_family, "");
+        assert_eq!(settings.terminal.font_size, 14.0);
     }
 }
