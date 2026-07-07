@@ -196,6 +196,7 @@ impl SettingsWindow {
             } else {
                 cx.theme().foreground
             })
+            .hover(|s| s.bg(cx.theme().accent))
             .child(label)
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                 this.set_theme_mode(mode, cx);

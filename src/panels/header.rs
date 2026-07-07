@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_component::{ActiveTheme, Sizable, Theme, ThemeMode};
+use gpui_component::{ActiveTheme, Sizable};
 
 use crate::panels::icons::{AppIcon, icon};
 use crate::workspace::Workspace;
@@ -57,14 +57,11 @@ pub fn render_header(
         .label("视图")
         .dropdown_menu(move |menu, _window, _cx| {
             menu.item(
-                PopupMenuItem::new("切换主题").on_click(move |_ev, _window, cx| {
-                    let next = if Theme::global(cx).mode.is_dark() {
-                        ThemeMode::Light
-                    } else {
-                        ThemeMode::Dark
-                    };
-                    Theme::change(next, None, cx);
-                }),
+                // Shares `crate::toggle_theme` with Ctrl+K (bound in
+                // `main.rs`) so both paths persist to `settings.toml` and
+                // always agree with what Settings → Appearance shows.
+                PopupMenuItem::new("切换主题")
+                    .on_click(move |_ev, _window, cx| crate::toggle_theme(cx)),
             )
         });
 

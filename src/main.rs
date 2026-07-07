@@ -26,6 +26,24 @@ use workspace::Workspace;
 
 actions!(caracal, [ToggleTheme]);
 
+/// Flip the theme and persist the choice to `settings.toml`, so Ctrl+K (bound
+/// below) and the View menu's "切换主题" item (`panels::header`) always agree
+/// with each other and with what Settings → Appearance shows.
+pub(crate) fn toggle_theme(cx: &mut App) {
+    let next = if Theme::global(cx).mode.is_dark() {
+        ThemeMode::Light
+    } else {
+        ThemeMode::Dark
+    };
+    Theme::change(next, None, cx);
+
+    let mut settings = settings::load();
+    settings.appearance.theme_mode = if next.is_dark() { "dark" } else { "light" }.to_string();
+    if let Err(e) = settings::save(&settings) {
+        log::error!("failed to persist theme toggle: {e}");
+    }
+}
+
 /// Symbol font bundled into the binary and registered with the text system, so
 /// Nerd Font glyphs resolve from the *same* fontdb cosmic-text shapes with
 /// (system-installed copies in `~/.local/share/fonts` are not reliably scanned).
@@ -76,20 +94,7 @@ fn main() {
             Some("caracal"),
         )]);
 
-        cx.on_action(|_action: &ToggleTheme, cx| {
-            let next = if Theme::global(cx).mode.is_dark() {
-                ThemeMode::Light
-            } else {
-                ThemeMode::Dark
-            };
-            Theme::change(next, None, cx);
-
-            let mut settings = settings::load();
-            settings.appearance.theme_mode = if next.is_dark() { "dark" } else { "light" }.to_string();
-            if let Err(e) = settings::save(&settings) {
-                log::error!("failed to persist theme toggle: {e}");
-            }
-        });
+        cx.on_action(|_action: &ToggleTheme, cx| toggle_theme(cx));
 
         // Reclaim keys that gpui-component's Root context binds (tab → focus nav,
         // ctrl-c → Copy): bind them in the deeper "Terminal" context so the

@@ -43,10 +43,11 @@ use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
 use crate::panels::stub::StubPanel;
 use crate::panels::terminal::TerminalPanel;
+use crate::settings;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::telnet::TelnetConfig;
-use crate::terminal::view::TerminalView;
+use crate::terminal::view::{FontConfig, TerminalView};
 
 pub struct Workspace {
     /// Hosts the CENTER terminal tabs only (no side docks anymore).
@@ -174,6 +175,7 @@ impl Workspace {
     /// sense over SSH) and updates the header title.
     pub fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = cx.new(|cx| TerminalView::new(window, cx));
+        Self::seed_font_from_settings(&terminal, cx);
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
         self.terminal_views.push(term_weak.clone());
@@ -207,6 +209,7 @@ impl Workspace {
                 )
             })
         };
+        Self::seed_font_from_settings(&terminal, cx);
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
         self.terminal_views.push(term_weak.clone());
@@ -226,6 +229,7 @@ impl Workspace {
     pub fn open_ssh(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(session) = self.ssh_session(&config) {
             let terminal = cx.new(|cx| TerminalView::new_ssh_shell(window, cx, session));
+            Self::seed_font_from_settings(&terminal, cx);
             let follow = config.clone();
             let handle = terminal.read(cx).focus_handle(cx);
             let term_weak = terminal.downgrade();
@@ -246,6 +250,7 @@ impl Workspace {
     /// justify one, so each tab dials its own socket, same as a local shell.
     pub fn open_telnet(&mut self, config: TelnetConfig, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = cx.new(|cx| TerminalView::new_telnet(window, cx, config));
+        Self::seed_font_from_settings(&terminal, cx);
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
         self.terminal_views.push(term_weak.clone());
@@ -263,6 +268,7 @@ impl Workspace {
     /// no-shared-cache rationale as `open_telnet`.
     pub fn open_serial(&mut self, config: SerialConfig, window: &mut Window, cx: &mut Context<Self>) {
         let terminal = cx.new(|cx| TerminalView::new_serial(window, cx, config));
+        Self::seed_font_from_settings(&terminal, cx);
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
         self.terminal_views.push(term_weak.clone());
@@ -309,6 +315,33 @@ impl Workspace {
         }
     }
 
+    /// Resolve a font-family setting for applying to a `TerminalView`. Empty
+    /// means "use the bundled default" (`FontConfig::default().family`), per
+    /// what `settings_window.rs`'s "留空 = 内置默认字体" placeholder promises —
+    /// this is deliberately NOT the same as `TerminalView::set_font_family`'s
+    /// own empty-string meaning ("reset to system monospace"), which remains
+    /// available as a separate, still-unused path for a possible future
+    /// "reset to system font" control.
+    fn resolved_font_family(raw: &str) -> String {
+        if raw.is_empty() {
+            FontConfig::default().family.to_string()
+        } else {
+            raw.to_string()
+        }
+    }
+
+    /// Seed a newly-created terminal's font from persisted settings, so a new
+    /// tab picks up whatever was last applied via Settings → Appearance
+    /// instead of always starting at the compiled-in default.
+    fn seed_font_from_settings(terminal: &Entity<TerminalView>, cx: &mut Context<Self>) {
+        let loaded = settings::load();
+        let family = Self::resolved_font_family(&loaded.appearance.font_family);
+        terminal.update(cx, |view, cx| {
+            view.set_font_family(family, cx);
+            view.set_font_size(px(loaded.appearance.font_size), cx);
+        });
+    }
+
     /// Broadcast a new font family/size to every currently-open terminal tab,
     /// pruning any that have since closed. Called by [`SettingsWindow`] on
     /// Apply/Confirm.
@@ -318,6 +351,7 @@ impl Workspace {
         font_size: Pixels,
         cx: &mut Context<Self>,
     ) {
+        let font_family = Self::resolved_font_family(&font_family);
         self.terminal_views.retain(|weak| {
             weak.update(cx, |view, cx| {
                 view.set_font_family(font_family.clone(), cx);
@@ -545,5 +579,20 @@ impl Render for Workspace {
             .child(status_bar)
             .children(gpui_component::Root::render_notification_layer(window, cx))
             .children(gpui_component::Root::render_dialog_layer(window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_font_family_empty_uses_bundled_default() {
+        assert_eq!(Workspace::resolved_font_family(""), "JetBrains Mono");
+    }
+
+    #[test]
+    fn resolved_font_family_passes_through_explicit_value() {
+        assert_eq!(Workspace::resolved_font_family("Consolas"), "Consolas");
     }
 }
