@@ -26,9 +26,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, ParentElement,
-    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
-    Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::FluentBuilder, px, size,
+    AnyView, App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement,
+    IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockPlacement};
 use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
@@ -37,6 +38,8 @@ use gpui_component::{ActiveTheme, Root};
 use crate::config;
 use crate::panels::activity_bar::{PanelId, Side, activity_button, side_items};
 use crate::panels::header::render_header;
+use crate::panels::icons::{AppIcon, icon};
+use crate::panels::quick_commands_panel::QuickCommandsPanel;
 use crate::panels::saved_connections::{SavedConnectionsEvent, SavedConnectionsPanel};
 use crate::panels::settings_window::SettingsWindow;
 use crate::panels::side_region::side_region_content;
@@ -67,6 +70,11 @@ pub struct Workspace {
     /// terminal. A dead weak ref (tab closed) reads as "nothing focused"
     /// until another tab is focused.
     focused_terminal: Option<WeakEntity<TerminalView>>,
+    /// Whether the bottom quick-commands drawer is open. Closed by default.
+    show_quick_commands: bool,
+    /// The quick-commands panel shown in the drawer. Owned here (not part of
+    /// the `PanelId` side-dock system — this is a new bottom region).
+    quick_commands_panel: Entity<QuickCommandsPanel>,
 
     // --- panel registry -----------------------------------------------------
     /// The right-dock "已保存的连接" list (real panel).
@@ -137,12 +145,17 @@ impl Workspace {
 
         let body_resize = cx.new(|_| ResizableState::default());
 
+        let workspace_handle = cx.entity().downgrade();
+        let quick_commands_panel = cx.new(|cx| QuickCommandsPanel::new(workspace_handle, cx));
+
         Self {
             dock_area,
             ssh_sessions: HashMap::new(),
             terminal_views: Vec::new(),
             settings_window: None,
             focused_terminal: None,
+            show_quick_commands: false,
+            quick_commands_panel,
             saved_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
@@ -561,15 +574,56 @@ impl Workspace {
         div().flex_1().min_w(px(0.0)).child(group)
     }
 
-    /// Bottom status bar — reserved for future info (connection state, cwd, …).
-    /// Empty for now.
-    fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+    /// Bottom status bar: a left icon cluster (currently just the
+    /// quick-commands toggle; structured so a second icon can be added later
+    /// without redesign) and a right-aligned cursor-position readout for the
+    /// focused terminal (blank when nothing is focused).
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let cursor_text = self
+            .focused_terminal
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|t| {
+                let (row, col) = t.read(cx).cursor_position();
+                format!("{}:{}", row + 1, col + 1)
+            })
+            .unwrap_or_default();
+
         div()
             .w_full()
             .h(px(22.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
             .bg(cx.theme().muted)
             .border_t_1()
             .border_color(cx.theme().border)
+            .child(
+                div()
+                    .id("status-quick-commands")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .text_color(if self.show_quick_commands {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .hover(|s| s.text_color(cx.theme().foreground))
+                    .child(icon(AppIcon::QuickCmd))
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.show_quick_commands = !this.show_quick_commands;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(cursor_text),
+            )
     }
 }
 
@@ -580,6 +634,9 @@ impl Render for Workspace {
         let right_bar = self.render_activity_bar(Side::Right, cx);
         let body = self.render_body(cx);
         let status_bar = self.render_status_bar(cx);
+        let border = cx.theme().border;
+        let show_quick_commands = self.show_quick_commands;
+        let quick_commands_panel = self.quick_commands_panel.clone();
 
         div()
             .flex()
@@ -596,6 +653,17 @@ impl Render for Workspace {
                     .child(body)
                     .child(right_bar),
             )
+            .when(show_quick_commands, |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .h(px(220.0))
+                        .flex_shrink_0()
+                        .border_t_1()
+                        .border_color(border)
+                        .child(quick_commands_panel),
+                )
+            })
             .child(status_bar)
             .children(gpui_component::Root::render_notification_layer(window, cx))
             .children(gpui_component::Root::render_dialog_layer(window, cx))

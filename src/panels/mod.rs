@@ -6,6 +6,7 @@
 pub mod activity_bar;
 pub mod header;
 pub mod icons;
+pub mod quick_commands_panel;
 pub mod saved_connections;
 pub mod settings_window;
 pub mod sftp;
