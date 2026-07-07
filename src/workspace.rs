@@ -52,6 +52,10 @@ pub struct Workspace {
     dock_area: Entity<DockArea>,
     /// Shared SSH connections, keyed by `user@host:port`.
     ssh_sessions: HashMap<String, Arc<SshSession>>,
+    /// Every `TerminalView` this workspace has created, so settings changes
+    /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
+    /// pruned lazily on the next broadcast rather than on tab close.
+    terminal_views: Vec<WeakEntity<TerminalView>>,
 
     // --- panel registry -----------------------------------------------------
     /// The right-dock "已保存的连接" list (real panel).
@@ -125,6 +129,7 @@ impl Workspace {
         Self {
             dock_area,
             ssh_sessions: HashMap::new(),
+            terminal_views: Vec::new(),
             saved_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
@@ -166,6 +171,7 @@ impl Workspace {
         let terminal = cx.new(|cx| TerminalView::new(window, cx));
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
+        self.terminal_views.push(term_weak.clone());
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
@@ -198,6 +204,7 @@ impl Workspace {
         };
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
+        self.terminal_views.push(term_weak.clone());
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
@@ -217,6 +224,7 @@ impl Workspace {
             let follow = config.clone();
             let handle = terminal.read(cx).focus_handle(cx);
             let term_weak = terminal.downgrade();
+            self.terminal_views.push(term_weak.clone());
             let sub = cx.on_focus(&handle, window, move |this, window, cx| {
                 this.set_active_title_from(&term_weak, cx);
                 this.show_sftp(follow.clone(), window, cx);
@@ -235,6 +243,7 @@ impl Workspace {
         let terminal = cx.new(|cx| TerminalView::new_telnet(window, cx, config));
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
+        self.terminal_views.push(term_weak.clone());
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
@@ -251,6 +260,7 @@ impl Workspace {
         let terminal = cx.new(|cx| TerminalView::new_serial(window, cx, config));
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
+        self.terminal_views.push(term_weak.clone());
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
