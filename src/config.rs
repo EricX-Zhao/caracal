@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::panels::icons::AppIcon;
 use crate::terminal::serial::SerialConfig;
-use crate::terminal::ssh::SshConfig;
+use crate::terminal::ssh::{SshAuth, SshConfig};
 use crate::terminal::telnet::TelnetConfig;
 
 /// Connection type: SSH, local terminal, Telnet, or serial port.
@@ -97,6 +97,22 @@ pub struct SavedConnection {
     /// Optional description shown in tooltip.
     #[serde(default)]
     pub description: Option<String>,
+    /// `"password"` | `"key"`. Defaults to `"password"` for connections
+    /// saved before this field existed.
+    #[serde(default = "default_auth_method")]
+    pub auth_method: String,
+    /// Path to a private key file. Only meaningful when `auth_method ==
+    /// "key"`.
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    /// Optional passphrase to decrypt an encrypted private key. Only
+    /// meaningful when `auth_method == "key"`.
+    #[serde(default)]
+    pub private_key_passphrase: Option<String>,
+}
+
+fn default_auth_method() -> String {
+    "password".to_string()
 }
 
 fn default_port() -> u16 {
@@ -106,11 +122,19 @@ fn default_port() -> u16 {
 impl SavedConnection {
     /// The connection parameters used to actually dial (see `workspace.rs`).
     pub fn to_ssh_config(&self) -> SshConfig {
+        let auth = if self.auth_method == "key" {
+            SshAuth::PrivateKey {
+                path: self.private_key_path.clone().unwrap_or_default(),
+                passphrase: self.private_key_passphrase.clone(),
+            }
+        } else {
+            SshAuth::Password(self.password.clone())
+        };
         SshConfig {
             host: self.host.clone(),
             port: self.port,
             user: self.user.clone(),
-            password: self.password.clone(),
+            auth,
         }
     }
 
@@ -322,6 +346,9 @@ mod tests {
             stop_bits: None,
             flow_control: None,
             description: None,
+            auth_method: "password".to_string(),
+            private_key_path: None,
+            private_key_passphrase: None,
         }
     }
 
@@ -401,6 +428,46 @@ mod tests {
             base_connection(ConnectionType::Serial).resolve_icon(),
             AppIcon::SerialPort
         );
+    }
+
+    #[test]
+    fn to_ssh_config_uses_password_auth_by_default() {
+        let mut conn = base_connection(ConnectionType::Ssh);
+        conn.password = "hunter2".to_string();
+        let cfg = conn.to_ssh_config();
+        assert!(matches!(cfg.auth, crate::terminal::ssh::SshAuth::Password(p) if p == "hunter2"));
+    }
+
+    #[test]
+    fn to_ssh_config_uses_private_key_auth_when_selected() {
+        let mut conn = base_connection(ConnectionType::Ssh);
+        conn.auth_method = "key".to_string();
+        conn.private_key_path = Some("/home/user/.ssh/id_ed25519".to_string());
+        conn.private_key_passphrase = Some("secret".to_string());
+        let cfg = conn.to_ssh_config();
+        match cfg.auth {
+            crate::terminal::ssh::SshAuth::PrivateKey { path, passphrase } => {
+                assert_eq!(path, "/home/user/.ssh/id_ed25519");
+                assert_eq!(passphrase.as_deref(), Some("secret"));
+            }
+            _ => panic!("expected PrivateKey auth"),
+        }
+    }
+
+    #[test]
+    fn old_connection_without_auth_fields_still_deserializes_as_password() {
+        // Simulates a connections.toml written before this change.
+        let toml_text = r#"
+            [[connections]]
+            host = "old.example.com"
+            user = "root"
+            password = "hunter2"
+            conn_type = "ssh"
+        "#;
+        let cfg: AppConfig =
+            toml::from_str(toml_text).expect("old-format connection must still parse");
+        assert_eq!(cfg.connections[0].auth_method, "password");
+        assert_eq!(cfg.connections[0].private_key_path, None);
     }
 
     #[test]

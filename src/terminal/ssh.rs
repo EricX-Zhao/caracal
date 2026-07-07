@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use anyhow::{Result, anyhow};
 use russh::client::{self, Handle, Msg};
 use russh::keys::ssh_key::PublicKey;
+use russh::keys::{PrivateKeyWithHashAlg, load_secret_key};
 use russh::{Channel, ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -23,13 +24,26 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::terminal::backend::PtyBackend;
 
-/// Connection parameters. Phase 4 supports password auth only.
+/// Authentication method for an SSH connection.
+#[derive(Clone, Debug)]
+pub enum SshAuth {
+    Password(String),
+    /// `path` is the private key file on disk; `passphrase` decrypts it if
+    /// it's passphrase-protected — `russh::keys::load_secret_key` handles
+    /// both encrypted and plain keys through the same call.
+    PrivateKey {
+        path: String,
+        passphrase: Option<String>,
+    },
+}
+
+/// Connection parameters — password or private-key authentication.
 #[derive(Clone, Debug)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: String,
+    pub auth: SshAuth,
 }
 
 impl SshConfig {
@@ -406,7 +420,7 @@ async fn connect_and_auth(config: SshConfig) -> Result<Handle<ClientHandler>> {
         host,
         port,
         user,
-        password,
+        auth,
     } = config;
 
     let cfg = Arc::new(client::Config::default());
@@ -414,8 +428,16 @@ async fn connect_and_auth(config: SshConfig) -> Result<Handle<ClientHandler>> {
         .await
         .map_err(|e| anyhow!("connect to {host}:{port} failed: {e}"))?;
 
-    let auth = session.authenticate_password(user, password).await?;
-    if !auth.success() {
+    let auth_result = match auth {
+        SshAuth::Password(password) => session.authenticate_password(user, password).await?,
+        SshAuth::PrivateKey { path, passphrase } => {
+            let key = load_secret_key(&path, passphrase.as_deref())
+                .map_err(|e| anyhow!("failed to load private key {path}: {e}"))?;
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
+            session.authenticate_publickey(user, key).await?
+        }
+    };
+    if !auth_result.success() {
         return Err(anyhow!("authentication failed"));
     }
     Ok(session)

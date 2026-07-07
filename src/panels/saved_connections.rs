@@ -602,6 +602,9 @@ impl SavedConnectionsPanel {
                     stop_bits: None,
                     flow_control: None,
                     description: None,
+                    auth_method: "password".to_string(),
+                    private_key_path: None,
+                    private_key_passphrase: None,
                 }
             }
             ConnectionType::Local => {
@@ -625,6 +628,9 @@ impl SavedConnectionsPanel {
                     stop_bits: None,
                     flow_control: None,
                     description: None,
+                    auth_method: "password".to_string(),
+                    private_key_path: None,
+                    private_key_passphrase: None,
                 }
             }
             ConnectionType::Telnet => {
@@ -650,6 +656,9 @@ impl SavedConnectionsPanel {
                     stop_bits: None,
                     flow_control: None,
                     description: None,
+                    auth_method: "password".to_string(),
+                    private_key_path: None,
+                    private_key_passphrase: None,
                 }
             }
             ConnectionType::Serial => {
@@ -677,6 +686,9 @@ impl SavedConnectionsPanel {
                     stop_bits: Some(form.stop_bits),
                     flow_control: Some(form.flow_control.clone()),
                     description: None,
+                    auth_method: "password".to_string(),
+                    private_key_path: None,
+                    private_key_passphrase: None,
                 }
             }
         };
@@ -772,8 +784,12 @@ impl SavedConnectionsPanel {
             } else {
                 new_conn.name = format!("{}-copy", new_conn.name);
             }
-            // Clear password for security
+            // Clear credentials for security (matches the existing
+            // password-clearing behavior, extended to the newer key-auth
+            // fields so a duplicated connection never silently carries a
+            // copy of a decryption passphrase).
             new_conn.password = String::new();
+            new_conn.private_key_passphrase = None;
             self.connections.push(new_conn);
             self.persist();
             cx.notify();
