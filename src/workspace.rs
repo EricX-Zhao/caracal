@@ -61,6 +61,12 @@ pub struct Workspace {
     /// The open settings window, if any — re-triggering the menu item
     /// focuses this instead of opening a duplicate.
     settings_window: Option<WindowHandle<Root>>,
+    /// The most recently focused terminal, if any — used to send quick
+    /// commands and to show the status bar's cursor-position readout. Set in
+    /// `set_active_title_from`, which already runs on focus for every
+    /// terminal. A dead weak ref (tab closed) reads as "nothing focused"
+    /// until another tab is focused.
+    focused_terminal: Option<WeakEntity<TerminalView>>,
 
     // --- panel registry -----------------------------------------------------
     /// The right-dock "已保存的连接" list (real panel).
@@ -136,6 +142,7 @@ impl Workspace {
             ssh_sessions: HashMap::new(),
             terminal_views: Vec::new(),
             settings_window: None,
+            focused_terminal: None,
             saved_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
@@ -361,11 +368,24 @@ impl Workspace {
         });
     }
 
-    /// Update the header's active title from a (possibly-dropped) terminal.
+    /// Update the header's active title and the focused-terminal pointer
+    /// (used by quick commands and the status bar's cursor-position display)
+    /// from a (possibly-dropped) terminal.
     fn set_active_title_from(&mut self, term: &WeakEntity<TerminalView>, cx: &App) {
+        self.focused_terminal = Some(term.clone());
         if let Some(t) = term.upgrade() {
             self.active_title = t.read(cx).title().to_string().into();
         }
+    }
+
+    /// Send `text` to the currently-focused terminal tab, if any, per
+    /// `execute`. No-op if no terminal is focused or its weak ref has died.
+    /// Called by [`crate::panels::quick_commands_panel::QuickCommandsPanel`].
+    pub fn send_to_focused_terminal(&self, text: &str, execute: bool, cx: &App) {
+        let Some(terminal) = self.focused_terminal.as_ref().and_then(|w| w.upgrade()) else {
+            return;
+        };
+        terminal.read(cx).send_text(text, execute);
     }
 
     /// Bind the SFTP slot to `config`'s host (reusing the shared connection,
