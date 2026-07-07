@@ -58,9 +58,16 @@ fn main() {
         // Must run before using any gpui-component feature (theme/overlay/etc.).
         gpui_component::init(cx);
 
-        // Apply dark theme by default — uses the built-in dark theme from
-        // gpui-component (One Dark variant).
-        Theme::change(ThemeMode::Dark, None, cx);
+        // Apply the persisted theme (defaults to dark if no settings.toml
+        // exists yet, or its theme_mode isn't "light") — uses the built-in
+        // dark/light themes from gpui-component (One Dark / One Light).
+        let startup_settings = settings::load();
+        let startup_theme = if startup_settings.appearance.theme_mode == "light" {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        };
+        Theme::change(startup_theme, None, cx);
 
         // Allow toggling between light/dark with Ctrl+K.
         cx.bind_keys([KeyBinding::new(
@@ -76,6 +83,12 @@ fn main() {
                 ThemeMode::Dark
             };
             Theme::change(next, None, cx);
+
+            let mut settings = settings::load();
+            settings.appearance.theme_mode = if next.is_dark() { "dark" } else { "light" }.to_string();
+            if let Err(e) = settings::save(&settings) {
+                log::error!("failed to persist theme toggle: {e}");
+            }
         });
 
         // Reclaim keys that gpui-component's Root context binds (tab → focus nav,
@@ -96,22 +109,32 @@ fn main() {
         }
 
         let bounds = Bounds::centered(None, size(px(900.0), px(600.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                focus: true,
-                ..Default::default()
-            },
-            |window, cx| {
-                let workspace = cx.new(|cx| Workspace::new(window, cx));
-                // The window's top-level view must be a gpui-component `Root`
-                // (provides theme context, overlays, notifications).
-                cx.new(|cx| Root::new(workspace, window, cx).bg(cx.theme().background))
-            },
-        )
-        .expect("failed to open window");
+        let main_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    focus: true,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let workspace = cx.new(|cx| Workspace::new(window, cx));
+                    // The window's top-level view must be a gpui-component `Root`
+                    // (provides theme context, overlays, notifications).
+                    cx.new(|cx| Root::new(workspace, window, cx).bg(cx.theme().background))
+                },
+            )
+            .expect("failed to open window");
 
-        cx.on_window_closed(|cx, _window_id| cx.quit()).detach();
+        // `on_window_closed` fires for every window (including the settings
+        // window opened by `Workspace::open_settings`), not just this one —
+        // only quit the app when the *main* window is the one that closed.
+        let main_window_id = main_window.window_id();
+        cx.on_window_closed(move |cx, window_id| {
+            if window_id == main_window_id {
+                cx.quit();
+            }
+        })
+        .detach();
         cx.activate(true);
     });
 }
