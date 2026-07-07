@@ -34,12 +34,22 @@ pub fn render_header(
 ) -> impl IntoElement + use<> {
     let ws_file = workspace.clone();
     let ws_terminal = workspace.clone();
+    let ws_settings = workspace.clone();
 
     let file_menu = Button::new("menu-file")
         .ghost()
         .xsmall()
         .label("文件")
-        .dropdown_menu(move |menu, _window, _cx| menu.item(new_local_item(ws_file.clone())));
+        .dropdown_menu(move |menu, _window, _cx| {
+            menu.item(new_local_item(ws_file.clone())).item(
+                PopupMenuItem::new("设置...").on_click({
+                    let ws_settings = ws_settings.clone();
+                    move |_ev, window, cx| {
+                        let _ = ws_settings.update(cx, |w, cx| w.open_settings(window, cx));
+                    }
+                }),
+            )
+        });
 
     let view_menu = Button::new("menu-view")
         .ghost()
