@@ -308,6 +308,39 @@ impl TerminalView {
         self.exited = true;
     }
 
+    /// Send `text` into this terminal as if pasted (honours the term's
+    /// `BRACKETED_PASTE` mode, same encoder `paste_from_clipboard` uses). If
+    /// `execute` is `true`, a trailing Enter (`\r`) is sent after the encoded
+    /// payload. Used by the quick-commands panel to inject saved command
+    /// snippets. No-op for empty `text` (matches `encode_paste`'s own
+    /// empty-string `None` behavior).
+    pub fn send_text(&self, text: &str, execute: bool) {
+        let mode: TermMode = *self.term.lock().mode();
+        let Some(mut bytes) = encode_paste(text, mode, PastePayload::Clipboard) else {
+            return;
+        };
+        if execute {
+            bytes.push(b'\r');
+        }
+        self.backend.write(&bytes);
+        self.term
+            .lock()
+            .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
+    /// The cursor's current (row, column), 0-indexed, adjusted for
+    /// scrollback (`display_offset`) exactly like
+    /// `grid_snapshot::snapshot_content`'s own cursor computation. Used by
+    /// the status bar to show `row+1:col+1`.
+    pub fn cursor_position(&self) -> (usize, usize) {
+        let term = self.term.lock();
+        let content = term.renderable_content();
+        let display_offset = content.display_offset as i32;
+        let row = (content.cursor.point.line.0 + display_offset).max(0) as usize;
+        let col = content.cursor.point.column.0;
+        (row, col)
+    }
+
     // --- Font configuration interface (for a future settings UI) ---
 
     #[allow(dead_code)]
