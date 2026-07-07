@@ -31,6 +31,19 @@ actions!(caracal, [ToggleTheme]);
 const SYMBOLS_NERD_FONT_MONO: &[u8] =
     include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf");
 
+/// Default terminal font (see `terminal::view::FontConfig`), bundled so
+/// rendering is consistent across platforms instead of depending on each OS
+/// having a resolvable "system monospace" font (Windows in particular had no
+/// working auto-detection — see the design spec).
+const JETBRAINS_MONO_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+
+/// CJK fallback font (see `terminal::view::FontConfig`), bundled so Chinese
+/// glyphs resolve even on a Windows machine without an East Asian language
+/// pack installed.
+const SARASA_MONO_SC_REGULAR: &[u8] =
+    include_bytes!("../assets/fonts/SarasaMonoSC-Regular.ttf");
+
 fn main() {
     // Without a logger backend installed, every `log::error!`/`warn!`/`info!`
     // call in the app is silently dropped. Default to `info` so SSH/SFTP
@@ -73,11 +86,12 @@ fn main() {
             KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
         ]);
 
-        if let Err(e) = cx
-            .text_system()
-            .add_fonts(vec![Cow::Borrowed(SYMBOLS_NERD_FONT_MONO)])
-        {
-            log::warn!("failed to register bundled symbol font: {e}");
+        if let Err(e) = cx.text_system().add_fonts(vec![
+            Cow::Borrowed(SYMBOLS_NERD_FONT_MONO),
+            Cow::Borrowed(JETBRAINS_MONO_REGULAR),
+            Cow::Borrowed(SARASA_MONO_SC_REGULAR),
+        ]) {
+            log::warn!("failed to register bundled fonts: {e}");
         }
 
         let bounds = Bounds::centered(None, size(px(900.0), px(600.0)), cx);
