@@ -26,18 +26,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Context, Entity, Focusable, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
-    div, prelude::FluentBuilder, px,
+    AnyView, App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, ParentElement,
+    Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity,
+    Window, WindowBounds, WindowHandle, WindowOptions, div, prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockPlacement};
 use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
-use gpui_component::ActiveTheme;
+use gpui_component::{ActiveTheme, Root};
 
 use crate::config;
 use crate::panels::activity_bar::{PanelId, Side, activity_button, side_items};
 use crate::panels::header::render_header;
 use crate::panels::saved_connections::{SavedConnectionsEvent, SavedConnectionsPanel};
+use crate::panels::settings_window::SettingsWindow;
 use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
 use crate::panels::stub::StubPanel;
@@ -56,6 +57,9 @@ pub struct Workspace {
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
     terminal_views: Vec<WeakEntity<TerminalView>>,
+    /// The open settings window, if any — re-triggering the menu item
+    /// focuses this instead of opening a duplicate.
+    settings_window: Option<WindowHandle<Root>>,
 
     // --- panel registry -----------------------------------------------------
     /// The right-dock "已保存的连接" list (real panel).
@@ -130,6 +134,7 @@ impl Workspace {
             dock_area,
             ssh_sessions: HashMap::new(),
             terminal_views: Vec::new(),
+            settings_window: None,
             saved_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
@@ -269,6 +274,57 @@ impl Workspace {
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
+    }
+
+    /// Open the settings window, or focus it if one is already open.
+    pub fn open_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(handle) = &self.settings_window {
+            if handle
+                .update(cx, |_root, window, _cx| window.activate_window())
+                .is_ok()
+            {
+                return;
+            }
+            // Handle is stale (window was closed) — fall through and open a
+            // fresh one, replacing it below.
+        }
+
+        let workspace = cx.entity().downgrade();
+        let bounds = Bounds::centered(None, size(px(640.0), px(480.0)), cx);
+        let result = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                focus: true,
+                ..Default::default()
+            },
+            move |window, cx| {
+                let settings_window =
+                    cx.new(|cx| SettingsWindow::new(workspace.clone(), window, cx));
+                cx.new(|cx| Root::new(settings_window, window, cx).bg(cx.theme().background))
+            },
+        );
+        match result {
+            Ok(handle) => self.settings_window = Some(handle),
+            Err(e) => log::error!("failed to open settings window: {e}"),
+        }
+    }
+
+    /// Broadcast a new font family/size to every currently-open terminal tab,
+    /// pruning any that have since closed. Called by [`SettingsWindow`] on
+    /// Apply/Confirm.
+    pub fn apply_font_settings(
+        &mut self,
+        font_family: String,
+        font_size: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        self.terminal_views.retain(|weak| {
+            weak.update(cx, |view, cx| {
+                view.set_font_family(font_family.clone(), cx);
+                view.set_font_size(font_size, cx);
+            })
+            .is_ok()
+        });
     }
 
     /// Update the header's active title from a (possibly-dropped) terminal.
