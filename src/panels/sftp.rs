@@ -29,11 +29,13 @@ use std::time::Instant;
 use gpui::{
     App, AppContext, AsyncApp, ClipboardItem, Context, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
+    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::NotificationType;
 use gpui_component::resizable::{resizable_panel, v_resizable, ResizableState};
 use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState};
@@ -96,10 +98,11 @@ enum PendingOpKind {
 struct FileTableDelegate {
     entries: Vec<SftpEntry>,
     columns: Vec<Column>,
+    panel: WeakEntity<SftpPanel>,
 }
 
 impl FileTableDelegate {
-    fn new() -> Self {
+    fn new(panel: WeakEntity<SftpPanel>) -> Self {
         Self {
             entries: Vec::new(),
             columns: vec![
@@ -108,6 +111,7 @@ impl FileTableDelegate {
                 Column::new("size", "大小").width(px(64.)).sortable().text_right(),
                 Column::new("perms", "权限").width(px(72.)),
             ],
+            panel,
         }
     }
 }
@@ -123,6 +127,53 @@ impl TableDelegate for FileTableDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         self.columns[col_ix].clone()
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some(entry) = self.entries.get(row_ix) else {
+            return menu;
+        };
+        let is_dir = entry.is_dir;
+        let name_for_open = entry.name.clone();
+
+        let panel_open = self.panel.clone();
+        let panel_download = self.panel.clone();
+        let panel_rename = self.panel.clone();
+        let panel_properties = self.panel.clone();
+        let panel_copy = self.panel.clone();
+        let panel_delete = self.panel.clone();
+
+        menu.item(PopupMenuItem::new("打开").on_click(move |_ev, window, cx| {
+            let _ = panel_open.update(cx, |panel, cx| {
+                if is_dir {
+                    panel.enter_dir(&name_for_open, window, cx);
+                } else {
+                    panel.download(&name_for_open, cx);
+                }
+            });
+        }))
+        .item(PopupMenuItem::new("下载").on_click(move |_ev, window, cx| {
+            let _ = panel_download.update(cx, |panel, cx| panel.download_selected(window, cx));
+        }))
+        .item(PopupMenuItem::new("重命名").on_click(move |_ev, window, cx| {
+            let _ = panel_rename.update(cx, |panel, cx| panel.rename_entry(row_ix, window, cx));
+        }))
+        .item(PopupMenuItem::new("属性").on_click(move |_ev, window, cx| {
+            let _ = panel_properties
+                .update(cx, |panel, cx| panel.show_properties(row_ix, window, cx));
+        }))
+        .item(PopupMenuItem::new("复制路径").on_click(move |_ev, _window, cx| {
+            let _ = panel_copy.update(cx, |panel, cx| panel.copy_entry_path(row_ix, cx));
+        }))
+        .item(PopupMenuItem::new("删除").on_click(move |_ev, window, cx| {
+            let _ = panel_delete.update(cx, |panel, cx| panel.delete_selected(window, cx));
+        }))
     }
 
     fn render_td(
@@ -245,7 +296,8 @@ impl SftpPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let download_dir = download_default_dir();
-        let delegate = FileTableDelegate::new();
+        let panel = cx.entity().downgrade();
+        let delegate = FileTableDelegate::new(panel);
         let table_state = cx.new(|cx| {
             TableState::new(delegate, window, cx)
                 .row_selectable(true)
@@ -584,7 +636,6 @@ impl SftpPanel {
         cx.notify();
     }
 
-    #[allow(dead_code)] // wired to the context menu in Task 4
     fn rename_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(old_name) = self
             .table_state
@@ -836,7 +887,15 @@ impl SftpPanel {
         cx.write_to_clipboard(ClipboardItem::new_string(self.path.clone()));
     }
 
-    #[allow(dead_code)] // wired to the context menu in Task 4
+    fn copy_entry_path(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(name) = self.table_state.read(cx).delegate().entries.get(ix).map(|e| e.name.clone())
+        else {
+            return;
+        };
+        let remote = remote_join(&self.path, &name);
+        cx.write_to_clipboard(ClipboardItem::new_string(remote));
+    }
+
     fn show_properties(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(entry) = self.table_state.read(cx).delegate().entries.get(ix).cloned() else {
             return;
@@ -1438,7 +1497,6 @@ fn human_perms(perms: u32) -> String {
 }
 
 /// One label/value row in the properties dialog's key/value grid.
-#[allow(dead_code)] // called from show_properties, wired to the context menu in Task 4
 fn properties_row(label: &str, value: &str, cx: &App) -> impl IntoElement {
     div()
         .flex()
