@@ -34,7 +34,7 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    Action, App, AppContext, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
+    Action, App, AppContext, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement, IntoElement, ParentElement, Render,
     SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
     WindowHandle, div, px,
@@ -223,6 +223,11 @@ pub struct SavedConnectionsPanel {
     /// the "新建连接"/"编辑" entry points focuses this instead of opening a
     /// duplicate (see `open_new_connection_window`).
     new_connection_window: Option<WindowHandle<Root>>,
+    /// `Some((target_ix, insert_before))` while a `DragConnection` is
+    /// hovering over connection row `target_ix` — set by that row's
+    /// `on_drag_move`, consumed and cleared by its `on_drop`. `None` when no
+    /// drag is in progress or the drag isn't currently over a row.
+    drag_reorder_target: Option<(usize, bool)>,
 }
 
 impl SavedConnectionsPanel {
@@ -249,6 +254,7 @@ impl SavedConnectionsPanel {
             new_folder_name,
             _folder_enter_sub: None,
             new_connection_window: None,
+            drag_reorder_target: None,
         }
     }
 
@@ -522,6 +528,55 @@ impl SavedConnectionsPanel {
             self.persist();
             cx.notify();
         }
+    }
+
+    /// Reorder `dragged_ix` to just before/after `target_ix` within their
+    /// shared `group_id` scope. If the two connections are in different
+    /// scopes, this isn't a reorder — fall back to the existing
+    /// append-at-end cross-group move instead (matches the header/blank-area
+    /// drop behavior; only same-scope drops get position control).
+    fn reorder_connection(
+        &mut self,
+        dragged_ix: usize,
+        target_ix: usize,
+        insert_before: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if dragged_ix == target_ix
+            || dragged_ix >= self.connections.len()
+            || target_ix >= self.connections.len()
+        {
+            return;
+        }
+        let group_id = self.connections[target_ix].group_id.clone();
+        if self.connections[dragged_ix].group_id != group_id {
+            self.move_connection_to_group(dragged_ix, group_id, cx);
+            return;
+        }
+
+        let mut siblings: Vec<usize> = self
+            .connections
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.group_id == group_id)
+            .map(|(ix, _)| ix)
+            .collect();
+        siblings.sort_by_key(|&ix| (self.connections[ix].sort_order, ix));
+        siblings.retain(|&ix| ix != dragged_ix);
+
+        let target_pos = siblings
+            .iter()
+            .position(|&ix| ix == target_ix)
+            .unwrap_or(siblings.len());
+        let insert_pos = if insert_before { target_pos } else { target_pos + 1 };
+        siblings.insert(insert_pos, dragged_ix);
+
+        for (order, ix) in siblings.into_iter().enumerate() {
+            self.connections[ix].sort_order = order as i32;
+        }
+
+        self.persist();
+        cx.notify();
     }
 
     /// Toggle group expansion.
@@ -1166,6 +1221,26 @@ impl SavedConnectionsPanel {
             .on_drag(DragConnection { ix, name: drag_name }, |drag, _offset, _window, cx| {
                 cx.new(|_| drag.clone())
             })
+            .drag_over::<DragConnection>(|style, _drag, _window, cx| {
+                style.bg(cx.theme().list_active)
+            })
+            .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<DragConnection>, _window, _cx| {
+                if event.bounds.contains(&event.event.position) {
+                    let insert_before = event.event.position.y < event.bounds.center().y;
+                    this.drag_reorder_target = Some((ix, insert_before));
+                } else if this.drag_reorder_target.is_some_and(|(target, _)| target == ix) {
+                    this.drag_reorder_target = None;
+                }
+            }))
+            .on_drop(cx.listener(move |this, drag: &DragConnection, _window, cx| {
+                let insert_before = this
+                    .drag_reorder_target
+                    .filter(|(target, _)| *target == ix)
+                    .map(|(_, before)| before)
+                    .unwrap_or(true);
+                this.drag_reorder_target = None;
+                this.reorder_connection(drag.ix, ix, insert_before, cx);
+            }))
             .context_menu(move |menu, _window, _cx| {
                 menu.menu("打开", Box::new(OpenConnection { ix }))
                     .menu("编辑", Box::new(EditConnection { ix }))
