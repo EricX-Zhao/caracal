@@ -671,12 +671,12 @@ impl SftpPanel {
         if name.is_empty() {
             return;
         }
-        if name.contains('/') {
-            if let PendingOpKind::Rename(_) = kind {
+        if let PendingOpKind::Rename(_) = kind {
+            if name.contains('/') {
                 self.status = "重命名失败: 名称不能包含 \"/\"".to_string();
                 cx.notify();
+                return;
             }
-            return;
         }
         let remote = remote_join(&self.path, &name);
         let session = self.session.clone();
