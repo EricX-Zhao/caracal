@@ -354,7 +354,6 @@ impl TerminalView {
     /// output for the SFTP panel's "sync from terminal" button — see
     /// `docs/superpowers/specs/2026-07-08-file-explorer-gaps-round-b-design.md`
     /// for why this is best-effort, not a reliable signal.
-    #[allow(dead_code)] // wired to Workspace::guess_focused_terminal_cwd in Task 4
     pub fn line_text(&self, visual_row: usize) -> String {
         use alacritty_terminal::index::{Column, Line, Point, Side};
         use alacritty_terminal::selection::Selection;

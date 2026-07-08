@@ -42,6 +42,7 @@ use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableE
 use gpui_component::{ActiveTheme, Disableable, IconName, Sizable, WindowExt};
 
 use crate::panels::icons::{AppIcon, icon};
+use crate::workspace::Workspace;
 
 use crate::terminal::ssh::{
     SftpEntry, SshSession, TransferDirection, TransferEvent, TransferHandle,
@@ -312,12 +313,16 @@ pub struct SftpPanel {
     /// Most-recently-visited directories, oldest first, capped at 20. Shown
     /// by the path bar's history dropdown; not persisted.
     history: Vec<String>,
+    /// Back-reference for cwd-sync — see `send_path_to_terminal`/
+    /// `sync_cwd_from_terminal`.
+    workspace: WeakEntity<Workspace>,
 }
 
 impl SftpPanel {
     pub fn new(
         session: Arc<SshSession>,
         label: impl Into<SharedString>,
+        workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -346,6 +351,7 @@ impl SftpPanel {
             download_dir,
             show_hidden: false,
             history: Vec::new(),
+            workspace,
         };
         // Wire double-click → enter dir / download. Needs `window`, so we
         // call it here in `new()` before `refresh`.
@@ -938,6 +944,34 @@ impl SftpPanel {
         cx.write_to_clipboard(ClipboardItem::new_string(self.path.clone()));
     }
 
+    fn send_path_to_terminal(&self, cx: &Context<Self>) {
+        let cmd = format!("cd '{}'", self.path);
+        let _ = self.workspace.read_with(cx, |ws, cx| {
+            ws.send_to_focused_terminal(&cmd, true, cx);
+        });
+    }
+
+    fn sync_cwd_from_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(task) = workspace.update(cx, |ws, cx| ws.guess_focused_terminal_cwd(cx))
+            else {
+                return;
+            };
+            let guess = task.await;
+            let _ = cx.update(|window, cx| {
+                let _ = this.update(cx, |this, cx| match guess {
+                    Some(path) => this.navigate_to(path, window, cx),
+                    None => {
+                        this.status = "无法从终端获取当前目录".to_string();
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
+    }
+
     fn copy_entry_path(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(name) = self.table_state.read(cx).delegate().entries.get(ix).map(|e| e.name.clone())
         else {
@@ -1288,6 +1322,24 @@ impl SftpPanel {
                         menu
                     })
             })
+            .child(
+                Button::new("sftp-send-to-terminal")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::ArrowRight)
+                    .tooltip("发送路径到终端")
+                    .on_click(cx.listener(|this, _, _w, cx| this.send_path_to_terminal(cx))),
+            )
+            .child(
+                Button::new("sftp-sync-from-terminal")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::ArrowLeft)
+                    .tooltip("从终端同步目录")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.sync_cwd_from_terminal(window, cx)
+                    })),
+            )
     }
 
     fn render_file_list(&self, _cx: &Context<Self>) -> impl IntoElement {

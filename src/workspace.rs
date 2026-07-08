@@ -28,7 +28,7 @@ use std::sync::Arc;
 use gpui::{
     AnyView, App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
+    Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
     prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockPlacement};
@@ -416,6 +416,33 @@ impl Workspace {
         terminal.read(cx).send_text(text, execute);
     }
 
+    /// Best-effort: ask the currently-focused terminal what directory it's
+    /// in by injecting `pwd` and reading back the line the shell echoes.
+    /// No OSC7/shell-integration exists in this terminal emulator, so this
+    /// is a fixed-delay guess, not a reliable signal — see
+    /// `docs/superpowers/specs/2026-07-08-file-explorer-gaps-round-b-design.md`.
+    /// Resolves to `None` if there's no focused terminal, or if the line
+    /// read back doesn't look like an absolute path.
+    pub fn guess_focused_terminal_cwd(&self, cx: &mut Context<Self>) -> Task<Option<String>> {
+        let Some(terminal) = self.focused_terminal.as_ref().and_then(|w| w.upgrade()) else {
+            return Task::ready(None);
+        };
+        let start_row = terminal.read(cx).cursor_position().0;
+        terminal.read(cx).send_text("pwd", true);
+        cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(400))
+                .await;
+            let line = terminal.read_with(cx, |term, _cx| term.line_text(start_row + 1));
+            let trimmed = line.trim().to_string();
+            if trimmed.starts_with('/') {
+                Some(trimmed)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Bind the SFTP slot to `config`'s host (reusing the shared connection,
     /// creating the browser once) and force the left slot to show it.
     fn show_sftp(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
@@ -425,7 +452,9 @@ impl Workspace {
                 return;
             };
             let label = format!("{}@{}", config.user, config.host);
-            let panel: AnyView = cx.new(|cx| SftpPanel::new(session, label, window, cx)).into();
+            let workspace = cx.entity().downgrade();
+            let panel: AnyView =
+                cx.new(|cx| SftpPanel::new(session, label, workspace, window, cx)).into();
             self.sftp_panels.insert(key.clone(), panel);
         }
         self.active_sftp = Some(key);
