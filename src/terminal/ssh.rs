@@ -126,6 +126,13 @@ enum SftpRequest {
         recursive: bool,
         reply: flume::Sender<Result<()>>,
     },
+    /// Rename (or move within the same directory — this round's UI only
+    /// rewrites the filename, never the directory) a remote path.
+    Rename {
+        old: String,
+        new: String,
+        reply: flume::Sender<Result<()>>,
+    },
 }
 
 /// Direction of a transfer (used by the panel to render the right icon +
@@ -386,6 +393,19 @@ impl SshSession {
         let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::Remove {
             path,
             recursive,
+            reply,
+        }));
+        rx
+    }
+
+    /// Rename `old` to `new` (SFTP `rename`). This round's UI only calls
+    /// this with `old`/`new` sharing the same parent directory (rename, not
+    /// move) — the backend itself doesn't enforce that.
+    pub fn sftp_rename(&self, old: String, new: String) -> flume::Receiver<Result<()>> {
+        let (reply, rx) = flume::bounded(1);
+        let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::Rename {
+            old,
+            new,
             reply,
         }));
         rx
@@ -822,6 +842,24 @@ async fn service_sftp(
             }
             let _ = reply.send(result);
         }
+        SftpRequest::Rename { old, new, reply } => {
+            let sftp = match clone_sftp(sftp_slot).await {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = reply.send(Err(e));
+                    return;
+                }
+            };
+            log::info!("sftp: rename {old:?} -> {new:?}");
+            let result = sftp
+                .rename(old.clone(), new.clone())
+                .await
+                .map_err(|e| anyhow!("rename {old:?} -> {new:?}: {e}"));
+            if let Err(ref e) = result {
+                log::error!("sftp: rename {old:?} -> {new:?} failed: {e:#}");
+            }
+            let _ = reply.send(result);
+        }
     }
 }
 
@@ -907,7 +945,8 @@ fn reply_sftp_error(request: SftpRequest, err: anyhow::Error) {
         }
         SftpRequest::Mkdir { reply, .. }
         | SftpRequest::CreateFile { reply, .. }
-        | SftpRequest::Remove { reply, .. } => {
+        | SftpRequest::Remove { reply, .. }
+        | SftpRequest::Rename { reply, .. } => {
             let _ = reply.send(Err(err));
         }
     }
