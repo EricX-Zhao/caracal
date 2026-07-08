@@ -44,6 +44,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt};
 use serde::Deserialize;
 
@@ -1216,6 +1217,32 @@ impl SavedConnectionsPanel {
             .pl(px(depth as f32 * 16.0 + 8.0))
             .rounded_md()
             .hover(|s| s.bg(cx.theme().list_hover))
+            .tooltip({
+                let tooltip_lines = conn.tooltip_lines();
+                move |window, cx| {
+                    let tooltip_lines = tooltip_lines.clone();
+                    Tooltip::element(move |_window, cx| {
+                        let mut grid = div().flex().flex_col().gap_1().p_2();
+                        for (label, value) in &tooltip_lines {
+                            grid = grid.child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .min_w(px(72.0))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(label.clone()),
+                                    )
+                                    .child(div().child(value.clone())),
+                            );
+                        }
+                        grid
+                    })
+                    .build(window, cx)
+                }
+            })
             .child(clickable)
             .child(action_bar)
             .on_drag(DragConnection { ix, name: drag_name }, |drag, _offset, _window, cx| {
