@@ -31,6 +31,7 @@
 //! (CLAUDE.md §1 boundary).
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
@@ -40,12 +41,13 @@ use gpui::{
     WindowHandle, div, px,
 };
 use gpui_component::Root;
+use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
-use gpui_component::menu::ContextMenuExt;
+use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme, StyledExt, WindowExt};
+use gpui_component::{ActiveTheme, Sizable, StyledExt, WindowExt};
 use serde::Deserialize;
 
 use crate::panels::icons::{AppIcon, icon};
@@ -794,6 +796,82 @@ impl SavedConnectionsPanel {
             log::error!("failed to save connections: {e}");
         }
     }
+
+    /// Write the entire current connections + groups list to a
+    /// user-chosen TOML file (native "save as" dialog). Does not touch
+    /// the app's own `connections.toml` — this is a separate export file.
+    fn export_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let start_dir = config::config_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let rx = cx.prompt_for_new_path(&start_dir, Some("connections.toml"));
+        cx.spawn_in(window, async move |weak, cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let _ = weak.update(cx, |this, _cx| {
+                let export = AppConfig {
+                    connections: this.connections.clone(),
+                    groups: this.groups.clone(),
+                };
+                let text = match toml::to_string_pretty(&export) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::error!("failed to serialize exported connections: {e}");
+                        return;
+                    }
+                };
+                if let Err(e) = std::fs::write(&path, text) {
+                    log::error!("failed to write exported connections to {path:?}: {e}");
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Read a user-chosen TOML file (same shape as `connections.toml`) and
+    /// append every connection and group from it to the current lists. No
+    /// merge/dedup — `SavedConnection` has no stable id to merge on, so
+    /// importing the same file twice produces duplicates (deletable
+    /// manually), which is safer than silently dropping data.
+    fn import_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::error!("failed to read {path:?}: {e}");
+                    return;
+                }
+            };
+            let imported: AppConfig = match toml::from_str(&text) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    log::error!("failed to parse {path:?} as connections TOML: {e}");
+                    return;
+                }
+            };
+            let _ = weak.update(cx, |this, cx| {
+                this.connections.extend(imported.connections);
+                this.groups.extend(imported.groups);
+                this.persist();
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 impl EventEmitter<SavedConnectionsEvent> for SavedConnectionsPanel {}
@@ -935,20 +1013,31 @@ impl SavedConnectionsPanel {
                                 this.open_new_connection_window(None, None, window, cx)
                             })),
                     )
-                    .child(
-                        div()
-                            .id("more-btn")
-                            .p(px(6.0))
-                            .rounded_md()
-                            .hover(|s| s.bg(cx.theme().accent))
-                            .child(
-                                icon(AppIcon::MoreVertical)
-                                    .text_color(cx.theme().muted_foreground),
-                            )
-                            .on_click(cx.listener(|_this, _ev: &ClickEvent, _w, _cx| {
-                                // TODO: show more menu
-                            })),
-                    ),
+                    .child({
+                        let weak = cx.entity().downgrade();
+                        Button::new("more-btn")
+                            .ghost()
+                            .small()
+                            .icon(icon(AppIcon::MoreVertical))
+                            .dropdown_menu(move |menu, _window, _cx| {
+                                let weak_export = weak.clone();
+                                let weak_import = weak.clone();
+                                menu.item(PopupMenuItem::new("导出配置").on_click(
+                                    move |_ev, window, cx| {
+                                        let _ = weak_export.update(cx, |this, cx| {
+                                            this.export_connections(window, cx);
+                                        });
+                                    },
+                                ))
+                                .item(PopupMenuItem::new("导入配置").on_click(
+                                    move |_ev, window, cx| {
+                                        let _ = weak_import.update(cx, |this, cx| {
+                                            this.import_connections(window, cx);
+                                        });
+                                    },
+                                ))
+                            })
+                    }),
             )
     }
 
