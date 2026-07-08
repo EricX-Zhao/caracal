@@ -81,8 +81,8 @@ this document only fixes scope boundaries and order, not field-level design.
    `Button`, not arbitrary elements). Scope held to the spec's Non-goals: no cross-group
    drag+reposition combo, no import merge/dedup, TOML-only (no other tools' formats), no
    selective export, no jump-host in the hover card.
-5. **文件浏览器 查漏补缺 (File Explorer gaps)** — split into two rounds (context menu,
-   rename/move, properties cluster vs. hidden-files/bookmarks/cwd-sync cluster; see below).
+5. **文件浏览器 查漏补缺 (File Explorer gaps)** — ✅ Done, split into two rounds (context
+   menu/rename/properties cluster vs. hidden-files/history/cwd-sync cluster; see below).
    - **Round A** (context menu, rename, properties) — ✅ Done
      (2026-07-08, `docs/superpowers/specs/2026-07-08-file-explorer-gaps-round-a-design.md` /
      `docs/superpowers/plans/2026-07-08-file-explorer-gaps-round-a.md`). Added a
@@ -102,7 +102,28 @@ this document only fixes scope boundaries and order, not field-level design.
      panel methods, the same `WeakEntity::update` pattern used throughout items 3-4. Explicit
      move (dragging a file to a different directory) was dropped from this round — no
      directory-tree view exists to make it discoverable, deferred to a later round.
-   - **Round B** — not started: hidden-files toggle, bookmarks/history, cwd sync.
+   - **Round B** (hidden files, directory history, cwd sync) — ✅ Done
+     (2026-07-08, `docs/superpowers/specs/2026-07-08-file-explorer-gaps-round-b-design.md` /
+     `docs/superpowers/plans/2026-07-08-file-explorer-gaps-round-b.md`). Bookmarks (originally
+     also part of item 5) were dropped from scope entirely, not deferred. Hidden files is a
+     client-side filter — `FileTableDelegate` keeps a raw `all_entries` alongside the
+     displayed, filtered `entries`, so toggling never needs a fresh SFTP round-trip. Directory
+     history is session-only (not persisted, matching nyaterm's own ephemeral per-session
+     cache) via a shared `SftpPanel::navigate_to` helper that every navigation path (enter
+     dir, go up, typed path, history dropdown, cwd-sync) now routes through — added as a
+     genuine behavior-preserving refactor of three pre-existing methods, not just new code
+     alongside them. cwd sync has two independent directions: "send to terminal" reuses the
+     existing `Workspace::send_to_focused_terminal` (fixed during the final whole-branch
+     review — the injected `cd '<path>'` wasn't shell-escaped, so a directory name containing
+     an apostrophe broke the command; fixed with standard POSIX quote-escaping). "Sync from
+     terminal" is an explicitly best-effort mechanism, since caracal's terminal has no
+     OSC7/shell-integration cwd tracking at all: inject `pwd`, wait a fixed ~400ms, then read
+     back one row of the terminal's grid via a new `TerminalView::line_text` — built on a
+     programmatic `alacritty_terminal` `Lines`-type selection (the same mechanism mouse
+     triple-click already uses, just driven from code instead of a drag), verified against
+     the actual pinned `alacritty_terminal` 0.26.0 source to correctly invert
+     `cursor_position`'s viewport-coordinate math. No OSC7, no retry, no shell-specific prompt
+     detection — failures surface as a status message, never a wrong navigation.
 6. **资源监控 (Resource Monitoring)** — largest single scope (4 sub-panels, new
    data-gathering pipeline), done last once the settings page exists to hold its per-panel
    enable toggles and poll intervals (mirroring nyaterm, where all 4 remote-monitor panels
