@@ -96,6 +96,11 @@ enum PendingOpKind {
 
 /// Delegate that feeds the `DataTable` from the panel's `entries` vec.
 struct FileTableDelegate {
+    /// Every entry the server returned for the current directory,
+    /// unfiltered. `entries` (below) is derived from this by
+    /// `apply_hidden_filter` — kept separately so toggling hidden files
+    /// doesn't need a fresh SFTP round-trip.
+    all_entries: Vec<SftpEntry>,
     entries: Vec<SftpEntry>,
     columns: Vec<Column>,
     panel: WeakEntity<SftpPanel>,
@@ -104,6 +109,7 @@ struct FileTableDelegate {
 impl FileTableDelegate {
     fn new(panel: WeakEntity<SftpPanel>) -> Self {
         Self {
+            all_entries: Vec::new(),
             entries: Vec::new(),
             columns: vec![
                 Column::new("name", "名称").width(px(150.)).sortable(),
@@ -113,6 +119,20 @@ impl FileTableDelegate {
             ],
             panel,
         }
+    }
+
+    /// Recompute the displayed `entries` from `all_entries`, filtering out
+    /// dotfiles (names starting with `.`) unless `show_hidden` is true.
+    fn apply_hidden_filter(&mut self, show_hidden: bool) {
+        self.entries = if show_hidden {
+            self.all_entries.clone()
+        } else {
+            self.all_entries
+                .iter()
+                .filter(|e| !e.name.starts_with('.'))
+                .cloned()
+                .collect()
+        };
     }
 }
 
@@ -286,6 +306,9 @@ pub struct SftpPanel {
     pending_op: Option<(PendingOpKind, Entity<InputState>)>,
     /// Default local download directory. Editable in the bottom bar.
     download_dir: PathBuf,
+    /// Whether dotfiles (names starting with `.`) are shown. Toggled by the
+    /// toolbar's hidden-files button; not persisted.
+    show_hidden: bool,
 }
 
 impl SftpPanel {
@@ -318,6 +341,7 @@ impl SftpPanel {
             resize_state,
             pending_op: None,
             download_dir,
+            show_hidden: false,
         };
         // Wire double-click → enter dir / download. Needs `window`, so we
         // call it here in `new()` before `refresh`.
@@ -406,8 +430,10 @@ impl SftpPanel {
                 match result {
                     Ok(Ok(entries)) => {
                         this.status = format!("{} item(s)", entries.len());
+                        let show_hidden = this.show_hidden;
                         table_state.update(cx, |state, cx| {
-                            state.delegate_mut().entries = entries;
+                            state.delegate_mut().all_entries = entries;
+                            state.delegate_mut().apply_hidden_filter(show_hidden);
                             state.refresh(cx);
                         });
                     }
@@ -419,6 +445,16 @@ impl SftpPanel {
             .ok();
         })
         .detach();
+    }
+
+    fn toggle_hidden_files(&mut self, cx: &mut Context<Self>) {
+        self.show_hidden = !self.show_hidden;
+        let show_hidden = self.show_hidden;
+        self.table_state.update(cx, |state, cx| {
+            state.delegate_mut().apply_hidden_filter(show_hidden);
+            state.refresh(cx);
+        });
+        cx.notify();
     }
 
     fn enter_dir(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1176,6 +1212,15 @@ impl SftpPanel {
                     .icon(icon(AppIcon::Refresh))
                     .tooltip("刷新")
                     .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("sftp-toggle-hidden")
+                    .xsmall()
+                    .ghost()
+                    .icon(if self.show_hidden { IconName::EyeOff } else { IconName::Eye })
+                    .tooltip(if self.show_hidden { "隐藏点文件" } else { "显示隐藏文件" })
+                    .on_click(cx.listener(|this, _, _w, cx| this.toggle_hidden_files(cx))),
             )
     }
 
