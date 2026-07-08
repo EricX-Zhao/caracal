@@ -59,6 +59,12 @@ pub struct NewConnectionWindow {
     parity: String,
     stop_bits: u8,
     flow_control: String,
+    /// The `sort_order` this connection will be saved with — for edits,
+    /// the existing connection's value (position doesn't change on edit);
+    /// for new connections, `new_sort_order` as computed by the caller
+    /// (`SavedConnectionsPanel::open_new_connection_window`, which has
+    /// access to the full connection list this window doesn't).
+    sort_order: i32,
 }
 
 impl NewConnectionWindow {
@@ -66,6 +72,7 @@ impl NewConnectionWindow {
         panel: WeakEntity<SavedConnectionsPanel>,
         existing: Option<(usize, SavedConnection)>,
         group_id: Option<String>,
+        new_sort_order: i32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -81,6 +88,7 @@ impl NewConnectionWindow {
             panel,
             edit_ix,
             group_id,
+            sort_order: conn.as_ref().map(|c| c.sort_order).unwrap_or(new_sort_order),
             icon_key: conn.as_ref().and_then(|c| c.icon.clone()),
             conn_type: conn.as_ref().map(|c| c.conn_type.clone()).unwrap_or(ConnectionType::Ssh),
             name: cx.new(|cx| {
@@ -211,6 +219,7 @@ impl NewConnectionWindow {
                     group_id,
                     conn_type: self.conn_type.clone(),
                     icon,
+                    sort_order: self.sort_order,
                     shell_path: None,
                     working_dir: None,
                     serial_port: None,
@@ -246,6 +255,7 @@ impl NewConnectionWindow {
                     group_id,
                     conn_type: self.conn_type.clone(),
                     icon,
+                    sort_order: self.sort_order,
                     shell_path: if shell_path.is_empty() { None } else { Some(shell_path) },
                     working_dir: if working_dir.is_empty() { None } else { Some(working_dir) },
                     serial_port: None,
@@ -274,6 +284,7 @@ impl NewConnectionWindow {
                     group_id,
                     conn_type: self.conn_type.clone(),
                     icon,
+                    sort_order: self.sort_order,
                     shell_path: None,
                     working_dir: None,
                     serial_port: None,
@@ -302,6 +313,7 @@ impl NewConnectionWindow {
                     group_id,
                     conn_type: self.conn_type.clone(),
                     icon,
+                    sort_order: self.sort_order,
                     shell_path: None,
                     working_dir: None,
                     serial_port: Some(serial_port),

@@ -110,6 +110,14 @@ pub struct SavedConnection {
     /// meaningful when `auth_method == "key"`.
     #[serde(default)]
     pub private_key_passphrase: Option<String>,
+    /// Manual ordering within a `group_id` scope (including `None`, the
+    /// ungrouped section, which is its own scope). Lower sorts first.
+    /// `SortMode::Default` reads this; drag-reorder writes it. New
+    /// connections get the count of existing siblings in their scope
+    /// (append-to-end), mirroring `SavedConnectionGroup.sort_order`'s
+    /// `create_folder` convention.
+    #[serde(default)]
+    pub sort_order: i32,
 }
 
 fn default_auth_method() -> String {
@@ -236,7 +244,6 @@ impl SavedConnection {
     }
 
     /// Lines shown in the tooltip. Each line is (label, value).
-    #[allow(dead_code)]
     pub fn tooltip_lines(&self) -> Vec<(String, String)> {
         let mut lines = Vec::new();
         match self.conn_type {
@@ -350,6 +357,7 @@ mod tests {
             auth_method: "password".to_string(),
             private_key_path: None,
             private_key_passphrase: None,
+            sort_order: 0,
         }
     }
 
@@ -486,5 +494,18 @@ mod tests {
         assert_eq!(cfg.connections.len(), 1);
         assert_eq!(cfg.connections[0].serial_port, None);
         assert_eq!(cfg.connections[0].baud_rate, None);
+    }
+
+    #[test]
+    fn old_config_without_sort_order_still_deserializes() {
+        let toml_text = r#"
+            [[connections]]
+            host = "old.example.com"
+            user = "root"
+            conn_type = "ssh"
+        "#;
+        let cfg: AppConfig =
+            toml::from_str(toml_text).expect("old-format config must still parse");
+        assert_eq!(cfg.connections[0].sort_order, 0);
     }
 }

@@ -365,6 +365,11 @@ impl SavedConnectionsPanel {
         }
 
         let existing = edit_ix.and_then(|ix| self.connections.get(ix).map(|c| (ix, c.clone())));
+        let new_sort_order = self
+            .connections
+            .iter()
+            .filter(|c| c.group_id == group_id)
+            .count() as i32;
         let panel = cx.entity().downgrade();
         let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(560.0)), cx);
         let result = cx.open_window(
@@ -375,7 +380,14 @@ impl SavedConnectionsPanel {
             },
             move |window, cx| {
                 let new_window = cx.new(|cx| {
-                    NewConnectionWindow::new(panel.clone(), existing, group_id.clone(), window, cx)
+                    NewConnectionWindow::new(
+                        panel.clone(),
+                        existing,
+                        group_id.clone(),
+                        new_sort_order,
+                        window,
+                        cx,
+                    )
                 });
                 cx.new(|cx| Root::new(new_window, window, cx).bg(cx.theme().background))
             },
@@ -474,6 +486,11 @@ impl SavedConnectionsPanel {
             // copy of a decryption passphrase).
             new_conn.password = String::new();
             new_conn.private_key_passphrase = None;
+            new_conn.sort_order = self
+                .connections
+                .iter()
+                .filter(|c| c.group_id == new_conn.group_id)
+                .count() as i32;
             self.connections.push(new_conn);
             self.persist();
             cx.notify();
@@ -488,8 +505,20 @@ impl SavedConnectionsPanel {
         group_id: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        let Some(conn) = self.connections.get(ix) else {
+            return;
+        };
+        if conn.group_id == group_id {
+            return;
+        }
+        let new_sort_order = self
+            .connections
+            .iter()
+            .filter(|c| c.group_id == group_id)
+            .count() as i32;
         if let Some(conn) = self.connections.get_mut(ix) {
             conn.group_id = group_id;
+            conn.sort_order = new_sort_order;
             self.persist();
             cx.notify();
         }
@@ -688,7 +717,7 @@ impl SavedConnectionsPanel {
     fn sort_connections(&self, conns: &mut [(usize, &SavedConnection)]) {
         match self.sort_mode {
             SortMode::Default => {
-                // Keep original order (by insertion)
+                conns.sort_by_key(|(_, c)| c.sort_order);
             }
             SortMode::NameAsc => {
                 conns.sort_by(|a, b| a.1.display_name().cmp(&b.1.display_name()));
