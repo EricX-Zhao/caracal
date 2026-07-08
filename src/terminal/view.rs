@@ -341,6 +341,38 @@ impl TerminalView {
         (row, col)
     }
 
+    /// Best-effort plain-text read of one grid row, identified in the same
+    /// "visual row from viewport top" coordinate space `cursor_position`
+    /// returns (i.e. `visual_row` is what `cursor_position().0` gives you,
+    /// not a raw `alacritty_terminal::index::Line`). Built on a temporary
+    /// programmatic `Lines`-type selection — the same mechanism mouse
+    /// triple-click already uses (`terminal/selection.rs`) — rather than
+    /// direct grid-cell iteration. Saves and restores whatever selection
+    /// was already active first, so this never clobbers a real
+    /// in-progress user selection. Used by
+    /// `Workspace::guess_focused_terminal_cwd` to screen-scrape `pwd`'s
+    /// output for the SFTP panel's "sync from terminal" button — see
+    /// `docs/superpowers/specs/2026-07-08-file-explorer-gaps-round-b-design.md`
+    /// for why this is best-effort, not a reliable signal.
+    #[allow(dead_code)] // wired to Workspace::guess_focused_terminal_cwd in Task 4
+    pub fn line_text(&self, visual_row: usize) -> String {
+        use alacritty_terminal::index::{Column, Line, Point, Side};
+        use alacritty_terminal::selection::Selection;
+
+        let mut term = self.term.lock();
+        let display_offset = term.renderable_content().display_offset as i32;
+        let raw_line = visual_row as i32 - display_offset;
+        let saved = term.selection.take();
+        term.selection = Some(Selection::new(
+            SelectionType::Lines,
+            Point::new(Line(raw_line), Column(0)),
+            Side::Left,
+        ));
+        let text = term.selection_to_string().unwrap_or_default();
+        term.selection = saved;
+        text.trim().to_string()
+    }
+
     // --- Font configuration interface (for a future settings UI) ---
 
     #[allow(dead_code)]
