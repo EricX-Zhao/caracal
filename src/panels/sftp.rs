@@ -945,7 +945,7 @@ impl SftpPanel {
     }
 
     fn send_path_to_terminal(&self, cx: &Context<Self>) {
-        let cmd = format!("cd '{}'", self.path);
+        let cmd = format!("cd '{}'", self.path.replace('\'', "'\\''"));
         let _ = self.workspace.read_with(cx, |ws, cx| {
             ws.send_to_focused_terminal(&cmd, true, cx);
         });
