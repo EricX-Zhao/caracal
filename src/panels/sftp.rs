@@ -835,6 +835,33 @@ impl SftpPanel {
     fn copy_path(&mut self, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(self.path.clone()));
     }
+
+    #[allow(dead_code)] // wired to the context menu in Task 4
+    fn show_properties(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(entry) = self.table_state.read(cx).delegate().entries.get(ix).cloned() else {
+            return;
+        };
+        let path = remote_join(&self.path, &entry.name);
+        let kind = if entry.is_dir { "文件夹" } else { "文件" }.to_string();
+        let size = if entry.is_dir { "—".to_string() } else { human_size(entry.size) };
+        let mtime = human_mtime(entry.mtime);
+        let perms = human_perms(entry.perms);
+        let name = entry.name;
+
+        window.open_alert_dialog(cx, move |alert, _window, cx| {
+            let grid = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(properties_row("名称", &name, cx))
+                .child(properties_row("路径", &path, cx))
+                .child(properties_row("类型", &kind, cx))
+                .child(properties_row("大小", &size, cx))
+                .child(properties_row("修改时间", &mtime, cx))
+                .child(properties_row("权限", &perms, cx));
+            alert.title("属性").description(grid)
+        });
+    }
 }
 
 impl Focusable for SftpPanel {
@@ -1408,6 +1435,22 @@ fn human_perms(perms: u32) -> String {
         s
     };
     format!("{}{}{}", rwx((p >> 6) & 0o7), rwx((p >> 3) & 0o7), rwx(p & 0o7))
+}
+
+/// One label/value row in the properties dialog's key/value grid.
+#[allow(dead_code)] // called from show_properties, wired to the context menu in Task 4
+fn properties_row(label: &str, value: &str, cx: &App) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .gap_3()
+        .child(
+            div()
+                .min_w(px(64.0))
+                .text_color(cx.theme().muted_foreground)
+                .child(SharedString::from(label.to_string())),
+        )
+        .child(div().child(SharedString::from(value.to_string())))
 }
 
 fn human_mtime(mtime: u32) -> String {
