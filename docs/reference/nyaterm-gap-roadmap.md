@@ -81,8 +81,28 @@ this document only fixes scope boundaries and order, not field-level design.
    `Button`, not arbitrary elements). Scope held to the spec's Non-goals: no cross-group
    drag+reposition combo, no import merge/dedup, TOML-only (no other tools' formats), no
    selective export, no jump-host in the hover card.
-5. **文件浏览器 查漏补缺 (File Explorer gaps)** — context menu, rename/move, properties,
-   hidden files, bookmarks, cwd sync.
+5. **文件浏览器 查漏补缺 (File Explorer gaps)** — split into two rounds (context menu,
+   rename/move, properties cluster vs. hidden-files/bookmarks/cwd-sync cluster; see below).
+   - **Round A** (context menu, rename, properties) — ✅ Done
+     (2026-07-08, `docs/superpowers/specs/2026-07-08-file-explorer-gaps-round-a-design.md` /
+     `docs/superpowers/plans/2026-07-08-file-explorer-gaps-round-a.md`). Added a
+     `SftpRequest::Rename` backend variant (backed by `russh_sftp`'s `rename()`, mirroring the
+     existing `SftpRequest::Remove`'s shape); rename reuses the panel's existing `pending_op`
+     inline-banner mechanism (previously only used by 新建文件/新建文件夹) via a new
+     `PendingOpKind::Rename(usize)` variant, and rejects any typed name containing `/` so it
+     can never silently cross directories (caught and fixed during the final whole-branch
+     review — the first attempt at that guard had an unconditional `return` that also broke
+     新建文件/新建文件夹 for names containing `/`; corrected to scope the check to the
+     `Rename` case only). Properties is a `gpui_component::AlertDialog` with a custom
+     key/value grid (name/path/type/size/mtime/permissions), built entirely from the
+     already-fetched `SftpEntry` — no new SFTP round-trip, no owner/group (deferred).
+     `TableDelegate::context_menu` (a first-class `DataTable` hook, not custom per-row
+     wiring) drives the six-item menu (打开/下载/重命名/属性/复制路径/删除);
+     `FileTableDelegate` gained a `WeakEntity<SftpPanel>` field so menu clicks route back to
+     panel methods, the same `WeakEntity::update` pattern used throughout items 3-4. Explicit
+     move (dragging a file to a different directory) was dropped from this round — no
+     directory-tree view exists to make it discoverable, deferred to a later round.
+   - **Round B** — not started: hidden-files toggle, bookmarks/history, cwd sync.
 6. **资源监控 (Resource Monitoring)** — largest single scope (4 sub-panels, new
    data-gathering pipeline), done last once the settings page exists to hold its per-panel
    enable toggles and poll intervals (mirroring nyaterm, where all 4 remote-monitor panels
