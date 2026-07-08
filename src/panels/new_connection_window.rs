@@ -94,8 +94,12 @@ impl NewConnectionWindow {
                     .default_value(text(|c| &c.host))
             }),
             port: cx.new(|cx| {
+                // No fixed "(默认 NN)" here — SSH defaults to 22, Telnet to
+                // 23, and the field's *label* (see `Render`'s per-type
+                // fields list) already states the right one for whichever
+                // type is currently selected.
                 InputState::new(window, cx)
-                    .placeholder("端口(默认 22)")
+                    .placeholder("端口")
                     .default_value(conn.as_ref().map(|c| c.port.to_string()).unwrap_or_default())
             }),
             user: cx.new(|cx| {
@@ -193,7 +197,17 @@ impl NewConnectionWindow {
                     host,
                     port: self.port.read(cx).value().trim().parse().unwrap_or(22),
                     user: self.user.read(cx).value().trim().to_string(),
-                    password: self.password.read(cx).value().to_string(),
+                    // Only persist whichever credential the selected auth
+                    // method actually uses — otherwise a password typed
+                    // before switching to key auth would linger in
+                    // plaintext on disk even though it's never used to
+                    // connect (mirrors why `duplicate()` clears
+                    // `private_key_passphrase` when copying a connection).
+                    password: if self.auth_method == "key" {
+                        String::new()
+                    } else {
+                        self.password.read(cx).value().to_string()
+                    },
                     group_id,
                     conn_type: self.conn_type.clone(),
                     icon,
@@ -737,7 +751,7 @@ impl Render for NewConnectionWindow {
             .children(match conn_type {
                 ConnectionType::Ssh => vec![
                     self.field("主机", &self.host.clone(), cx).into_any_element(),
-                    self.field("端口", &self.port.clone(), cx).into_any_element(),
+                    self.field("端口 (默认 22)", &self.port.clone(), cx).into_any_element(),
                     self.field("用户名", &self.user.clone(), cx).into_any_element(),
                     self.render_ssh_auth_fields(cx).into_any_element(),
                 ],
@@ -747,7 +761,7 @@ impl Render for NewConnectionWindow {
                 ],
                 ConnectionType::Telnet => vec![
                     self.field("主机", &self.host.clone(), cx).into_any_element(),
-                    self.field("端口", &self.port.clone(), cx).into_any_element(),
+                    self.field("端口 (默认 23)", &self.port.clone(), cx).into_any_element(),
                 ],
                 ConnectionType::Serial => vec![
                     self.serial_port_field(cx).into_any_element(),

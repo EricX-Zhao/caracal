@@ -5,9 +5,10 @@
 //! Stored at `$XDG_CONFIG_HOME/caracal/connections.toml` (else
 //! `~/.config/caracal/connections.toml`).
 //!
-//! ⚠️ SECURITY / TODO: `password` is persisted in **plaintext**, matching the
-//! current Phase-4 plaintext-password reality (see `SshConfig`). This is a known
-//! limitation — a later phase should move secrets to the OS keyring.
+//! ⚠️ SECURITY / TODO: `password` and `private_key_passphrase` are both
+//! persisted in **plaintext**, matching the current Phase-4 plaintext-secret
+//! reality (see `SshConfig`). This is a known limitation — a later phase
+//! should move secrets to the OS keyring.
 
 use std::path::PathBuf;
 
