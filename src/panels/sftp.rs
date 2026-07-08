@@ -32,7 +32,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div,
     prelude::FluentBuilder, px,
 };
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
@@ -309,6 +309,9 @@ pub struct SftpPanel {
     /// Whether dotfiles (names starting with `.`) are shown. Toggled by the
     /// toolbar's hidden-files button; not persisted.
     show_hidden: bool,
+    /// Most-recently-visited directories, oldest first, capped at 20. Shown
+    /// by the path bar's history dropdown; not persisted.
+    history: Vec<String>,
 }
 
 impl SftpPanel {
@@ -342,6 +345,7 @@ impl SftpPanel {
             pending_op: None,
             download_dir,
             show_hidden: false,
+            history: Vec::new(),
         };
         // Wire double-click → enter dir / download. Needs `window`, so we
         // call it here in `new()` before `refresh`.
@@ -397,6 +401,25 @@ impl SftpPanel {
         entity
     }
 
+    /// Shared navigation: set `self.path`, push it onto `history` (skipping
+    /// a consecutive duplicate, capped at 20 entries), sync the path-bar
+    /// input, and refresh. Every navigation call site (`enter_dir`, `go_up`,
+    /// committing a typed path, the history dropdown, and cwd-sync) routes
+    /// through this so history-pushing has exactly one implementation.
+    fn navigate_to(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.history.last() != Some(&path) {
+            self.history.push(path.clone());
+            if self.history.len() > 20 {
+                self.history.remove(0);
+            }
+        }
+        self.path = path;
+        self.status = "Loading…".to_string();
+        self.sync_path_input(window, cx);
+        self.refresh(cx);
+        cx.notify();
+    }
+
     fn commit_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = self
             .path_input
@@ -408,16 +431,7 @@ impl SftpPanel {
         } else {
             raw.trim().to_string()
         };
-        self.path = new;
-        self.status = "Loading…".to_string();
-        let synced = self.path.clone();
-        if input.read(cx).value().as_ref() != synced.as_str() {
-            input.update(cx, |s, cx| {
-                s.set_value(synced, window, cx);
-            });
-        }
-        cx.notify();
-        self.refresh(cx);
+        self.navigate_to(new, window, cx);
     }
 
     /// Re-list the current directory.
@@ -458,19 +472,13 @@ impl SftpPanel {
     }
 
     fn enter_dir(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.path = remote_join(&self.path, name);
-        self.status = "Loading…".to_string();
-        self.sync_path_input(window, cx);
-        self.refresh(cx);
-        cx.notify();
+        let path = remote_join(&self.path, name);
+        self.navigate_to(path, window, cx);
     }
 
     fn go_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.path = remote_parent(&self.path);
-        self.status = "Loading…".to_string();
-        self.sync_path_input(window, cx);
-        self.refresh(cx);
-        cx.notify();
+        let path = remote_parent(&self.path);
+        self.navigate_to(path, window, cx);
     }
 
     fn sync_path_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1248,6 +1256,38 @@ impl SftpPanel {
                     .tooltip("复制路径")
                     .on_click(cx.listener(|this, _, _w, cx| this.copy_path(cx))),
             )
+            .child({
+                let history = self.history.clone();
+                let weak = cx.entity().downgrade();
+                DropdownButton::new("sftp-history")
+                    .xsmall()
+                    .button(
+                        Button::new("sftp-history-btn")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::Undo2)
+                            .tooltip("最近访问"),
+                    )
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        if history.is_empty() {
+                            return menu.label("暂无历史记录");
+                        }
+                        let mut menu = menu;
+                        for path in history.iter().rev().take(5) {
+                            let path = path.clone();
+                            let weak = weak.clone();
+                            menu = menu.item(PopupMenuItem::new(path.clone()).on_click(
+                                move |_ev, window, cx| {
+                                    let path = path.clone();
+                                    let _ = weak.update(cx, |this, cx| {
+                                        this.navigate_to(path, window, cx);
+                                    });
+                                },
+                            ));
+                        }
+                        menu
+                    })
+            })
     }
 
     fn render_file_list(&self, _cx: &Context<Self>) -> impl IntoElement {
