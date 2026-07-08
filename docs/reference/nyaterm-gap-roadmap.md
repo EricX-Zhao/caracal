@@ -61,8 +61,26 @@ this document only fixes scope boundaries and order, not field-level design.
    closure), and native-file-picker-to-text-input wiring needs `cx.spawn_in` +
    `AsyncWindowContext::update` (plain `cx.spawn` can't produce the `&mut Window`
    `InputState::set_value` requires).
-4. **已保存连接 查漏补缺 (Saved Connections gaps)** — in-group reorder, hover detail card,
-   import/export on top of the existing solid foundation.
+4. **已保存连接 查漏补缺 (Saved Connections gaps)** — ✅ Done (2026-07-08,
+   `docs/superpowers/specs/2026-07-08-saved-connections-gaps-design.md` /
+   `docs/superpowers/plans/2026-07-08-saved-connections-gaps.md`). Added a
+   `SavedConnection.sort_order: i32` field (mirroring the existing group field) as the
+   ordering source of truth; `SortMode::Default` now sorts by it instead of leaving `Vec`
+   order alone. In-group drag reorder uses GPUI's `on_drag_move` (fires per-row, filtered by
+   `bounds.contains(cursor)`) to detect before/after drop position relative to the hovered
+   row's vertical midpoint, storing a transient hint consumed by that row's `on_drop` —
+   verified against the actual pinned gpui fork that this correctly coexists with the
+   existing cross-group "drop on folder header" and "drop on blank area to ungroup" targets
+   (GPUI's drop dispatch stops at the first consumer via `cx.active_drag.take()` +
+   `cx.stop_propagation()`, so a same-scope reorder never also triggers the ancestor ungroup
+   handler). The previously-unused `tooltip_lines()` method is now wired to a
+   `Tooltip::element(...)` hover card on each row. TOML export/import (reusing `AppConfig`'s
+   existing serde shape, native `cx.prompt_for_new_path`/`cx.prompt_for_paths` dialogs) was
+   added to the "更多" dropdown, which required converting that trigger from a plain `div()`
+   to a `gpui_component::button::Button` (`.dropdown_menu(...)` is only implemented for
+   `Button`, not arbitrary elements). Scope held to the spec's Non-goals: no cross-group
+   drag+reposition combo, no import merge/dedup, TOML-only (no other tools' formats), no
+   selective export, no jump-host in the hover card.
 5. **文件浏览器 查漏补缺 (File Explorer gaps)** — context menu, rename/move, properties,
    hidden files, bookmarks, cwd sync.
 6. **资源监控 (Resource Monitoring)** — largest single scope (4 sub-panels, new
