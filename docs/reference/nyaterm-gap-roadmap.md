@@ -45,8 +45,22 @@ this document only fixes scope boundaries and order, not field-level design.
    `TerminalView::send_text`/`cursor_position`, and `Workspace.focused_terminal`
    (`WeakEntity`-tracked, same pattern as the settings page's `terminal_views`
    broadcast list) — both available for later items to build on.
-3. **新建连接 查漏补缺 (New Connection gaps)** — converting the inline form to a standalone
-   window reuses whatever window/overlay mechanism gets built for settings.
+3. **新建连接 查漏补缺 (New Connection gaps)** — ✅ Done (2026-07-08,
+   `docs/superpowers/specs/2026-07-07-new-connection-window-design.md` /
+   `docs/superpowers/plans/2026-07-07-new-connection-window.md`). The ~700-line inline
+   `ConnForm` was ported into a standalone `NewConnectionWindow` (third reuse of the
+   settings page's `cx.open_window` + `Root::new` recipe), shared by create and edit. Added
+   an icon picker (dropdown list, not nyaterm's grid — gpui-component's popover primitive
+   here is list-oriented) and SSH private-key authentication (`SshAuth` enum, using
+   `russh` 0.61's already-vendored `keys` module — no new dependency). Jump-host/2FA/
+   algorithm-order remain explicitly deferred (see the spec's Non-goals) — investigation
+   showed those need much deeper `russh::client::Config` work than key auth did. Two gpui
+   patterns with no prior precedent in this codebase were worked out from first
+   principles and verified against the vendored source: icon-picker clicks need
+   `WeakEntity::update` (not `cx.listener`, since `PopupMenuItem::on_click` is a plain
+   closure), and native-file-picker-to-text-input wiring needs `cx.spawn_in` +
+   `AsyncWindowContext::update` (plain `cx.spawn` can't produce the `&mut Window`
+   `InputState::set_value` requires).
 4. **已保存连接 查漏补缺 (Saved Connections gaps)** — in-group reorder, hover detail card,
    import/export on top of the existing solid foundation.
 5. **文件浏览器 查漏补缺 (File Explorer gaps)** — context menu, rename/move, properties,
