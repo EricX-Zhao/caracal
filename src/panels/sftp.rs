@@ -88,6 +88,8 @@ impl Transfer {
 enum PendingOpKind {
     NewFile,
     NewFolder,
+    /// Renaming the entry at this row index (in `FileTableDelegate::entries`).
+    Rename(usize),
 }
 
 /// Delegate that feeds the `DataTable` from the panel's `entries` vec.
@@ -582,6 +584,31 @@ impl SftpPanel {
         cx.notify();
     }
 
+    #[allow(dead_code)] // wired to the context menu in Task 4
+    fn rename_entry(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(old_name) = self
+            .table_state
+            .read(cx)
+            .delegate()
+            .entries
+            .get(ix)
+            .map(|e| e.name.clone())
+        else {
+            return;
+        };
+        let entity = cx.new(|cx| {
+            InputState::new(window, cx).submit_on_enter(true).default_value(old_name)
+        });
+        cx.subscribe_in(&entity, window, |this: &mut Self, _state, event, window, cx| {
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.commit_pending_op(window, cx);
+            }
+        })
+        .detach();
+        self.pending_op = Some((PendingOpKind::Rename(ix), entity));
+        cx.notify();
+    }
+
     fn commit_pending_op(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some((kind, input)) = self.pending_op.as_ref() else {
             return;
@@ -617,6 +644,54 @@ impl SftpPanel {
                         cx.notify();
                     })
                     .ok();
+                })
+                .detach();
+            }
+            PendingOpKind::Rename(ix) => {
+                let Some(old_name) = self
+                    .table_state
+                    .read(cx)
+                    .delegate()
+                    .entries
+                    .get(ix)
+                    .map(|e| e.name.clone())
+                else {
+                    return;
+                };
+                let old_remote = remote_join(&self.path, &old_name);
+                let new_remote = remote;
+                let table_state = self.table_state.clone();
+                let new_name = name.clone();
+                cx.spawn(async move |this, cx| {
+                    let rx = session.sftp_rename(old_remote, new_remote);
+                    match rx.recv_async().await {
+                        Ok(Ok(())) => {
+                            this.update(cx, |_this, cx| {
+                                table_state.update(cx, |state, cx| {
+                                    if let Some(entry) = state.delegate_mut().entries.get_mut(ix) {
+                                        entry.name = new_name.clone();
+                                    }
+                                    state.refresh(cx);
+                                });
+                                cx.notify();
+                            })
+                            .ok();
+                        }
+                        Ok(Err(e)) => {
+                            this.update(cx, |this, cx| {
+                                this.status = format!("重命名失败: {e}");
+                                cx.notify();
+                            })
+                            .ok();
+                        }
+                        Err(_) => {
+                            this.update(cx, |this, cx| {
+                                this.status = "重命名失败: session closed".to_string();
+                                cx.notify();
+                            })
+                            .ok();
+                        }
+                    }
                 })
                 .detach();
             }
@@ -901,8 +976,19 @@ impl SftpPanel {
             return div().into_any_element();
         };
         let label = match kind {
-            PendingOpKind::NewFile => "新建文件:",
-            PendingOpKind::NewFolder => "新建文件夹:",
+            PendingOpKind::NewFile => "新建文件:".to_string(),
+            PendingOpKind::NewFolder => "新建文件夹:".to_string(),
+            PendingOpKind::Rename(ix) => {
+                let old_name = self
+                    .table_state
+                    .read(cx)
+                    .delegate()
+                    .entries
+                    .get(*ix)
+                    .map(|e| e.name.clone())
+                    .unwrap_or_default();
+                format!("重命名「{old_name}」为:")
+            }
         };
         div()
             .flex()
