@@ -39,10 +39,24 @@ pub struct TerminalSettings {
     /// itself isn't (de)serializable, hence the raw `f32` here.
     #[serde(default = "default_font_size")]
     pub font_size: f32,
+    /// Whether the 资源监控 (basic system stats) panel polls the remote
+    /// host at all. Off by default — matches nyaterm's own "all off by
+    /// default" convention for remote-monitoring panels.
+    #[serde(default)]
+    pub monitor_basic_enabled: bool,
+    /// Poll interval in seconds. Read once when a `MonitorPanel` is
+    /// created; changing this in Settings takes effect for panels created
+    /// afterward (not a live-reload of already-open panels).
+    #[serde(default = "default_monitor_interval_secs")]
+    pub monitor_basic_interval_secs: u32,
 }
 
 fn default_font_size() -> f32 {
     14.0
+}
+
+fn default_monitor_interval_secs() -> u32 {
+    5
 }
 
 fn default_theme_mode() -> String {
@@ -62,6 +76,8 @@ impl Default for TerminalSettings {
         Self {
             font_family: String::new(),
             font_size: default_font_size(),
+            monitor_basic_enabled: false,
+            monitor_basic_interval_secs: default_monitor_interval_secs(),
         }
     }
 }
@@ -126,12 +142,16 @@ mod tests {
             terminal: TerminalSettings {
                 font_family: "Consolas".to_string(),
                 font_size: 16.0,
+                monitor_basic_enabled: true,
+                monitor_basic_interval_secs: 10,
             },
         };
         let text = toml::to_string_pretty(&settings).expect("serialize");
         let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
         assert_eq!(parsed.terminal.font_family, "Consolas");
         assert_eq!(parsed.terminal.font_size, 16.0);
+        assert_eq!(parsed.terminal.monitor_basic_enabled, true);
+        assert_eq!(parsed.terminal.monitor_basic_interval_secs, 10);
         assert_eq!(parsed.appearance.theme_mode, "light");
     }
 
@@ -172,5 +192,20 @@ mod tests {
         assert_eq!(settings.appearance.theme_mode, "light");
         assert_eq!(settings.terminal.font_family, "");
         assert_eq!(settings.terminal.font_size, 14.0);
+    }
+
+    #[test]
+    fn old_settings_file_without_monitor_fields_still_deserializes() {
+        // Simulates a settings.toml written before this round: a [terminal]
+        // table with only the font keys, no monitor_basic_* keys at all.
+        let toml_text = r#"
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert_eq!(settings.terminal.monitor_basic_enabled, false);
+        assert_eq!(settings.terminal.monitor_basic_interval_secs, 5);
     }
 }
