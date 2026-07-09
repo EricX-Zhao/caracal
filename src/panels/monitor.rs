@@ -15,8 +15,8 @@ use std::time::Instant;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div, px,
+    App, Context, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
+    Styled, Window, div, px,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{ActiveTheme, Sizable};
