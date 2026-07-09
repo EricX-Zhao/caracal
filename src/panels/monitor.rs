@@ -1,0 +1,450 @@
+//! `MonitorPanel`: per-host 资源监控 (basic system stats) panel. Polls the
+//! remote host over `SshSession::exec_command` (a fresh, non-interactive
+//! channel — CLAUDE.md §2: one Session, one connection) and renders
+//! CPU/memory/network/disk usage. Linux remote hosts only (reads `/proc/*`,
+//! uses `df`) — see
+//! `docs/superpowers/specs/2026-07-08-resource-monitoring-round-a-design.md`.
+//!
+//! This file's parsing/computation functions are pure (no GPUI, no
+//! network) — the poll loop and rendering live in a later section of this
+//! same file, added once these are proven correct.
+
+use std::collections::HashMap;
+use std::time::Instant;
+
+/// One poll's raw, cumulative counters — needed to compute CPU%/network
+/// rates as deltas against the *next* poll (both `/proc/stat`'s jiffie
+/// counters and `/proc/net/dev`'s byte counters are cumulative since boot,
+/// not instantaneous).
+#[derive(Clone, Debug)]
+pub struct RawSample {
+    pub cpu_total: u64,
+    pub cpu_idle: u64,
+    /// (interface name, rx_bytes, tx_bytes).
+    pub net: Vec<(String, u64, u64)>,
+    pub at: Instant,
+}
+
+/// Parsed + computed stats, ready for rendering.
+#[derive(Clone, Debug)]
+pub struct SystemStats {
+    pub hostname: String,
+    pub os: String,
+    pub uptime_secs: u64,
+    /// `None` on the first poll (no prior sample to diff against).
+    pub cpu_percent: Option<f32>,
+    pub core_count: usize,
+    pub load1: f32,
+    pub load5: f32,
+    pub load15: f32,
+    pub mem_total: u64,
+    pub mem_used: u64,
+    pub mem_available: u64,
+    pub mem_cached: u64,
+    pub net: Vec<NicRate>,
+    pub disks: Vec<DiskUsage>,
+}
+
+#[derive(Clone, Debug)]
+pub struct NicRate {
+    pub name: String,
+    /// Bytes/sec. `None` on the first poll.
+    pub rx_rate: Option<f64>,
+    pub tx_rate: Option<f64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DiskUsage {
+    pub mount: String,
+    pub used: u64,
+    pub total: u64,
+    pub available: u64,
+}
+
+/// Split the combined poll script's reply on `===SECTION===` markers into
+/// named blocks. The script (see `MonitorPanel::poll_script` in the next
+/// task) looks like:
+/// ```text
+/// ===UNAME===
+/// Linux yoga-arch 7.1.2-arch3-1 x86_64
+/// ===UPTIME===
+/// 245610.78 1989338.46
+/// ...
+/// ```
+pub fn parse_combined_output(raw: &str) -> HashMap<String, String> {
+    let mut sections = HashMap::new();
+    let mut current_key: Option<String> = None;
+    let mut current_body = String::new();
+    for line in raw.lines() {
+        if let Some(rest) = line.strip_prefix("===").and_then(|s| s.strip_suffix("===")) {
+            if let Some(key) = current_key.take() {
+                sections.insert(key, std::mem::take(&mut current_body));
+            }
+            current_key = Some(rest.to_string());
+        } else if current_key.is_some() {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    if let Some(key) = current_key {
+        sections.insert(key, current_body);
+    }
+    sections
+}
+
+/// `uname -srmn` output: "Linux yoga-arch 7.1.2-arch3-1 x86_64" — fixed
+/// field order (kernel-name, nodename, release, machine) regardless of
+/// flag order given. Returns (hostname, "kernel-name release machine").
+pub fn parse_uname(section: &str) -> (String, String) {
+    let line = section.trim();
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    if fields.len() < 4 {
+        return (String::new(), line.to_string());
+    }
+    let hostname = fields[1].to_string();
+    let os = format!("{} {} {}", fields[0], fields[2], fields[3]);
+    (hostname, os)
+}
+
+/// `/proc/uptime`: "245610.78 1989338.46" (uptime_seconds idle_seconds).
+pub fn parse_uptime_secs(section: &str) -> u64 {
+    section
+        .trim()
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|f| f as u64)
+        .unwrap_or(0)
+}
+
+/// `/proc/loadavg`: "1.04 0.92 0.56 2/2388 4129263" — first three fields.
+pub fn parse_loadavg(section: &str) -> (f32, f32, f32) {
+    let fields: Vec<&str> = section.trim().split_whitespace().collect();
+    let get = |i: usize| fields.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
+    (get(0), get(1), get(2))
+}
+
+/// `/proc/meminfo`: lines like "MemTotal:       32451764 kB". Returns
+/// (total_bytes, available_bytes, cached_bytes). Values in the file are
+/// KiB; multiplied by 1024 for a byte count.
+pub fn parse_meminfo(section: &str) -> (u64, u64, u64) {
+    let mut total = 0u64;
+    let mut available = 0u64;
+    let mut cached = 0u64;
+    for line in section.lines() {
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let kb: u64 = rest
+            .trim()
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        match key.trim() {
+            "MemTotal" => total = kb * 1024,
+            "MemAvailable" => available = kb * 1024,
+            "Cached" => cached = kb * 1024,
+            _ => {}
+        }
+    }
+    (total, available, cached)
+}
+
+/// `/proc/stat`: first line "cpu  15255309 1458805 3142683 198933847
+/// 172252364 1038658 208180 0 0 0" (user nice system idle iowait irq
+/// softirq steal guest guest_nice). total = sum of all fields; idle =
+/// idle + iowait (fields 3 and 4, 0-indexed after "cpu"). Core count =
+/// number of "cpuN" lines (cpu0, cpu1, ...).
+pub fn parse_stat_cpu(section: &str) -> (u64, u64, usize) {
+    let mut total = 0u64;
+    let mut idle = 0u64;
+    let mut core_count = 0usize;
+    for line in section.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("cpu ") {
+            let fields: Vec<u64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+            total = fields.iter().sum();
+            idle = fields.get(3).copied().unwrap_or(0) + fields.get(4).copied().unwrap_or(0);
+        } else if line.starts_with("cpu") && line.chars().nth(3).is_some_and(|c| c.is_ascii_digit()) {
+            core_count += 1;
+        }
+    }
+    (total, idle, core_count)
+}
+
+/// `/proc/net/dev`: two header lines, then per-interface lines like
+/// "    lo: 8170727377 7531429    0 ... 8170727377 7531429 ...". After
+/// splitting on ':', the value side has 16 whitespace-separated fields:
+/// rx_bytes is field 0, tx_bytes is field 8 (8 receive fields precede it:
+/// bytes/packets/errs/drop/fifo/frame/compressed/multicast).
+pub fn parse_netdev(section: &str) -> Vec<(String, u64, u64)> {
+    let mut result = Vec::new();
+    for line in section.lines().skip(2) {
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let fields: Vec<u64> = rest.split_whitespace().filter_map(|s| s.parse().ok()).collect();
+        let rx = fields.first().copied().unwrap_or(0);
+        let tx = fields.get(8).copied().unwrap_or(0);
+        result.push((name.trim().to_string(), rx, tx));
+    }
+    result
+}
+
+/// `df -B1 ...` output: header line "Filesystem  1B-blocks  Used
+/// Available Use% Mounted on", then rows like "/dev/nvme0n1p3
+/// 997467398144 517232562176 429490835456  55% /". Fields: filesystem,
+/// total, used, available, use%, mount (mount may contain spaces in rare
+/// cases — joined from field 5 onward).
+pub fn parse_df(section: &str) -> Vec<DiskUsage> {
+    let mut result = Vec::new();
+    for line in section.lines() {
+        if line.trim().is_empty() || line.trim_start().starts_with("Filesystem") {
+            continue;
+        }
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 6 {
+            continue;
+        }
+        let total: u64 = fields[1].parse().unwrap_or(0);
+        let used: u64 = fields[2].parse().unwrap_or(0);
+        let available: u64 = fields[3].parse().unwrap_or(0);
+        let mount = fields[5..].join(" ");
+        result.push(DiskUsage { mount, used, total, available });
+    }
+    result
+}
+
+/// Combine one poll's parsed sections with the previous poll's `RawSample`
+/// (if any) into `SystemStats` (CPU%/network rates computed as deltas)
+/// plus this poll's own `RawSample` (for the *next* poll to diff against).
+pub fn compute_stats(
+    sections: &HashMap<String, String>,
+    prev: Option<&RawSample>,
+) -> (SystemStats, RawSample) {
+    let (hostname, os) = sections.get("UNAME").map(|s| parse_uname(s)).unwrap_or_default();
+    let uptime_secs = sections.get("UPTIME").map(|s| parse_uptime_secs(s)).unwrap_or(0);
+    let (load1, load5, load15) = sections.get("LOADAVG").map(|s| parse_loadavg(s)).unwrap_or((0.0, 0.0, 0.0));
+    let (mem_total, mem_available, mem_cached) =
+        sections.get("MEMINFO").map(|s| parse_meminfo(s)).unwrap_or((0, 0, 0));
+    let (cpu_total, cpu_idle, core_count) =
+        sections.get("STAT").map(|s| parse_stat_cpu(s)).unwrap_or((0, 0, 0));
+    let net_raw = sections.get("NETDEV").map(|s| parse_netdev(s)).unwrap_or_default();
+    let disks = sections.get("DF").map(|s| parse_df(s)).unwrap_or_default();
+
+    let now = Instant::now();
+    let cur_sample = RawSample {
+        cpu_total,
+        cpu_idle,
+        net: net_raw.clone(),
+        at: now,
+    };
+
+    let cpu_percent = prev.and_then(|p| {
+        let total_delta = cpu_total.checked_sub(p.cpu_total)?;
+        let idle_delta = cpu_idle.checked_sub(p.cpu_idle)?;
+        if total_delta == 0 {
+            return None;
+        }
+        Some((1.0 - (idle_delta as f32 / total_delta as f32)) * 100.0)
+    });
+
+    let net: Vec<NicRate> = net_raw
+        .iter()
+        .map(|(name, rx, tx)| {
+            let rates = prev.and_then(|p| {
+                let (_, prev_rx, prev_tx) = p.net.iter().find(|(n, _, _)| n == name)?;
+                let elapsed = now.duration_since(p.at).as_secs_f64();
+                if elapsed <= 0.0 {
+                    return None;
+                }
+                let rx_rate = (rx.checked_sub(*prev_rx)? as f64) / elapsed;
+                let tx_rate = (tx.checked_sub(*prev_tx)? as f64) / elapsed;
+                Some((rx_rate, tx_rate))
+            });
+            NicRate {
+                name: name.clone(),
+                rx_rate: rates.map(|(rx, _)| rx),
+                tx_rate: rates.map(|(_, tx)| tx),
+            }
+        })
+        .collect();
+
+    let stats = SystemStats {
+        hostname,
+        os,
+        uptime_secs,
+        cpu_percent,
+        core_count,
+        load1,
+        load5,
+        load15,
+        mem_total,
+        mem_used: mem_total.saturating_sub(mem_available),
+        mem_available,
+        mem_cached,
+        net,
+        disks,
+    };
+
+    (stats, cur_sample)
+}
+
+/// Threshold band for a usage percentage (0-100). Red at ≥90%, amber at
+/// ≥70%, default otherwise — nyaterm's own convention, not a reuse of
+/// anything already in caracal (no percentage-driven threshold coloring
+/// exists elsewhere in this codebase).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageBand {
+    Danger,
+    Warning,
+    Default,
+}
+
+pub fn usage_band(percent: f32) -> UsageBand {
+    if percent >= 90.0 {
+        UsageBand::Danger
+    } else if percent >= 70.0 {
+        UsageBand::Warning
+    } else {
+        UsageBand::Default
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_combined_output_splits_on_markers() {
+        let raw = "===UNAME===\nLinux host 1.0 x86_64\n===UPTIME===\n123.4 567.8\n";
+        let sections = parse_combined_output(raw);
+        assert_eq!(sections.get("UNAME").map(|s| s.trim()), Some("Linux host 1.0 x86_64"));
+        assert_eq!(sections.get("UPTIME").map(|s| s.trim()), Some("123.4 567.8"));
+    }
+
+    #[test]
+    fn parse_combined_output_empty_input_yields_no_sections() {
+        let sections = parse_combined_output("");
+        assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn parse_uname_extracts_hostname_and_os() {
+        let (hostname, os) = parse_uname("Linux yoga-arch 7.1.2-arch3-1 x86_64\n");
+        assert_eq!(hostname, "yoga-arch");
+        assert_eq!(os, "Linux 7.1.2-arch3-1 x86_64");
+    }
+
+    #[test]
+    fn parse_uptime_secs_truncates_fractional() {
+        assert_eq!(parse_uptime_secs("245610.78 1989338.46\n"), 245610);
+    }
+
+    #[test]
+    fn parse_loadavg_extracts_three_values() {
+        let (l1, l5, l15) = parse_loadavg("1.04 0.92 0.56 2/2388 4129263\n");
+        assert_eq!(l1, 1.04);
+        assert_eq!(l5, 0.92);
+        assert_eq!(l15, 0.56);
+    }
+
+    #[test]
+    fn parse_meminfo_extracts_total_available_cached_in_bytes() {
+        let section = "MemTotal:       32451764 kB\nMemFree:         1220564 kB\nMemAvailable:   15806552 kB\nCached:         14819784 kB\n";
+        let (total, available, cached) = parse_meminfo(section);
+        assert_eq!(total, 32451764 * 1024);
+        assert_eq!(available, 15806552 * 1024);
+        assert_eq!(cached, 14819784 * 1024);
+    }
+
+    #[test]
+    fn parse_stat_cpu_sums_fields_and_counts_cores() {
+        let section = "cpu  15255309 1458805 3142683 198933847 172252364 1038658 208180 0 0 0\ncpu0 1163087 29626 157337 13427739 9648658 60680 22212 0 0 0\ncpu1 1416461 544227 278372 18917054 3266066 74132 10993 0 0 0\n";
+        let (total, idle, cores) = parse_stat_cpu(section);
+        assert_eq!(total, 15255309 + 1458805 + 3142683 + 198933847 + 172252364 + 1038658 + 208180);
+        assert_eq!(idle, 198933847 + 172252364);
+        assert_eq!(cores, 2);
+    }
+
+    #[test]
+    fn parse_netdev_extracts_rx_tx_per_interface_skipping_headers() {
+        let section = "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo: 100 1 0 0 0 0 0 0 200 2 0 0 0 0 0 0\n  eth0: 300 3 0 0 0 0 0 0 400 4 0 0 0 0 0 0\n";
+        let nics = parse_netdev(section);
+        assert_eq!(nics, vec![
+            ("lo".to_string(), 100, 200),
+            ("eth0".to_string(), 300, 400),
+        ]);
+    }
+
+    #[test]
+    fn parse_df_extracts_mount_rows_skipping_header() {
+        let section = "Filesystem        1B-blocks         Used    Available Use% Mounted on\n/dev/nvme0n1p3 997467398144 517232562176 429490835456  55% /\n/dev/nvme0n1p1   1071628288    480604160    591024128  45% /boot\n";
+        let disks = parse_df(section);
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[0].mount, "/");
+        assert_eq!(disks[0].total, 997467398144);
+        assert_eq!(disks[0].used, 517232562176);
+        assert_eq!(disks[0].available, 429490835456);
+        assert_eq!(disks[1].mount, "/boot");
+    }
+
+    fn sample_sections() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("UNAME".to_string(), "Linux host 1.0 x86_64\n".to_string());
+        m.insert("UPTIME".to_string(), "100.0 50.0\n".to_string());
+        m.insert("LOADAVG".to_string(), "1.0 2.0 3.0 1/1 999\n".to_string());
+        m.insert("MEMINFO".to_string(), "MemTotal: 1000 kB\nMemAvailable: 400 kB\nCached: 200 kB\n".to_string());
+        m.insert("STAT".to_string(), "cpu  100 0 0 800 0 0 0 0 0 0\ncpu0 100 0 0 800 0 0 0 0 0 0\n".to_string());
+        m.insert("NETDEV".to_string(), "h1\nh2\n  eth0: 1000 1 0 0 0 0 0 0 2000 1 0 0 0 0 0 0\n".to_string());
+        m.insert("DF".to_string(), "Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/x 1000 500 500 50% /\n".to_string());
+        m
+    }
+
+    #[test]
+    fn compute_stats_first_poll_has_no_cpu_percent_or_net_rate() {
+        let sections = sample_sections();
+        let (stats, sample) = compute_stats(&sections, None);
+        assert_eq!(stats.hostname, "host");
+        assert_eq!(stats.cpu_percent, None);
+        assert_eq!(stats.net[0].rx_rate, None);
+        assert_eq!(stats.mem_used, (1000 - 400) * 1024);
+        assert_eq!(sample.cpu_total, 900);
+        assert_eq!(sample.cpu_idle, 800);
+    }
+
+    #[test]
+    fn compute_stats_second_poll_computes_cpu_percent_and_net_rate() {
+        let sections = sample_sections();
+        let (_, prev_sample) = compute_stats(&sections, None);
+        // Simulate a second poll 1 second later with more CPU busy time and
+        // more network bytes transferred.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut sections2 = sample_sections();
+        sections2.insert(
+            "STAT".to_string(),
+            "cpu  200 0 0 1600 0 0 0 0 0 0\ncpu0 200 0 0 1600 0 0 0 0 0 0\n".to_string(),
+        );
+        sections2.insert(
+            "NETDEV".to_string(),
+            "h1\nh2\n  eth0: 3000 1 0 0 0 0 0 0 6000 1 0 0 0 0 0 0\n".to_string(),
+        );
+        let (stats2, _) = compute_stats(&sections2, Some(&prev_sample));
+        // total_delta = 900, idle_delta = 800 -> cpu_percent = (1 - 800/900) * 100 ≈ 11.1%
+        let cpu_pct = stats2.cpu_percent.expect("second poll must have a cpu_percent");
+        assert!((cpu_pct - 11.11).abs() < 0.5);
+        assert!(stats2.net[0].rx_rate.is_some());
+        assert!(stats2.net[0].tx_rate.is_some());
+    }
+
+    #[test]
+    fn usage_band_boundaries() {
+        assert_eq!(usage_band(0.0), UsageBand::Default);
+        assert_eq!(usage_band(69.9), UsageBand::Default);
+        assert_eq!(usage_band(70.0), UsageBand::Warning);
+        assert_eq!(usage_band(89.9), UsageBand::Warning);
+        assert_eq!(usage_band(90.0), UsageBand::Danger);
+        assert_eq!(usage_band(100.0), UsageBand::Danger);
+    }
+}
