@@ -125,9 +125,38 @@ this document only fixes scope boundaries and order, not field-level design.
      `cursor_position`'s viewport-coordinate math. No OSC7, no retry, no shell-specific prompt
      detection — failures surface as a status message, never a wrong navigation.
 6. **资源监控 (Resource Monitoring)** — largest single scope (4 sub-panels, new
-   data-gathering pipeline), done last once the settings page exists to hold its per-panel
-   enable toggles and poll intervals (mirroring nyaterm, where all 4 remote-monitor panels
-   are off by default and only appear once enabled in Settings → Terminal).
+   data-gathering pipeline), split into one round per sub-panel (基础/GPU/进程管理/Docker),
+   starting with the shared data-gathering foundation + 基础 (basic system stats).
+   - **Round A** (remote-exec primitive + 基础 system stats) — ✅ Done
+     (2026-07-08, `docs/superpowers/specs/2026-07-08-resource-monitoring-round-a-design.md` /
+     `docs/superpowers/plans/2026-07-08-resource-monitoring-round-a.md`). Resolved the
+     foundational question every remaining sub-panel depends on: how to gather stats from the
+     *remote* host (nyaterm monitors the remote machine, not the local client) over the
+     existing SSH connection. New `SshSession::exec_command` opens a fresh, non-interactive
+     channel (`russh`'s `Channel::exec`, no PTY) — same connection as the shell/SFTP channels,
+     separate channel — and runs one combined shell script per poll (hostname/uptime/load/CPU/
+     memory/network/disk in one round-trip via `echo ===SECTION===` markers, not 7+ separate
+     calls). CPU% and network rates need two consecutive samples (both `/proc/stat` and
+     `/proc/net/dev` are cumulative counters, not instantaneous) — `MonitorPanel` keeps the
+     previous poll's raw counters and shows "预热中…" until the second poll has a delta to
+     compute. `MonitorPanel` is per-host, mirroring `SftpPanel`'s existing architecture exactly
+     (a `HashMap<String, AnyView>`, focus-following via the same 5 terminal-opening methods'
+     `cx.on_focus` hooks) — deliberately does *not* force the right dock to switch to Monitor
+     on focus, unlike SFTP's left-dock behavior, so `SavedConnections` stays the default
+     visible panel. Settings → Terminal gained an enable toggle (off by default) + poll
+     interval. Two real bugs surfaced only at final whole-branch review, since no single task's
+     diff showed the interaction: the poll script's compound exit status was silently just
+     `df`'s (a stale mount would trip the 3-failure cutoff and blank good data — fixed by
+     appending a trailing `true`), and enabling monitoring in Settings had no effect on an
+     already-open host panel (a deliberate read-once-at-construction scope decision that, in
+     aggregate, made the feature look broken on first use — resolved with a minimal fix: a
+     "打开设置" shortcut button + a note that a reconnect is needed, rather than building full
+     live-reload broadcast machinery this round). Linux-only (`/proc/*`, `df`); no macOS/BSD
+     path. GPU/进程管理/Docker deferred to their own rounds, each reusing this round's
+     `exec_command` primitive and per-host panel pattern.
+   - **Round B** (GPU) — not started.
+   - **Round C** (进程管理, process manager) — not started.
+   - **Round D** (Docker 管理) — not started.
 
 Rationale for this order (as discussed): settings first because it's structurally a
 dependency for the rest; quick commands next as the cheapest fully-independent win;
