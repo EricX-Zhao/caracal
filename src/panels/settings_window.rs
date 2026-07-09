@@ -16,6 +16,19 @@ fn parse_font_size(text: &str) -> Option<f32> {
     }
 }
 
+/// Parse the Terminal tab's monitor-poll-interval field. Rejects
+/// non-positive and unreasonably small/large values (a 0-second interval
+/// would spin the poll loop; a typo like "99999" would poll once every 27
+/// hours, effectively never).
+fn parse_monitor_interval(text: &str) -> Option<u32> {
+    let value: u32 = text.trim().parse().ok()?;
+    if (1..=3600).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
 use gpui::{
     App, AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window,
@@ -51,6 +64,7 @@ pub struct SettingsWindow {
     active_tab: SettingsTab,
     font_family_input: Entity<InputState>,
     font_size_input: Entity<InputState>,
+    monitor_interval_input: Entity<InputState>,
     error: Option<SharedString>,
 }
 
@@ -65,6 +79,10 @@ impl SettingsWindow {
         let font_size_input = cx.new(|cx| {
             InputState::new(window, cx).default_value(committed.terminal.font_size.to_string())
         });
+        let monitor_interval_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(committed.terminal.monitor_basic_interval_secs.to_string())
+        });
         Self {
             workspace,
             draft: committed.clone(),
@@ -72,6 +90,7 @@ impl SettingsWindow {
             active_tab: SettingsTab::Appearance,
             font_family_input,
             font_size_input,
+            monitor_interval_input,
             error: None,
         }
     }
@@ -82,17 +101,21 @@ impl SettingsWindow {
     fn sync_inputs_to_draft(&mut self, cx: &App) -> bool {
         self.draft.terminal.font_family = self.font_family_input.read(cx).value().to_string();
         let size_text = self.font_size_input.read(cx).value();
-        match parse_font_size(&size_text) {
-            Some(size) => {
-                self.draft.terminal.font_size = size;
-                self.error = None;
-                true
-            }
-            None => {
-                self.error = Some("字号必须是 6-96 之间的数字".into());
-                false
-            }
-        }
+        let Some(size) = parse_font_size(&size_text) else {
+            self.error = Some("字号必须是 6-96 之间的数字".into());
+            return false;
+        };
+        self.draft.terminal.font_size = size;
+
+        let interval_text = self.monitor_interval_input.read(cx).value();
+        let Some(interval) = parse_monitor_interval(&interval_text) else {
+            self.error = Some("轮询间隔必须是 1-3600 之间的整数(秒)".into());
+            return false;
+        };
+        self.draft.terminal.monitor_basic_interval_secs = interval;
+
+        self.error = None;
+        true
     }
 
     /// Persist the draft, apply it live (theme immediately; font broadcast to
@@ -148,6 +171,11 @@ impl SettingsWindow {
 
     fn set_theme_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
         self.draft.appearance.theme_mode = mode.to_string();
+        cx.notify();
+    }
+
+    fn toggle_monitor_enabled(&mut self, cx: &mut Context<Self>) {
+        self.draft.terminal.monitor_basic_enabled = !self.draft.terminal.monitor_basic_enabled;
         cx.notify();
     }
 
@@ -281,6 +309,58 @@ impl SettingsWindow {
                     )
                     .child(Input::new(&self.font_size_input)),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("资源监控 (基础)"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(self.monitor_enabled_pill(cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("轮询间隔 (秒)"),
+                    )
+                    .child(Input::new(&self.monitor_interval_input)),
+            )
+    }
+
+    fn monitor_enabled_pill(&self, cx: &Context<Self>) -> impl IntoElement {
+        let active = self.draft.terminal.monitor_basic_enabled;
+        div()
+            .id("settings-monitor-enabled")
+            .px_2()
+            .py_0p5()
+            .rounded_sm()
+            .bg(if active { cx.theme().primary } else { cx.theme().accent })
+            .text_color(if active {
+                cx.theme().primary_foreground
+            } else {
+                cx.theme().foreground
+            })
+            .hover(|s| s.bg(cx.theme().accent))
+            .child(if active { "已启用" } else { "已禁用" })
+            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                this.toggle_monitor_enabled(cx);
+            }))
     }
 }
 
