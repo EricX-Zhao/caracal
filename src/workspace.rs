@@ -44,6 +44,7 @@ use crate::panels::saved_connections::{SavedConnectionsEvent, SavedConnectionsPa
 use crate::panels::settings_window::SettingsWindow;
 use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
+use crate::panels::monitor::{MonitorPanel, MonitorPlaceholder};
 use crate::panels::stub::StubPanel;
 use crate::panels::terminal::TerminalPanel;
 use crate::settings;
@@ -87,6 +88,18 @@ pub struct Workspace {
     sftp_placeholder: AnyView,
     /// Host key whose SFTP browser the `PanelId::Sftp` slot resolves to.
     active_sftp: Option<String>,
+    /// One 资源监控 panel per host key (created on first use, reused
+    /// after) — mirrors `sftp_panels` field-for-field.
+    monitor_panels: HashMap<String, AnyView>,
+    /// Shown in the Monitor slot when no SSH host is active.
+    monitor_placeholder: AnyView,
+    /// Host key whose monitor panel the `PanelId::Monitor` slot resolves
+    /// to. Unlike `active_sftp`, updating this does NOT force
+    /// `right_active` to switch to `PanelId::Monitor` — the right dock's
+    /// default occupant (`SavedConnections`) stays visible unless the
+    /// user manually clicks the Monitor activity-bar icon; only *which
+    /// host's data* is shown follows focus automatically.
+    active_monitor: Option<String>,
 
     // --- active slots (one per side) ----------------------------------------
     left_active: Option<PanelId>,
@@ -135,6 +148,7 @@ impl Workspace {
             });
 
         let sftp_placeholder: AnyView = cx.new(|cx| SftpPlaceholder::new(cx)).into();
+        let monitor_placeholder: AnyView = cx.new(|cx| MonitorPlaceholder::new(cx)).into();
 
         // One stub panel per not-yet-implemented category.
         let mut stub_panels: HashMap<PanelId, AnyView> = HashMap::new();
@@ -143,7 +157,6 @@ impl Workspace {
             PanelId::Security,
             PanelId::Sessions,
             PanelId::History,
-            PanelId::Monitor,
         ] {
             let view: AnyView = cx.new(|cx| StubPanel::new(pid.label(), cx)).into();
             stub_panels.insert(pid, view);
@@ -168,6 +181,9 @@ impl Workspace {
             sftp_panels: HashMap::new(),
             sftp_placeholder,
             active_sftp: None,
+            monitor_panels: HashMap::new(),
+            monitor_placeholder,
+            active_monitor: None,
             // Defaults: left panel closed until an SSH terminal is focused (see
             // `show_sftp`) or the user opens it manually; saved connections on the right.
             left_active: None,
@@ -209,11 +225,13 @@ impl Workspace {
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
+            this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
+        self.show_monitor_placeholder(window, cx);
     }
 
     /// Open a local-shell terminal with custom shell and working directory.
@@ -243,11 +261,13 @@ impl Workspace {
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
+            this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
+        self.show_monitor_placeholder(window, cx);
     }
 
     /// Open an SSH shell terminal (reusing the host's shared connection) as a
@@ -264,11 +284,13 @@ impl Workspace {
             let sub = cx.on_focus(&handle, window, move |this, window, cx| {
                 this.set_active_title_from(&term_weak, cx);
                 this.show_sftp(follow.clone(), window, cx);
+                this.show_monitor(follow.clone(), window, cx);
             });
             self._subscriptions.push(sub);
             let panel = cx.new(|_cx| TerminalPanel::new(terminal));
             self.add_center(Arc::new(panel), window, cx);
-            self.show_sftp(config, window, cx);
+            self.show_sftp(config.clone(), window, cx);
+            self.show_monitor(config, window, cx);
         }
     }
 
@@ -284,11 +306,13 @@ impl Workspace {
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
+            this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
+        self.show_monitor_placeholder(window, cx);
     }
 
     /// Open a serial-port terminal as a new central tab. Same
@@ -302,11 +326,13 @@ impl Workspace {
         let sub = cx.on_focus(&handle, window, move |this, window, cx| {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
+            this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
+        self.show_monitor_placeholder(window, cx);
     }
 
     /// Open the settings window, or focus it if one is already open.
@@ -469,6 +495,33 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Bind the Monitor slot to `config`'s host (reusing the shared
+    /// connection, creating the panel once). Unlike `show_sftp`, does NOT
+    /// force `right_active` — see the `active_monitor` field's doc comment.
+    /// Takes `_window` (unused) only so its signature matches `show_sftp`'s
+    /// at every call site — both are invoked from the same `cx.on_focus`
+    /// closures, which hand both functions the same `window` binding.
+    fn show_monitor(&mut self, config: SshConfig, _window: &mut Window, cx: &mut Context<Self>) {
+        let key = config.key();
+        if !self.monitor_panels.contains_key(&key) {
+            let Some(session) = self.ssh_session(&config) else {
+                return;
+            };
+            let label = format!("{}@{}", config.user, config.host);
+            let panel: AnyView = cx.new(|cx| MonitorPanel::new(session, label, cx)).into();
+            self.monitor_panels.insert(key.clone(), panel);
+        }
+        self.active_monitor = Some(key);
+        cx.notify();
+    }
+
+    /// Detach the Monitor slot from any host so it resolves to the "no
+    /// host" placeholder. Mirrors `show_sftp_placeholder`.
+    fn show_monitor_placeholder(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_monitor = None;
+        cx.notify();
+    }
+
     fn add_center(
         &mut self,
         panel: Arc<dyn gpui_component::dock::PanelView>,
@@ -491,6 +544,12 @@ impl Workspace {
                     .as_ref()
                     .and_then(|k| self.sftp_panels.get(k).cloned())
                     .unwrap_or_else(|| self.sftp_placeholder.clone()),
+            ),
+            PanelId::Monitor => Some(
+                self.active_monitor
+                    .as_ref()
+                    .and_then(|k| self.monitor_panels.get(k).cloned())
+                    .unwrap_or_else(|| self.monitor_placeholder.clone()),
             ),
             PanelId::SavedConnections => Some(self.saved_panel.clone()),
             other => self.stub_panels.get(&other).cloned(),
