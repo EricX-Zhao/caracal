@@ -12,6 +12,30 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use std::sync::Arc;
+
+use gpui::{
+    App, AppContext, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Render,
+    SharedString, Styled, Window, div, px,
+};
+use gpui_component::dock::{Panel, PanelEvent};
+use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::button::{Button, ButtonVariants};
+
+use crate::panels::icons::{AppIcon, icon};
+use crate::terminal::ssh::SshSession;
+
+/// One combined shell script per poll — one round-trip instead of 7+,
+/// each section preceded by an `echo ===SECTION===` marker so the reply
+/// parses with `parse_combined_output`.
+const POLL_SCRIPT: &str = "echo ===UNAME===; uname -srmn\n\
+echo ===UPTIME===; cat /proc/uptime\n\
+echo ===LOADAVG===; cat /proc/loadavg\n\
+echo ===MEMINFO===; cat /proc/meminfo\n\
+echo ===STAT===; cat /proc/stat\n\
+echo ===NETDEV===; cat /proc/net/dev\n\
+echo ===DF===; df -B1 -x tmpfs -x devtmpfs -x overlay\n";
+
 /// One poll's raw, cumulative counters — needed to compute CPU%/network
 /// rates as deltas against the *next* poll (both `/proc/stat`'s jiffie
 /// counters and `/proc/net/dev`'s byte counters are cumulative since boot,
@@ -309,6 +333,466 @@ pub fn usage_band(percent: f32) -> UsageBand {
         UsageBand::Warning
     } else {
         UsageBand::Default
+    }
+}
+
+pub struct MonitorPanel {
+    focus_handle: FocusHandle,
+    session: Arc<SshSession>,
+    label: SharedString,
+    enabled: bool,
+    interval_secs: u32,
+    prev_sample: Option<RawSample>,
+    stats: Option<SystemStats>,
+    /// Set on poll failure; cleared on the next successful poll. Used
+    /// together with `consecutive_failures` to decide when to clear
+    /// `stats` (3-failure cutoff) vs. keep showing the last-known reading
+    /// through a single transient failure.
+    last_error: Option<String>,
+    consecutive_failures: u32,
+    /// True while a poll (scheduled or manual-refresh) is in flight — the
+    /// header refresh button spins while this is true.
+    polling: bool,
+}
+
+impl MonitorPanel {
+    pub fn new(
+        session: Arc<SshSession>,
+        label: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let settings = crate::settings::load();
+        let this = Self {
+            focus_handle: cx.focus_handle(),
+            session,
+            label: label.into(),
+            enabled: settings.terminal.monitor_basic_enabled,
+            interval_secs: settings.terminal.monitor_basic_interval_secs,
+            prev_sample: None,
+            stats: None,
+            last_error: None,
+            consecutive_failures: 0,
+            polling: false,
+        };
+        if this.enabled {
+            this.start_poll_loop(cx);
+        }
+        this
+    }
+
+    fn start_poll_loop(&self, cx: &mut Context<Self>) {
+        let session = self.session.clone();
+        let interval_secs = self.interval_secs;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let rx = session.exec_command(POLL_SCRIPT.to_string());
+                let result = rx.recv_async().await;
+                let still_alive = this
+                    .update(cx, |panel, cx| {
+                        panel.apply_poll_result(result);
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !still_alive {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(interval_secs as u64))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    /// Apply one poll's outcome: on success, parse + compute stats and
+    /// reset the failure counter; on failure, increment the counter and
+    /// clear `stats` once it reaches 3 (the cutoff), matching nyaterm's
+    /// own rule.
+    fn apply_poll_result(&mut self, result: Result<Result<String, anyhow::Error>, flume::RecvError>) {
+        self.polling = false;
+        match result {
+            Ok(Ok(raw)) => {
+                let sections = parse_combined_output(&raw);
+                let (stats, sample) = compute_stats(&sections, self.prev_sample.as_ref());
+                self.prev_sample = Some(sample);
+                self.stats = Some(stats);
+                self.last_error = None;
+                self.consecutive_failures = 0;
+            }
+            Ok(Err(e)) => self.record_failure(format!("{e}")),
+            Err(_) => self.record_failure("session closed".to_string()),
+        }
+    }
+
+    fn record_failure(&mut self, message: String) {
+        self.consecutive_failures += 1;
+        self.last_error = Some(message);
+        if self.consecutive_failures >= 3 {
+            self.stats = None;
+            self.prev_sample = None;
+        }
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.polling = true;
+        cx.notify();
+        let session = self.session.clone();
+        cx.spawn(async move |this, cx| {
+            let rx = session.exec_command(POLL_SCRIPT.to_string());
+            let result = rx.recv_async().await;
+            let _ = this.update(cx, |panel, cx| {
+                panel.apply_poll_result(result);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn render_header(&self, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .text_sm()
+                    .child(SharedString::from(format!("资源监控: {}", self.label))),
+            )
+            .child(
+                Button::new("monitor-refresh")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Refresh))
+                    .tooltip("刷新")
+                    .loading(self.polling)
+                    .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
+            )
+    }
+
+    fn render_body(&self, cx: &Context<Self>) -> impl IntoElement {
+        if !self.enabled {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("资源监控已在设置中禁用")
+                .into_any_element();
+        }
+        if self.consecutive_failures >= 3 {
+            let msg = self.last_error.clone().unwrap_or_default();
+            return div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(SharedString::from(format!("连续 3 次轮询失败: {msg}"))),
+                )
+                .into_any_element();
+        }
+        let Some(stats) = &self.stats else {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child("加载中…")
+                .into_any_element();
+        };
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_2()
+            .child(self.render_system_section(stats, cx))
+            .child(self.render_cpu_section(stats, cx))
+            .child(self.render_memory_section(stats, cx))
+            .child(self.render_network_section(stats, cx))
+            .child(self.render_disk_section(stats, cx))
+            .into_any_element()
+    }
+
+    fn render_system_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .text_xs()
+            .child(SharedString::from(format!("主机: {}", stats.hostname)))
+            .child(SharedString::from(format!("系统: {}", stats.os)))
+            .child(SharedString::from(format!("运行时间: {}", format_uptime(stats.uptime_secs))))
+            .text_color(cx.theme().muted_foreground)
+    }
+
+    fn render_cpu_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
+        let (bar, label) = match stats.cpu_percent {
+            Some(pct) => (usage_bar(pct, cx), format!("{pct:.1}%")),
+            None => (usage_bar(0.0, cx), "预热中…".to_string()),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .text_xs()
+                    .child("CPU")
+                    .child(SharedString::from(label)),
+            )
+            .child(bar)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(format!(
+                        "{} 核心 · 负载 {:.2} {:.2} {:.2}",
+                        stats.core_count, stats.load1, stats.load5, stats.load15
+                    ))),
+            )
+    }
+
+    fn render_memory_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
+        let pct = if stats.mem_total == 0 {
+            0.0
+        } else {
+            (stats.mem_used as f32 / stats.mem_total as f32) * 100.0
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .text_xs()
+                    .child("内存")
+                    .child(SharedString::from(format!(
+                        "{} / {}",
+                        human_bytes(stats.mem_used),
+                        human_bytes(stats.mem_total)
+                    ))),
+            )
+            .child(usage_bar(pct, cx))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(SharedString::from(format!(
+                        "可用 {} · 缓存 {}",
+                        human_bytes(stats.mem_available),
+                        human_bytes(stats.mem_cached)
+                    ))),
+            )
+    }
+
+    fn render_network_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
+        let mut section = div().flex().flex_col().gap_0p5().text_xs();
+        section = section.child(div().text_color(cx.theme().muted_foreground).child("网络"));
+        for nic in &stats.net {
+            let rates = match (nic.rx_rate, nic.tx_rate) {
+                (Some(rx), Some(tx)) => {
+                    format!("↓{}/s ↑{}/s", human_bytes(rx as u64), human_bytes(tx as u64))
+                }
+                _ => "预热中…".to_string(),
+            };
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .child(SharedString::from(nic.name.clone()))
+                    .child(SharedString::from(rates)),
+            );
+        }
+        section
+    }
+
+    fn render_disk_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
+        let mut section = div().flex().flex_col().gap_1().text_xs();
+        section = section.child(div().text_color(cx.theme().muted_foreground).child("磁盘"));
+        for disk in &stats.disks {
+            let pct = if disk.total == 0 {
+                0.0
+            } else {
+                (disk.used as f32 / disk.total as f32) * 100.0
+            };
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_between()
+                            .child(SharedString::from(disk.mount.clone()))
+                            .child(SharedString::from(format!("{pct:.0}%"))),
+                    )
+                    .child(usage_bar(pct, cx))
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(format!(
+                                "已用 {} · 可用 {}",
+                                human_bytes(disk.used),
+                                human_bytes(disk.available)
+                            ))),
+                    ),
+            );
+        }
+        section
+    }
+}
+
+/// A thin colored bar whose fill width is `percent` (0-100), colored by
+/// `usage_band`.
+fn usage_bar(percent: f32, cx: &App) -> impl IntoElement {
+    let color = match usage_band(percent) {
+        UsageBand::Danger => cx.theme().danger,
+        UsageBand::Warning => cx.theme().warning,
+        UsageBand::Default => cx.theme().primary,
+    };
+    let clamped = percent.clamp(0.0, 100.0);
+    div()
+        .w_full()
+        .h(px(6.0))
+        .rounded_sm()
+        .bg(cx.theme().accent)
+        .child(
+            div()
+                .h_full()
+                .rounded_sm()
+                .bg(color)
+                .w(gpui::relative(clamped / 100.0)),
+        )
+}
+
+/// `123456789` -> `"117.7M"` (binary/1024-based units, matching
+/// `sftp.rs`'s existing `human_size` convention but kept local to this
+/// file rather than importing across panel modules).
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes}{}", UNITS[0])
+    } else {
+        format!("{size:.1}{}", UNITS[unit])
+    }
+}
+
+/// `3665` -> `"1h 1m"` (drops seconds; drops hours if 0; always shows at
+/// least minutes).
+fn format_uptime(total_secs: u64) -> String {
+    let days = total_secs / 86_400;
+    let hours = (total_secs % 86_400) / 3600;
+    let minutes = (total_secs % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+impl Focusable for MonitorPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl gpui::EventEmitter<PanelEvent> for MonitorPanel {}
+
+impl Panel for MonitorPanel {
+    fn panel_name(&self) -> &'static str {
+        "MonitorPanel"
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from(format!("资源监控: {}", self.label))
+    }
+}
+
+impl Render for MonitorPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .child(self.render_header(cx))
+            .child(self.render_body(cx))
+    }
+}
+
+// --- placeholder for non-SSH focused terminals -----------------------------
+
+pub struct MonitorPlaceholder {
+    focus_handle: FocusHandle,
+}
+
+impl MonitorPlaceholder {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        Self {
+            focus_handle: cx.focus_handle(),
+        }
+    }
+}
+
+impl Focusable for MonitorPlaceholder {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl gpui::EventEmitter<PanelEvent> for MonitorPlaceholder {}
+
+impl Panel for MonitorPlaceholder {
+    fn panel_name(&self) -> &'static str {
+        "MonitorPlaceholder"
+    }
+
+    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        SharedString::from("资源监控")
+    }
+}
+
+impl Render for MonitorPlaceholder {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child("未连接 SSH 主机")
     }
 }
 
