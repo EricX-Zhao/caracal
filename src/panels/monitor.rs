@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use gpui::{
     App, Context, FocusHandle, Focusable, IntoElement, ParentElement, Render, SharedString,
-    Styled, Window, div, px,
+    Styled, WeakEntity, Window, div, px,
 };
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::{ActiveTheme, Sizable};
@@ -24,6 +24,7 @@ use gpui_component::button::{Button, ButtonVariants};
 
 use crate::panels::icons::{AppIcon, icon};
 use crate::terminal::ssh::SshSession;
+use crate::workspace::Workspace;
 
 /// One combined shell script per poll — one round-trip instead of 7+,
 /// each section preceded by an `echo ===SECTION===` marker so the reply
@@ -34,7 +35,8 @@ echo ===LOADAVG===; cat /proc/loadavg\n\
 echo ===MEMINFO===; cat /proc/meminfo\n\
 echo ===STAT===; cat /proc/stat\n\
 echo ===NETDEV===; cat /proc/net/dev\n\
-echo ===DF===; df -B1 -x tmpfs -x devtmpfs -x overlay\n";
+echo ===DF===; df -B1 -x tmpfs -x devtmpfs -x overlay\n\
+true\n";
 
 /// One poll's raw, cumulative counters — needed to compute CPU%/network
 /// rates as deltas against the *next* poll (both `/proc/stat`'s jiffie
@@ -338,6 +340,9 @@ pub struct MonitorPanel {
     focus_handle: FocusHandle,
     session: Arc<SshSession>,
     label: SharedString,
+    /// Back-reference so the disabled empty-state's "打开设置" button can
+    /// open the Settings window — mirrors `SftpPanel.workspace`.
+    workspace: WeakEntity<Workspace>,
     enabled: bool,
     interval_secs: u32,
     prev_sample: Option<RawSample>,
@@ -357,6 +362,7 @@ impl MonitorPanel {
     pub fn new(
         session: Arc<SshSession>,
         label: impl Into<SharedString>,
+        workspace: WeakEntity<Workspace>,
         cx: &mut Context<Self>,
     ) -> Self {
         let settings = crate::settings::load();
@@ -364,6 +370,7 @@ impl MonitorPanel {
             focus_handle: cx.focus_handle(),
             session,
             label: label.into(),
+            workspace,
             enabled: settings.terminal.monitor_basic_enabled,
             interval_secs: settings.terminal.monitor_basic_interval_secs,
             prev_sample: None,
@@ -472,16 +479,31 @@ impl MonitorPanel {
             )
     }
 
-    fn render_body(&self, cx: &Context<Self>) -> impl IntoElement {
+    fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.enabled {
+            let workspace = self.workspace.clone();
             return div()
                 .flex_1()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child("资源监控已在设置中禁用")
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("资源监控已在设置中禁用，启用后需重新连接此主机才会生效"),
+                )
+                .child(
+                    Button::new("monitor-open-settings")
+                        .xsmall()
+                        .ghost()
+                        .label("打开设置")
+                        .on_click(move |_ev, window, cx| {
+                            let _ = workspace.update(cx, |ws, cx| ws.open_settings(window, cx));
+                        }),
+                )
                 .into_any_element();
         }
         if self.consecutive_failures >= 3 {

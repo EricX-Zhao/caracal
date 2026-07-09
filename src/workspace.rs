@@ -508,7 +508,9 @@ impl Workspace {
                 return;
             };
             let label = format!("{}@{}", config.user, config.host);
-            let panel: AnyView = cx.new(|cx| MonitorPanel::new(session, label, cx)).into();
+            let workspace = cx.entity().downgrade();
+            let panel: AnyView =
+                cx.new(|cx| MonitorPanel::new(session, label, workspace, cx)).into();
             self.monitor_panels.insert(key.clone(), panel);
         }
         self.active_monitor = Some(key);
