@@ -571,23 +571,35 @@ async fn open_shell_channel(
 }
 
 /// Run `command` over a fresh non-interactive channel and collect its
-/// stdout. Mirrors `shell_pump`'s read loop (`ChannelMsg::Data`/
-/// `ExtendedData` until `Eof`/`Close`), minus the write side — exec sends
-/// no input, just runs one command and streams the reply.
+/// stdout. Mirrors `shell_pump`'s read loop (`ChannelMsg::Data` until
+/// `Eof`/`Close`), minus the write side — exec sends no input, just runs
+/// one command and streams the reply. Captures stderr and the exit status
+/// too: a nonzero exit is reported as an `Err` (with stderr, if any, in
+/// the message) rather than silently returning `Ok("")` — the
+/// resource-monitoring poll loop this feeds relies on this `Result` to
+/// detect failures.
 async fn run_exec(handle: &Arc<Handle<ClientHandler>>, command: &str) -> Result<String> {
     let mut channel = handle.channel_open_session().await?;
     channel.exec(true, command).await?;
-    let mut output = Vec::new();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit_status: Option<u32> = None;
     loop {
         match channel.wait().await {
-            Some(ChannelMsg::Data { ref data }) => output.extend_from_slice(data),
-            Some(ChannelMsg::ExtendedData { .. }) => {}
-            Some(ChannelMsg::ExitStatus { .. }) => {}
+            Some(ChannelMsg::Data { ref data }) => stdout.extend_from_slice(data),
+            Some(ChannelMsg::ExtendedData { ref data, .. }) => stderr.extend_from_slice(data),
+            Some(ChannelMsg::ExitStatus { exit_status: status }) => exit_status = Some(status),
             Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
             _ => {}
         }
     }
-    Ok(String::from_utf8_lossy(&output).into_owned())
+    if let Some(status) = exit_status {
+        if status != 0 {
+            let stderr_text = String::from_utf8_lossy(&stderr).trim().to_string();
+            return Err(anyhow!("command exited with status {status}: {stderr_text}"));
+        }
+    }
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 /// Split the shell channel so read backpressure can't block writes (keystrokes /
