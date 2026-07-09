@@ -150,7 +150,7 @@ mod tests {
         let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
         assert_eq!(parsed.terminal.font_family, "Consolas");
         assert_eq!(parsed.terminal.font_size, 16.0);
-        assert_eq!(parsed.terminal.monitor_basic_enabled, true);
+        assert!(parsed.terminal.monitor_basic_enabled);
         assert_eq!(parsed.terminal.monitor_basic_interval_secs, 10);
         assert_eq!(parsed.appearance.theme_mode, "light");
     }
@@ -205,7 +205,7 @@ mod tests {
         "#;
         let settings: AppSettings =
             toml::from_str(toml_text).expect("old-format settings must still parse");
-        assert_eq!(settings.terminal.monitor_basic_enabled, false);
+        assert!(!settings.terminal.monitor_basic_enabled);
         assert_eq!(settings.terminal.monitor_basic_interval_secs, 5);
     }
 }

@@ -148,7 +148,7 @@ impl Workspace {
             });
 
         let sftp_placeholder: AnyView = cx.new(|cx| SftpPlaceholder::new(cx)).into();
-        let monitor_placeholder: AnyView = cx.new(|cx| MonitorPlaceholder::new(cx)).into();
+        let monitor_placeholder: AnyView = cx.new(MonitorPlaceholder::new).into();
 
         // One stub panel per not-yet-implemented category.
         let mut stub_panels: HashMap<PanelId, AnyView> = HashMap::new();

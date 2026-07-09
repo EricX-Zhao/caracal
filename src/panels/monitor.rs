@@ -133,7 +133,6 @@ pub fn parse_uname(section: &str) -> (String, String) {
 /// `/proc/uptime`: "245610.78 1989338.46" (uptime_seconds idle_seconds).
 pub fn parse_uptime_secs(section: &str) -> u64 {
     section
-        .trim()
         .split_whitespace()
         .next()
         .and_then(|s| s.parse::<f64>().ok())
@@ -143,7 +142,7 @@ pub fn parse_uptime_secs(section: &str) -> u64 {
 
 /// `/proc/loadavg`: "1.04 0.92 0.56 2/2388 4129263" — first three fields.
 pub fn parse_loadavg(section: &str) -> (f32, f32, f32) {
-    let fields: Vec<&str> = section.trim().split_whitespace().collect();
+    let fields: Vec<&str> = section.split_whitespace().collect();
     let get = |i: usize| fields.get(i).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
     (get(0), get(1), get(2))
 }
@@ -160,7 +159,6 @@ pub fn parse_meminfo(section: &str) -> (u64, u64, u64) {
             continue;
         };
         let kb: u64 = rest
-            .trim()
             .split_whitespace()
             .next()
             .and_then(|s| s.parse().ok())

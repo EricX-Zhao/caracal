@@ -593,11 +593,11 @@ async fn run_exec(handle: &Arc<Handle<ClientHandler>>, command: &str) -> Result<
             _ => {}
         }
     }
-    if let Some(status) = exit_status {
-        if status != 0 {
-            let stderr_text = String::from_utf8_lossy(&stderr).trim().to_string();
-            return Err(anyhow!("command exited with status {status}: {stderr_text}"));
-        }
+    if let Some(status) = exit_status
+        && status != 0
+    {
+        let stderr_text = String::from_utf8_lossy(&stderr).trim().to_string();
+        return Err(anyhow!("command exited with status {status}: {stderr_text}"));
     }
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
