@@ -192,6 +192,13 @@ enum SessionCmd {
         ctrl_rx: flume::Receiver<Ctrl>,
     },
     Sftp(SftpRequest),
+    /// Run a one-off, non-interactive command over a fresh channel on the
+    /// same connection (used for resource-monitoring polls). Not a shell —
+    /// no PTY, no persistent state between calls.
+    Exec {
+        command: String,
+        reply: flume::Sender<Result<String>>,
+    },
 }
 
 /// russh client event handler. Accepts any host key for now (TOFU/known-hosts is
@@ -410,6 +417,16 @@ impl SshSession {
         }));
         rx
     }
+
+    /// Run `command` on the remote host over a fresh, non-interactive
+    /// channel (no PTY) and collect its stdout as a `String`. Used for
+    /// resource-monitoring polls — a separate channel from the shell/SFTP,
+    /// same connection (CLAUDE.md §2: one Session, one connection).
+    pub fn exec_command(&self, command: String) -> flume::Receiver<Result<String>> {
+        let (reply, rx) = flume::bounded(1);
+        let _ = self.cmd_tx.send(SessionCmd::Exec { command, reply });
+        rx
+    }
 }
 
 /// Terminal backend over an SSH shell channel. Only carries the control channel;
@@ -464,6 +481,7 @@ async fn connect_and_auth(config: SshConfig) -> Result<Handle<ClientHandler>> {
 }
 
 async fn command_loop(handle: Handle<ClientHandler>, cmd_rx: flume::Receiver<SessionCmd>) {
+    let handle = Arc::new(handle);
     // The SFTP subsystem channel is opened lazily on first SFTP use and
     // shared via `Arc<SftpSession>` so multiple concurrent background
     // transfer tasks can borrow it (`SftpSession` methods take `&self`,
@@ -516,6 +534,16 @@ async fn command_loop(handle: Handle<ClientHandler>, cmd_rx: flume::Receiver<Ses
                 }
                 service_sftp(&sftp_slot, request).await;
             }
+            SessionCmd::Exec { command, reply } => {
+                // Long-running-ish (network round-trip); spawn so the
+                // command loop keeps servicing shell/SFTP concurrently,
+                // same rationale as `OpenShell`'s `tokio::spawn`.
+                let handle = handle.clone();
+                tokio::spawn(async move {
+                    let result = run_exec(&handle, &command).await;
+                    let _ = reply.send(result);
+                });
+            }
         }
     }
 
@@ -540,6 +568,26 @@ async fn open_shell_channel(
         .await?;
     channel.request_shell(true).await?;
     Ok(channel)
+}
+
+/// Run `command` over a fresh non-interactive channel and collect its
+/// stdout. Mirrors `shell_pump`'s read loop (`ChannelMsg::Data`/
+/// `ExtendedData` until `Eof`/`Close`), minus the write side — exec sends
+/// no input, just runs one command and streams the reply.
+async fn run_exec(handle: &Arc<Handle<ClientHandler>>, command: &str) -> Result<String> {
+    let mut channel = handle.channel_open_session().await?;
+    channel.exec(true, command).await?;
+    let mut output = Vec::new();
+    loop {
+        match channel.wait().await {
+            Some(ChannelMsg::Data { ref data }) => output.extend_from_slice(data),
+            Some(ChannelMsg::ExtendedData { .. }) => {}
+            Some(ChannelMsg::ExitStatus { .. }) => {}
+            Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+            _ => {}
+        }
+    }
+    Ok(String::from_utf8_lossy(&output).into_owned())
 }
 
 /// Split the shell channel so read backpressure can't block writes (keystrokes /
