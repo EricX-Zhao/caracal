@@ -282,41 +282,107 @@ impl Workspace {
     /// new central tab, and wire it so refocusing it later swaps its host's
     /// SFTP browser into the left region and updates the header title.
     pub fn open_ssh(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(session) = self.ssh_session(&config) {
-            let terminal = cx.new(|cx| {
-                TerminalView::new_ssh_shell(
-                    window,
-                    cx,
-                    session,
-                    format!("{}@{}", config.user, config.host),
-                )
-            });
-            Self::seed_font_from_settings(&terminal, cx);
-            let follow = config.clone();
-            let handle = terminal.read(cx).focus_handle(cx);
-            let term_weak = terminal.downgrade();
-            self.terminal_views.push(term_weak.clone());
-            let sub = cx.on_focus(&handle, window, move |this, window, cx| {
+        let key = config.key();
+        let host_label = format!("{}@{}", config.user, config.host);
+
+        let terminal = if let Some(session) = self.ssh_sessions.get(&key).cloned() {
+            cx.new(|cx| TerminalView::new_ssh_shell(window, cx, session, host_label.clone()))
+        } else {
+            cx.new(|cx| TerminalView::new_ssh_connecting(window, cx, host_label.clone()))
+        };
+        Self::seed_font_from_settings(&terminal, cx);
+        let follow = config.clone();
+        let handle = terminal.read(cx).focus_handle(cx);
+        let term_weak = terminal.downgrade();
+        self.terminal_views.push(term_weak.clone());
+        // `term_weak` is needed again below (the background-connect
+        // closure and, from Task 6, the close-cleanup subscription), so
+        // the on-focus closure gets its own clone rather than moving the
+        // outer binding.
+        let sub = cx.on_focus(&handle, window, {
+            let term_weak = term_weak.clone();
+            move |this, window, cx| {
                 this.set_active_title_from(&term_weak, cx);
-                this.show_sftp(follow.clone(), window, cx);
-                this.show_monitor(follow.clone(), window, cx);
+                // Only show SFTP/monitor once the session is actually
+                // cached — while a tab is still connecting, this closure
+                // fires immediately (the tab is focused on creation) and
+                // must not trigger `show_sftp`'s own on-demand
+                // synchronous connect, which would race the background
+                // dial below.
+                if this.ssh_sessions.contains_key(&follow.key()) {
+                    this.show_sftp(follow.clone(), window, cx);
+                    this.show_monitor(follow.clone(), window, cx);
+                } else {
+                    this.show_sftp_placeholder(window, cx);
+                    this.show_monitor_placeholder(window, cx);
+                }
+            }
+        });
+        self._subscriptions.push(sub);
+        // Remember which host this tab is for, so a
+        // `ReconnectRequested` (Enter pressed on the disconnected
+        // banner — see `terminal/view.rs`) knows what to redial.
+        self.ssh_reconnect_configs.insert(terminal.entity_id(), config.clone());
+        let reconnect_sub =
+            cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| {
+                let TerminalViewEvent::ReconnectRequested = event;
+                this.reconnect_ssh_terminal(terminal.clone(), window, cx);
             });
-            self._subscriptions.push(sub);
-            // Remember which host this tab is for, so a
-            // `ReconnectRequested` (Enter pressed on the disconnected
-            // banner — see `terminal/view.rs`) knows what to redial.
-            self.ssh_reconnect_configs.insert(terminal.entity_id(), config.clone());
-            let reconnect_sub =
-                cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| {
-                    let TerminalViewEvent::ReconnectRequested = event;
-                    this.reconnect_ssh_terminal(terminal.clone(), window, cx);
-                });
-            self._subscriptions.push(reconnect_sub);
-            let panel = cx.new(|_cx| TerminalPanel::new(terminal));
-            self.add_center(Arc::new(panel), window, cx);
+        self._subscriptions.push(reconnect_sub);
+
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        self.add_center(Arc::new(panel), window, cx);
+
+        if self.ssh_sessions.contains_key(&key) {
             self.show_sftp(config.clone(), window, cx);
             self.show_monitor(config, window, cx);
+            return;
         }
+
+        // Not cached: dial in the background so the tab above opens
+        // instantly and a slow/unreachable host can't freeze the UI (same
+        // rationale as `reconnect_ssh_terminal`, below).
+        let dial_config = config.clone();
+        let connect_task = cx.background_spawn(async move { SshSession::connect(dial_config) });
+        let term_for_connect = term_weak.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            match connect_task.await {
+                Ok(session) => {
+                    let _ = this.update_in(cx, move |this, window, cx| {
+                        this.ssh_sessions.insert(key, session.clone());
+                        if let Some(t) = term_for_connect.upgrade() {
+                            t.update(cx, |view, cx| {
+                                let session = session.clone();
+                                view.reconnect_with(
+                                    move |cols, rows, bytes_tx| session.open_shell(cols, rows, bytes_tx),
+                                    cx,
+                                );
+                            });
+                        }
+                        // Don't yank the side panels to this host if the
+                        // user has since focused a different tab — the
+                        // on-focus handler above will show them correctly
+                        // if the user comes back to this tab later.
+                        let is_focused = this
+                            .focused_terminal
+                            .as_ref()
+                            .map(|w| w.entity_id())
+                            == Some(term_for_connect.entity_id());
+                        if is_focused {
+                            this.show_sftp(config.clone(), window, cx);
+                            this.show_monitor(config, window, cx);
+                        }
+                    });
+                }
+                Err(e) => {
+                    log::error!("SSH connect to {key} failed: {e}");
+                    let _ = term_for_connect.update(cx, |view, cx| {
+                        view.mark_connect_failed(format!("连接失败: {e}"), cx);
+                    });
+                }
+            }
+        })
+        .detach();
     }
 
     /// Redial a disconnected SSH terminal's host and swap in a fresh shell
@@ -346,6 +412,7 @@ impl Workspace {
             return;
         };
         self.ssh_sessions.remove(&config.key());
+        terminal.update(cx, |view, cx| view.mark_connecting(cx));
 
         let dial_config = config.clone();
         let connect_task = cx.background_spawn(async move { SshSession::connect(dial_config) });
@@ -366,8 +433,9 @@ impl Workspace {
                 }
                 Err(e) => {
                     log::error!("SSH reconnect to {} failed: {e}", config.key());
-                    // Banner stays up (still `disconnected`) — Enter can be
-                    // pressed again to retry.
+                    let _ = terminal.update(cx, |view, cx| {
+                        view.mark_connect_failed(format!("连接失败: {e}"), cx);
+                    });
                 }
             }
         })
