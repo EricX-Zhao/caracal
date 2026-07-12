@@ -46,7 +46,7 @@ use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
 use crate::panels::monitor::{MonitorPanel, MonitorPlaceholder};
 use crate::panels::stub::StubPanel;
-use crate::panels::terminal::TerminalPanel;
+use crate::panels::terminal::{TerminalPanel, TerminalPanelEvent};
 use crate::settings;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
@@ -61,9 +61,10 @@ pub struct Workspace {
     /// The `SshConfig` behind each SSH-backed `TerminalView`, so a
     /// `TerminalViewEvent::ReconnectRequested` (user pressed Enter on a
     /// disconnected tab) knows which host to redial. Populated in
-    /// `open_ssh`; not proactively pruned on tab close (same lazy-cleanup
-    /// stance as `terminal_views` below — harmless, bounded by tabs opened
-    /// this session).
+    /// `open_ssh`, pruned on tab close (`handle_ssh_tab_closed`) — also
+    /// doubles as the "how many tabs does this host still have open"
+    /// count that decides whether closing a tab should tear down the
+    /// shared session.
     ssh_reconnect_configs: HashMap<EntityId, SshConfig>,
     /// Every `TerminalView` this workspace has created, so settings changes
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
@@ -331,6 +332,13 @@ impl Workspace {
         self._subscriptions.push(reconnect_sub);
 
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        let closed_config = config.clone();
+        let closed_term = term_weak.clone();
+        let closed_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, window, cx| {
+            let TerminalPanelEvent::Closed = event;
+            this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
+        });
+        self._subscriptions.push(closed_sub);
         self.add_center(Arc::new(panel), window, cx);
 
         if self.ssh_sessions.contains_key(&key) {
@@ -440,6 +448,37 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// Cleanup when an SSH-backed terminal tab is removed from the dock
+    /// (`TerminalPanelEvent::Closed`, emitted by `TerminalPanel::on_removed`).
+    /// If any other tab for the same host is still open, does nothing —
+    /// the shared session is still needed. Otherwise evicts the cached
+    /// `SshSession` and closes that host's SFTP/monitor panels (falling
+    /// back to their placeholders if either was the one currently shown).
+    fn handle_ssh_tab_closed(
+        &mut self,
+        config: SshConfig,
+        terminal: &WeakEntity<TerminalView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ssh_reconnect_configs.remove(&terminal.entity_id());
+        let key = config.key();
+        let any_tabs_left = self.ssh_reconnect_configs.values().any(|c| c.key() == key);
+        if any_tabs_left {
+            return;
+        }
+        self.ssh_sessions.remove(&key);
+        self.sftp_panels.remove(&key);
+        self.monitor_panels.remove(&key);
+        if self.active_sftp.as_deref() == Some(key.as_str()) {
+            self.show_sftp_placeholder(window, cx);
+        }
+        if self.active_monitor.as_deref() == Some(key.as_str()) {
+            self.show_monitor_placeholder(window, cx);
+        }
+        cx.notify();
     }
 
     /// Open a raw Telnet terminal as a new central tab. No shared-connection
