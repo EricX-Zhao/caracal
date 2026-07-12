@@ -50,8 +50,11 @@ mechanism.
   - `Connecting` → `"正在连接 {host_label}…"`
   - `Failed(reason)` → `"{host_label} {reason}，按 Enter 重连"`
   - The existing mid-session-drop path (`mark_disconnected`, a live shell's read side
-    closing) becomes `Failed("连接已断开".to_string())` — same user-visible wording as today,
-    now expressed through the shared enum instead of a separate bool.
+    closing) becomes `Failed("连接已断开".to_string())`, rendered through the same shared
+    template as every other banner — so it now reads `"{host_label} 连接已断开，按 Enter
+    重连"` instead of the old fixed `"连接已断开，按 Enter 重新连接"`. Host-prefixed and
+    "重连" instead of "重新连接" is an intentional side effect of unifying under one
+    template, not a preserved-wording guarantee.
   - A genuine connect failure becomes `Failed(format!("连接失败: {e}"))`, `e` being
     `SshSession::connect`'s real `anyhow::Error` — the same value already going to
     `log::error!` today, now also shown in the terminal.
