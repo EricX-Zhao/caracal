@@ -10,17 +10,17 @@ use alacritty_terminal::event::Event;
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    ClipboardItem, Context, FocusHandle, Focusable, Font, FontFallbacks, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Styled, Task,
-    Window, div, font, px,
+    ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font, FontFallbacks,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString,
+    Styled, Task, Window, div, font, hsla, prelude::FluentBuilder, px,
 };
 
 use crate::terminal::backend::{DeadBackend, LocalPty, PtyBackend};
 use crate::terminal::bridge::{run_drain, run_feeder};
 use crate::terminal::keymap::{PastePayload, encode_key, encode_paste};
 use crate::terminal::model::{SharedTerm, new_term};
-use crate::terminal::render::terminal_canvas;
+use crate::terminal::render::{cell_metrics, terminal_canvas};
 use crate::terminal::scrollback;
 use crate::terminal::selection;
 use crate::terminal::serial::{SerialBackend, SerialConfig};
@@ -135,6 +135,11 @@ fn system_monospace_family() -> SharedString {
 pub struct TerminalView {
     term: SharedTerm,
     backend: Arc<dyn PtyBackend>,
+    /// The sender `Term`'s `EventProxy` was built with (see `model::new_term`)
+    /// — kept so `reconnect_with` can spin up a new feeder generation that
+    /// still signals the same, long-lived drain task (`_drain_task`) after a
+    /// reconnect, rather than needing to reach inside `Term` for it.
+    events_tx: flume::Sender<Event>,
     focus_handle: FocusHandle,
     font_config: FontConfig,
     title: String,
@@ -163,13 +168,40 @@ pub struct TerminalView {
     /// — we just need a tiny bit of "is a drag currently active" memory
     /// to drive the cursor shape and copy-on-up behavior.
     selection_dragging: Option<SelectionType>,
+    /// True for a backend where a broken connection is meaningfully
+    /// reconnectable (currently: SSH shells). Gates whether a dead backend
+    /// shows the "connection lost, press Enter to reconnect" banner — a
+    /// local shell exiting, or a serial port closing, isn't a "connection"
+    /// in that sense, so those stay silent (unchanged behavior).
+    remote_reconnect: bool,
+    /// Set by the disconnect-watch task (see `spawn_generation`) when the
+    /// current backend generation's read side ends. Only ever becomes
+    /// user-visible when `remote_reconnect` is true (see `mark_disconnected`).
+    disconnected: bool,
     _drain_task: Task<()>,
+    /// Watches the current backend generation's byte stream for closure.
+    /// Replaced (dropping — and so cancelling — the previous one) each time
+    /// `reconnect_with` swaps in a fresh backend generation.
+    _disconnect_watch: Task<()>,
 }
+
+/// Emitted by `TerminalView` for events its owner (`Workspace`) needs to act
+/// on, since the view itself doesn't know how to redial a backend (CLAUDE.md
+/// §2 — it stays agnostic to backend kind). Follows the same
+/// event-emitter + `cx.subscribe_in` pattern as `SavedConnectionsEvent`
+/// (`src/panels/saved_connections.rs`).
+#[derive(Clone, Debug)]
+pub enum TerminalViewEvent {
+    /// The user pressed Enter on a disconnected, reconnectable terminal.
+    ReconnectRequested,
+}
+
+impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl TerminalView {
     /// A terminal backed by the local shell (`LocalPty`).
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_backend(window, cx, |cols, rows, bytes_tx| {
+        Self::with_backend(window, cx, false, |cols, rows, bytes_tx| {
             Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
         })
     }
@@ -182,7 +214,7 @@ impl TerminalView {
         working_dir: Option<&str>,
     ) -> Self {
         let shell = shell.to_string();
-        Self::with_backend(window, cx, move |cols, rows, bytes_tx| {
+        Self::with_backend(window, cx, false, move |cols, rows, bytes_tx| {
             Arc::new(
                 LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)
                     .expect("failed to spawn local pty"),
@@ -192,12 +224,14 @@ impl TerminalView {
 
     /// A terminal backed by a shell channel on an already-connected [`SshSession`]
     /// (shared with the SFTP panel — one connection per host, CLAUDE.md §2).
+    /// `remote_reconnect: true` — a dead SSH shell shows the reconnect banner
+    /// (see `mark_disconnected`, `reconnect_with`).
     pub fn new_ssh_shell(
         window: &mut Window,
         cx: &mut Context<Self>,
         session: Arc<SshSession>,
     ) -> Self {
-        Self::with_backend(window, cx, move |cols, rows, bytes_tx| {
+        Self::with_backend(window, cx, true, move |cols, rows, bytes_tx| {
             session.open_shell(cols, rows, bytes_tx)
         })
     }
@@ -206,7 +240,7 @@ impl TerminalView {
     /// tab dials its own socket — unlike SSH, telnet has no SFTP-style
     /// second channel to justify a shared connection.
     pub fn new_telnet(window: &mut Window, cx: &mut Context<Self>, config: TelnetConfig) -> Self {
-        Self::with_backend(window, cx, move |_cols, _rows, bytes_tx| {
+        Self::with_backend(window, cx, false, move |_cols, _rows, bytes_tx| {
             match TelnetBackend::connect(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
@@ -220,7 +254,7 @@ impl TerminalView {
 
     /// A terminal backed by a serial port (`SerialBackend`).
     pub fn new_serial(window: &mut Window, cx: &mut Context<Self>, config: SerialConfig) -> Self {
-        Self::with_backend(window, cx, move |_cols, _rows, bytes_tx| {
+        Self::with_backend(window, cx, false, move |_cols, _rows, bytes_tx| {
             match SerialBackend::open(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
@@ -232,6 +266,41 @@ impl TerminalView {
         })
     }
 
+    /// Wire one backend "generation": the bytes channel, the feeder thread,
+    /// and a small watcher task that notices when the feeder's loop ends
+    /// (backend read side closed — see `bridge::run_feeder`'s `closed`
+    /// param) and calls `mark_disconnected`. Used both by `with_backend`
+    /// (first generation) and `reconnect_with` (every generation after a
+    /// reconnect) — factored out so a reconnect only rebuilds this part,
+    /// not the `Term`/scrollback/events plumbing that `with_backend` also
+    /// sets up once.
+    fn spawn_generation(
+        term: SharedTerm,
+        events_tx: flume::Sender<Event>,
+        cols: u16,
+        rows: u16,
+        make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
+        cx: &mut Context<Self>,
+    ) -> (Arc<dyn PtyBackend>, Task<()>) {
+        let (bytes_tx, bytes_rx) = flume::bounded::<Vec<u8>>(PTY_CHANNEL_CAPACITY);
+        let (closed_tx, closed_rx) = flume::bounded::<()>(1);
+
+        let backend = make_backend(cols, rows, bytes_tx);
+
+        std::thread::Builder::new()
+            .name("caracal-feeder".into())
+            .spawn(move || run_feeder(term, bytes_rx, events_tx, closed_tx))
+            .expect("failed to spawn feeder thread");
+
+        let disconnect_watch = cx.spawn(async move |view, cx| {
+            if closed_rx.recv_async().await.is_ok() {
+                let _ = view.update(cx, |view, cx| view.mark_disconnected(cx));
+            }
+        });
+
+        (backend, disconnect_watch)
+    }
+
     /// Shared construction: wire the model, feeder, drain task, and focus; the
     /// backend is built by `make_backend` (given the initial size and the byte
     /// sink the feeder reads from). The backend is agnostic here — `TerminalView`
@@ -239,6 +308,7 @@ impl TerminalView {
     fn with_backend(
         window: &mut Window,
         cx: &mut Context<Self>,
+        remote_reconnect: bool,
         make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -254,30 +324,32 @@ impl TerminalView {
         // The feeder always drains this channel regardless of tab visibility, so
         // a backgrounded tab never deadlocks (CLAUDE.md §2).
         let (events_tx, events_rx) = flume::unbounded::<Event>();
-        let (bytes_tx, bytes_rx) = flume::bounded::<Vec<u8>>(PTY_CHANNEL_CAPACITY);
 
         let term = new_term(DEFAULT_COLS, DEFAULT_ROWS, events_tx.clone());
 
-        let backend = make_backend(DEFAULT_COLS as u16, DEFAULT_ROWS as u16, bytes_tx);
-
-        // Feeder thread: raw PTY bytes -> Term (via ANSI parser) -> Wakeup.
-        {
-            let feeder_term = term.clone();
-            std::thread::Builder::new()
-                .name("caracal-feeder".into())
-                .spawn(move || run_feeder(feeder_term, bytes_rx, events_tx))
-                .expect("failed to spawn feeder thread");
-        }
+        let (backend, disconnect_watch) = Self::spawn_generation(
+            term.clone(),
+            events_tx.clone(),
+            DEFAULT_COLS as u16,
+            DEFAULT_ROWS as u16,
+            make_backend,
+            cx,
+        );
 
         // Drain task: terminal events -> throttled redraw + PTY write-backs.
-        let drain_backend = backend.clone();
+        // Long-lived across reconnects (unlike the feeder/disconnect-watch
+        // pair) — it's tied to `events_tx`/`events_rx`, which `Term` bakes in
+        // for life at `new_term`, not to any one backend generation. It reads
+        // `view.backend` fresh for write-backs rather than taking one as a
+        // param, so it keeps working after `reconnect_with` swaps the backend.
         let drain_task = cx.spawn(async move |weak, cx| {
-            run_drain(weak, events_rx, drain_backend, cx).await;
+            run_drain(weak, events_rx, cx).await;
         });
 
         Self {
             term,
             backend,
+            events_tx,
             focus_handle,
             font_config: FontConfig::default(),
             title: "terminal".to_string(),
@@ -289,7 +361,10 @@ impl TerminalView {
             last_origin_x: 0.0,
             last_origin_y: 0.0,
             selection_dragging: None,
+            remote_reconnect,
+            disconnected: false,
             _drain_task: drain_task,
+            _disconnect_watch: disconnect_watch,
         }
     }
 
@@ -306,6 +381,60 @@ impl TerminalView {
 
     pub fn mark_exited(&mut self) {
         self.exited = true;
+    }
+
+    /// Write bytes straight to the current backend. Called by `run_drain`
+    /// for PTY write-backs (query responses, clipboard load) — going through
+    /// the view instead of a captured `Arc<dyn PtyBackend>` means these
+    /// always reach whatever backend is current, even right after a
+    /// `reconnect_with` swap.
+    pub(crate) fn write_to_backend(&self, bytes: &[u8]) {
+        self.backend.write(bytes);
+    }
+
+    /// Called (via the per-generation disconnect-watch task) when the
+    /// current backend's byte stream ends. Only reconnectable backends
+    /// (`remote_reconnect`, currently just SSH) surface this as the
+    /// "connection lost, press Enter to reconnect" banner — a local shell
+    /// exiting or a serial port closing isn't a "connection" in that sense
+    /// and stays as-is.
+    fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
+        if !self.remote_reconnect || self.disconnected {
+            return;
+        }
+        self.disconnected = true;
+        cx.notify();
+    }
+
+    /// Swap in a freshly-dialed backend after a reconnect, replacing the
+    /// (bytes channel / feeder thread / disconnect-watch) trio the dead
+    /// generation left behind — the `Term`/scrollback and the long-lived
+    /// drain task are untouched, so history survives the reconnect.
+    ///
+    /// Takes a `make_backend` factory, same shape as `with_backend`'s —
+    /// *not* a ready-built `Arc<dyn PtyBackend>` — because the backend must
+    /// be opened with *this* generation's own `bytes_tx` (created inside
+    /// `spawn_generation`); building it earlier would wire it to nothing.
+    /// Called by `Workspace` once it has redialed (see
+    /// `TerminalViewEvent::ReconnectRequested`).
+    pub fn reconnect_with(
+        &mut self,
+        make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
+        cx: &mut Context<Self>,
+    ) {
+        let (cols, rows) = if self.last_cols > 0 && self.last_rows > 0 {
+            (self.last_cols as u16, self.last_rows as u16)
+        } else {
+            (DEFAULT_COLS as u16, DEFAULT_ROWS as u16)
+        };
+        let term = self.term.clone();
+        let events_tx = self.events_tx.clone();
+        let (backend, disconnect_watch) =
+            Self::spawn_generation(term, events_tx, cols, rows, make_backend, cx);
+        self.backend = backend;
+        self._disconnect_watch = disconnect_watch;
+        self.disconnected = false;
+        cx.notify();
     }
 
     /// Send `text` into this terminal as if pasted (honours the term's
@@ -427,6 +556,16 @@ impl TerminalView {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Disconnected (SSH connection lost): the only live input is Enter,
+        // which asks `Workspace` (the only thing that knows how to redial —
+        // CLAUDE.md §2) to reconnect. Everything else is swallowed — there's
+        // no live backend to send it to.
+        if self.disconnected {
+            if ev.keystroke.key == "enter" {
+                cx.emit(TerminalViewEvent::ReconnectRequested);
+            }
+            return;
+        }
         // Copy shortcut: Ctrl+Shift+C → copy current selection to clipboard.
         // This is the XTerm / gnome-terminal convention; Ctrl+C alone
         // continues to mean SIGINT (Phase 2 behavior).
@@ -680,13 +819,24 @@ impl Focusable for TerminalView {
     }
 }
 
+/// Breathing room around the grid, in cell units: left/right get 2 columns,
+/// top/bottom get 1 row (a full cell height reads as more whitespace than a
+/// cell width does, so the vertical side uses a smaller count to match).
+const EDGE_PADDING_COLS: f32 = 2.0;
+const EDGE_PADDING_ROWS: f32 = 1.0;
+
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let view = cx.entity();
+        let font = self.font_config.to_font();
+        let metrics = cell_metrics(window, &font, self.font_config.size);
         div()
             .track_focus(&self.focus_handle)
             .key_context(TERMINAL_KEY_CONTEXT)
+            .relative()
             .size_full()
+            .px(metrics.width * EDGE_PADDING_COLS)
+            .py(metrics.height * EDGE_PADDING_ROWS)
             .on_key_down(cx.listener(Self::on_key_down))
             // Actions reclaiming Root-context keys (tab / shift-tab / ctrl-c).
             .on_action(cx.listener(Self::on_interrupt))
@@ -701,10 +851,26 @@ impl Render for TerminalView {
                 view,
                 self.term.clone(),
                 self.backend.clone(),
-                self.font_config.to_font(),
+                font,
                 self.font_config.size,
                 self.focus_handle.clone(),
             ))
+            // Disconnected-SSH banner: overlays the last-painted frame (left
+            // in place, not cleared) with a dimmed backdrop + centered
+            // message, matching nyaterm's "connection lost" treatment.
+            .when(self.disconnected, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(hsla(0.0, 0.0, 0.0, 0.72))
+                        .text_color(hsla(0.0, 0.0, 1.0, 1.0))
+                        .child("连接已断开，按 Enter 重新连接"),
+                )
+            })
     }
 }
 

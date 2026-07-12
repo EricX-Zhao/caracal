@@ -10,14 +10,12 @@
 //!      coalesces redraws: at most one `cx.notify()` per frame (~16ms), so a
 //!      `cat` of a huge file can't melt the UI thread.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use alacritty_terminal::event::Event;
 use alacritty_terminal::vte::ansi::Processor;
 use gpui::{AsyncApp, WeakEntity};
 
-use crate::terminal::backend::PtyBackend;
 use crate::terminal::model::SharedTerm;
 use crate::terminal::view::TerminalView;
 
@@ -38,7 +36,18 @@ const MAX_BATCH_BYTES: usize = 64 * 1024;
 ///
 /// Reads raw byte chunks from `bytes_rx`, feeds them through the ANSI parser into
 /// the shared `Term`, then signals the drain task via an `Event::Wakeup`.
-pub fn run_feeder(term: SharedTerm, bytes_rx: flume::Receiver<Vec<u8>>, events: flume::Sender<Event>) {
+///
+/// `closed` fires exactly once, after the loop ends because `bytes_rx` was
+/// drained and closed (every backend-side sender dropped — the read side of
+/// the transport gave up, whether because the process/session exited or the
+/// connection died). `TerminalView` watches this to detect a dead backend —
+/// see `view.rs`'s `mark_disconnected`.
+pub fn run_feeder(
+    term: SharedTerm,
+    bytes_rx: flume::Receiver<Vec<u8>>,
+    events: flume::Sender<Event>,
+    closed: flume::Sender<()>,
+) {
     let mut parser: Processor = Processor::new();
     while let Ok(chunk) = bytes_rx.recv() {
         {
@@ -62,14 +71,20 @@ pub fn run_feeder(term: SharedTerm, bytes_rx: flume::Receiver<Vec<u8>>, events: 
             break;
         }
     }
+    let _ = closed.send(());
 }
 
 /// GPUI-side drain task. Consumes terminal events, throttles redraws, and routes
 /// PTY write-backs (query responses, clipboard load) to the backend.
+///
+/// Long-lived across a `TerminalView` reconnect (see `view.rs`'s
+/// `reconnect_with`) — it doesn't take a `backend` param, and instead reads
+/// `view.backend` fresh each time it needs to write, so a write-back after a
+/// reconnect goes to the *current* backend generation, not a stale `Arc`
+/// captured before the swap.
 pub async fn run_drain(
     view: WeakEntity<TerminalView>,
     events: flume::Receiver<Event>,
-    backend: Arc<dyn PtyBackend>,
     cx: &mut AsyncApp,
 ) {
     loop {
@@ -82,6 +97,7 @@ pub async fn run_drain(
         let mut dirty = false;
         let mut title: Option<String> = None;
         let mut exited = false;
+        let mut write_back: Vec<u8> = Vec::new();
 
         let mut handle = |ev: Event| match ev {
             Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange => dirty = true,
@@ -92,11 +108,11 @@ pub async fn run_drain(
             Event::ResetTitle => {
                 title = Some(String::new());
             }
-            Event::PtyWrite(text) => backend.write(text.as_bytes()),
+            Event::PtyWrite(text) => write_back.extend_from_slice(text.as_bytes()),
             Event::ClipboardLoad(_, formatter) => {
                 // Paste-on-request: respond with empty clipboard for now (Phase 3
                 // wires the real system clipboard).
-                backend.write(formatter("").as_bytes());
+                write_back.extend_from_slice(formatter("").as_bytes());
             }
             Event::TextAreaSizeRequest(_) | Event::ColorRequest(..) | Event::ClipboardStore(..) => {}
             Event::Bell => {}
@@ -109,8 +125,11 @@ pub async fn run_drain(
             handle(ev);
         }
 
-        if dirty || title.is_some() {
+        if dirty || title.is_some() || !write_back.is_empty() {
             let update = view.update(cx, |view, cx| {
+                if !write_back.is_empty() {
+                    view.write_to_backend(&write_back);
+                }
                 if let Some(t) = title.take() {
                     view.set_title(t);
                 }

@@ -88,6 +88,17 @@ fn main() {
         };
         Theme::change(startup_theme, None, cx);
 
+        // gpui-component's `Theme::default()` sets `font_family` to
+        // `.SystemUIFont` — a macOS-only sentinel (`root.rs` applies it to the
+        // whole app via the top-level `Root`'s `.font_family(...)`). On
+        // Windows/Linux that name doesn't resolve to a real font, so the
+        // window falls back to whatever the OS substitutes — on a zh-CN
+        // Windows box that's Microsoft YaHei, not any font this app bundles.
+        // Point it at the bundled Sarasa Mono SC (registered below), which
+        // covers both Latin and CJK glyphs, so the whole app chrome — not
+        // just the terminal content — renders from a font we actually ship.
+        Theme::global_mut(cx).font_family = "Sarasa Mono SC".into();
+
         // Allow toggling between light/dark with Ctrl+K.
         cx.bind_keys([KeyBinding::new(
             "ctrl-k",

@@ -27,14 +27,15 @@ use crate::terminal::grid_snapshot::snapshot_content;
 use crate::terminal::model::{SharedTerm, TermDimensions, default_bg_hsla};
 use crate::terminal::view::TerminalView;
 
-/// Metrics passed from prepaint to paint.
+/// Metrics passed from prepaint to paint. Also used by `TerminalView::render`
+/// (`pub(crate)`) to size the padding around the canvas in cell units.
 #[derive(Clone, Copy)]
-struct CellMetrics {
-    width: Pixels,
-    height: Pixels,
+pub(crate) struct CellMetrics {
+    pub(crate) width: Pixels,
+    pub(crate) height: Pixels,
 }
 
-fn cell_metrics(window: &Window, font: &Font, font_size: Pixels) -> CellMetrics {
+pub(crate) fn cell_metrics(window: &Window, font: &Font, font_size: Pixels) -> CellMetrics {
     let ts = window.text_system();
     let font_id = ts.resolve_font(font);
     let width = ts

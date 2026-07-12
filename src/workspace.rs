@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement,
+    AnyView, App, AppContext, Bounds, Context, Entity, EntityId, Focusable, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
     prelude::FluentBuilder, px, size,
@@ -51,13 +51,20 @@ use crate::settings;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::telnet::TelnetConfig;
-use crate::terminal::view::{FontConfig, TerminalView};
+use crate::terminal::view::{FontConfig, TerminalView, TerminalViewEvent};
 
 pub struct Workspace {
     /// Hosts the CENTER terminal tabs only (no side docks anymore).
     dock_area: Entity<DockArea>,
     /// Shared SSH connections, keyed by `user@host:port`.
     ssh_sessions: HashMap<String, Arc<SshSession>>,
+    /// The `SshConfig` behind each SSH-backed `TerminalView`, so a
+    /// `TerminalViewEvent::ReconnectRequested` (user pressed Enter on a
+    /// disconnected tab) knows which host to redial. Populated in
+    /// `open_ssh`; not proactively pruned on tab close (same lazy-cleanup
+    /// stance as `terminal_views` below — harmless, bounded by tabs opened
+    /// this session).
+    ssh_reconnect_configs: HashMap<EntityId, SshConfig>,
     /// Every `TerminalView` this workspace has created, so settings changes
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
@@ -170,6 +177,7 @@ impl Workspace {
         Self {
             dock_area,
             ssh_sessions: HashMap::new(),
+            ssh_reconnect_configs: HashMap::new(),
             terminal_views: Vec::new(),
             settings_window: None,
             focused_terminal: None,
@@ -287,11 +295,76 @@ impl Workspace {
                 this.show_monitor(follow.clone(), window, cx);
             });
             self._subscriptions.push(sub);
+            // Remember which host this tab is for, so a
+            // `ReconnectRequested` (Enter pressed on the disconnected
+            // banner — see `terminal/view.rs`) knows what to redial.
+            self.ssh_reconnect_configs.insert(terminal.entity_id(), config.clone());
+            let reconnect_sub =
+                cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| {
+                    let TerminalViewEvent::ReconnectRequested = event;
+                    this.reconnect_ssh_terminal(terminal.clone(), window, cx);
+                });
+            self._subscriptions.push(reconnect_sub);
             let panel = cx.new(|_cx| TerminalPanel::new(terminal));
             self.add_center(Arc::new(panel), window, cx);
             self.show_sftp(config.clone(), window, cx);
             self.show_monitor(config, window, cx);
         }
+    }
+
+    /// Redial a disconnected SSH terminal's host and swap in a fresh shell
+    /// channel. Triggered by `TerminalViewEvent::ReconnectRequested` (the
+    /// user pressed Enter on the "connection lost" banner).
+    ///
+    /// Evicts the cached `SshSession` for this host first: the disconnect
+    /// that got us here may have only been noticed on this one shell
+    /// channel, but if the underlying TCP connection actually died, the
+    /// cached session is a zombie whose `command_loop` thread is still
+    /// alive but will hang opening any new channel on it (the root cause of
+    /// "can't open new SSH connections after a disconnect" — see the
+    /// investigation this feature came out of). Redialing fresh here also
+    /// means the connect itself runs on the background executor, not the
+    /// main thread, so a slow/unreachable host can't freeze the UI.
+    ///
+    /// Known limitation: other tabs or the SFTP/monitor panels sharing the
+    /// now-evicted session are *not* migrated to the new one — they may
+    /// still hang on their next use and need to be closed/reopened by hand.
+    fn reconnect_ssh_terminal(
+        &mut self,
+        terminal: Entity<TerminalView>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(config) = self.ssh_reconnect_configs.get(&terminal.entity_id()).cloned() else {
+            return;
+        };
+        self.ssh_sessions.remove(&config.key());
+
+        let dial_config = config.clone();
+        let connect_task = cx.background_spawn(async move { SshSession::connect(dial_config) });
+        cx.spawn(async move |this, cx| {
+            match connect_task.await {
+                Ok(session) => {
+                    let key = config.key();
+                    let _ = this.update(cx, |this, _cx| {
+                        this.ssh_sessions.insert(key, session.clone());
+                    });
+                    let _ = terminal.update(cx, |view, cx| {
+                        let session = session.clone();
+                        view.reconnect_with(
+                            move |cols, rows, bytes_tx| session.open_shell(cols, rows, bytes_tx),
+                            cx,
+                        );
+                    });
+                }
+                Err(e) => {
+                    log::error!("SSH reconnect to {} failed: {e}", config.key());
+                    // Banner stays up (still `disconnected`) — Enter can be
+                    // pressed again to retry.
+                }
+            }
+        })
+        .detach();
     }
 
     /// Open a raw Telnet terminal as a new central tab. No shared-connection
