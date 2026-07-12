@@ -283,7 +283,14 @@ impl Workspace {
     /// SFTP browser into the left region and updates the header title.
     pub fn open_ssh(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(session) = self.ssh_session(&config) {
-            let terminal = cx.new(|cx| TerminalView::new_ssh_shell(window, cx, session));
+            let terminal = cx.new(|cx| {
+                TerminalView::new_ssh_shell(
+                    window,
+                    cx,
+                    session,
+                    format!("{}@{}", config.user, config.host),
+                )
+            });
             Self::seed_font_from_settings(&terminal, cx);
             let follow = config.clone();
             let handle = terminal.read(cx).focus_handle(cx);

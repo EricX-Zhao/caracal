@@ -197,10 +197,16 @@ pub struct TerminalView {
     /// local shell exiting, or a serial port closing, isn't a "connection"
     /// in that sense, so those stay silent (unchanged behavior).
     remote_reconnect: bool,
-    /// Set by the disconnect-watch task (see `spawn_generation`) when the
-    /// current backend generation's read side ends. Only ever becomes
-    /// user-visible when `remote_reconnect` is true (see `mark_disconnected`).
-    disconnected: bool,
+    /// "user@host" label used by the connecting/failed banner text
+    /// (`conn_banner_text`). Empty for non-SSH backends, which never show
+    /// a banner (`remote_reconnect` gates that).
+    host_label: String,
+    /// `Some` while a non-live state (connecting or dead) should be shown
+    /// as a full-terminal overlay; `None` means the backend is live. Only
+    /// ever `Some` when `remote_reconnect` is true. Set by
+    /// `mark_disconnected` / `mark_connect_failed` / `mark_connecting`
+    /// (the latter two added in Task 3), cleared by `reconnect_with`.
+    banner: Option<ConnBanner>,
     _drain_task: Task<()>,
     /// Watches the current backend generation's byte stream for closure.
     /// Replaced (dropping — and so cancelling — the previous one) each time
@@ -224,7 +230,7 @@ impl EventEmitter<TerminalViewEvent> for TerminalView {}
 impl TerminalView {
     /// A terminal backed by the local shell (`LocalPty`).
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_backend(window, cx, false, |cols, rows, bytes_tx| {
+        Self::with_backend(window, cx, false, String::new(), |cols, rows, bytes_tx| {
             Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
         })
     }
@@ -237,7 +243,7 @@ impl TerminalView {
         working_dir: Option<&str>,
     ) -> Self {
         let shell = shell.to_string();
-        Self::with_backend(window, cx, false, move |cols, rows, bytes_tx| {
+        Self::with_backend(window, cx, false, String::new(), move |cols, rows, bytes_tx| {
             Arc::new(
                 LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)
                     .expect("failed to spawn local pty"),
@@ -253,8 +259,9 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
         session: Arc<SshSession>,
+        host_label: String,
     ) -> Self {
-        Self::with_backend(window, cx, true, move |cols, rows, bytes_tx| {
+        Self::with_backend(window, cx, true, host_label, move |cols, rows, bytes_tx| {
             session.open_shell(cols, rows, bytes_tx)
         })
     }
@@ -263,7 +270,7 @@ impl TerminalView {
     /// tab dials its own socket — unlike SSH, telnet has no SFTP-style
     /// second channel to justify a shared connection.
     pub fn new_telnet(window: &mut Window, cx: &mut Context<Self>, config: TelnetConfig) -> Self {
-        Self::with_backend(window, cx, false, move |_cols, _rows, bytes_tx| {
+        Self::with_backend(window, cx, false, String::new(), move |_cols, _rows, bytes_tx| {
             match TelnetBackend::connect(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
@@ -277,7 +284,7 @@ impl TerminalView {
 
     /// A terminal backed by a serial port (`SerialBackend`).
     pub fn new_serial(window: &mut Window, cx: &mut Context<Self>, config: SerialConfig) -> Self {
-        Self::with_backend(window, cx, false, move |_cols, _rows, bytes_tx| {
+        Self::with_backend(window, cx, false, String::new(), move |_cols, _rows, bytes_tx| {
             match SerialBackend::open(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
@@ -332,6 +339,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
         remote_reconnect: bool,
+        host_label: String,
         make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
@@ -385,7 +393,8 @@ impl TerminalView {
             last_origin_y: 0.0,
             selection_dragging: None,
             remote_reconnect,
-            disconnected: false,
+            host_label,
+            banner: None,
             _drain_task: drain_task,
             _disconnect_watch: disconnect_watch,
         }
@@ -422,10 +431,10 @@ impl TerminalView {
     /// exiting or a serial port closing isn't a "connection" in that sense
     /// and stays as-is.
     fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
-        if !self.remote_reconnect || self.disconnected {
+        if !self.remote_reconnect || matches!(self.banner, Some(ConnBanner::Failed(_))) {
             return;
         }
-        self.disconnected = true;
+        self.banner = Some(ConnBanner::Failed("连接已断开".to_string()));
         cx.notify();
     }
 
@@ -456,7 +465,7 @@ impl TerminalView {
             Self::spawn_generation(term, events_tx, cols, rows, make_backend, cx);
         self.backend = backend;
         self._disconnect_watch = disconnect_watch;
-        self.disconnected = false;
+        self.banner = None;
         cx.notify();
     }
 
@@ -579,12 +588,13 @@ impl TerminalView {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Disconnected (SSH connection lost): the only live input is Enter,
-        // which asks `Workspace` (the only thing that knows how to redial —
-        // CLAUDE.md §2) to reconnect. Everything else is swallowed — there's
-        // no live backend to send it to.
-        if self.disconnected {
-            if ev.keystroke.key == "enter" {
+        // Non-live state (connecting or dead SSH connection): swallow all
+        // input except Enter, and only forward that as
+        // `ReconnectRequested` once there's actually something to retry
+        // (`Failed`, not `Connecting`) — `Workspace` is the only thing
+        // that knows how to redial (CLAUDE.md §2).
+        if let Some(banner) = &self.banner {
+            if matches!(banner, ConnBanner::Failed(_)) && ev.keystroke.key == "enter" {
                 cx.emit(TerminalViewEvent::ReconnectRequested);
             }
             return;
@@ -853,6 +863,7 @@ impl Render for TerminalView {
         let view = cx.entity();
         let font = self.font_config.to_font();
         let metrics = cell_metrics(window, &font, self.font_config.size);
+        let banner_text = self.banner.as_ref().map(|b| conn_banner_text(&self.host_label, b));
         div()
             .track_focus(&self.focus_handle)
             .key_context(TERMINAL_KEY_CONTEXT)
@@ -878,10 +889,11 @@ impl Render for TerminalView {
                 self.font_config.size,
                 self.focus_handle.clone(),
             ))
-            // Disconnected-SSH banner: overlays the last-painted frame (left
-            // in place, not cleared) with a dimmed backdrop + centered
-            // message, matching nyaterm's "connection lost" treatment.
-            .when(self.disconnected, |this| {
+            // Connecting/disconnected-SSH banner: overlays the last-painted
+            // frame (left in place, not cleared) with a dimmed backdrop +
+            // centered message, matching nyaterm's "connection lost"
+            // treatment. Text comes from `conn_banner_text`.
+            .when_some(banner_text, |this, text| {
                 this.child(
                     div()
                         .absolute()
@@ -891,7 +903,7 @@ impl Render for TerminalView {
                         .justify_center()
                         .bg(hsla(0.0, 0.0, 0.0, 0.72))
                         .text_color(hsla(0.0, 0.0, 1.0, 1.0))
-                        .child("连接已断开，按 Enter 重新连接"),
+                        .child(text),
                 )
             })
     }
