@@ -266,6 +266,31 @@ impl TerminalView {
         })
     }
 
+    /// A placeholder SSH tab shown the instant the user double-clicks a
+    /// saved connection, before the dial resolves. No feeder/
+    /// disconnect-watch is spawned — a `DeadBackend` generation's
+    /// `bytes_tx` would be dropped immediately (same pattern telnet/
+    /// serial's connect-failure fallback uses in `new_telnet`/
+    /// `new_serial`), which would fire `mark_disconnected` within the
+    /// same tick and stomp the `Connecting` banner set here. `Workspace`
+    /// swaps in the real generation via `reconnect_with` once
+    /// `SshSession::connect` resolves (success) or calls
+    /// `mark_connect_failed` (failure).
+    pub fn new_ssh_connecting(window: &mut Window, cx: &mut Context<Self>, host_label: String) -> Self {
+        let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
+        Self::assemble(
+            focus_handle,
+            term,
+            events_tx,
+            drain_task,
+            Arc::new(DeadBackend),
+            Task::ready(()),
+            true,
+            host_label,
+            Some(ConnBanner::Connecting),
+        )
+    }
+
     /// A terminal backed by a raw Telnet connection (`TelnetBackend`). Each
     /// tab dials its own socket — unlike SSH, telnet has no SFTP-style
     /// second channel to justify a shared connection.
@@ -331,52 +356,45 @@ impl TerminalView {
         (backend, disconnect_watch)
     }
 
-    /// Shared construction: wire the model, feeder, drain task, and focus; the
-    /// backend is built by `make_backend` (given the initial size and the byte
-    /// sink the feeder reads from). The backend is agnostic here — `TerminalView`
-    /// never learns whether it's local, SSH, or serial (CLAUDE.md §2).
-    fn with_backend(
+    /// Shared prelude for both a full backend generation (`with_backend`)
+    /// and a placeholder-only view (`new_ssh_connecting`): the focus
+    /// handle, `Term`, event channel, and long-lived drain task. Doesn't
+    /// touch the backend itself — callers wire that up separately (a real
+    /// generation via `spawn_generation`, or nothing at all for a
+    /// placeholder).
+    fn base_setup(
         window: &mut Window,
         cx: &mut Context<Self>,
-        remote_reconnect: bool,
-        host_label: String,
-        make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
-    ) -> Self {
+    ) -> (FocusHandle, SharedTerm, flume::Sender<Event>, Task<()>) {
         let focus_handle = cx.focus_handle();
-        // Route keyboard to the terminal immediately.
         window.focus(&focus_handle, cx);
 
-        // Channels (the only cross-context plumbing lives in the bridge).
-        // The PTY byte channel is *bounded* so a fast producer can't outrun the
-        // render-paced feeder: when it fills, the reader blocks, the PTY buffer
-        // fills, and the program (e.g. `cat` of a huge file) blocks on write
-        // instead of racing to completion. That keeps it alive and interruptible
-        // (Ctrl-C reaches a live process) and bounds the post-interrupt backlog.
-        // The feeder always drains this channel regardless of tab visibility, so
-        // a backgrounded tab never deadlocks (CLAUDE.md §2).
         let (events_tx, events_rx) = flume::unbounded::<Event>();
-
         let term = new_term(DEFAULT_COLS, DEFAULT_ROWS, events_tx.clone());
 
-        let (backend, disconnect_watch) = Self::spawn_generation(
-            term.clone(),
-            events_tx.clone(),
-            DEFAULT_COLS as u16,
-            DEFAULT_ROWS as u16,
-            make_backend,
-            cx,
-        );
-
-        // Drain task: terminal events -> throttled redraw + PTY write-backs.
-        // Long-lived across reconnects (unlike the feeder/disconnect-watch
-        // pair) — it's tied to `events_tx`/`events_rx`, which `Term` bakes in
-        // for life at `new_term`, not to any one backend generation. It reads
-        // `view.backend` fresh for write-backs rather than taking one as a
-        // param, so it keeps working after `reconnect_with` swaps the backend.
         let drain_task = cx.spawn(async move |weak, cx| {
             run_drain(weak, events_rx, cx).await;
         });
 
+        (focus_handle, term, events_tx, drain_task)
+    }
+
+    /// Shared tail for both a full backend generation (`with_backend`)
+    /// and a placeholder-only view (`new_ssh_connecting`): fills in the
+    /// remaining fields that never vary by caller (default font, initial
+    /// title, zeroed cell metrics, etc.) around the handful that do.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        focus_handle: FocusHandle,
+        term: SharedTerm,
+        events_tx: flume::Sender<Event>,
+        drain_task: Task<()>,
+        backend: Arc<dyn PtyBackend>,
+        disconnect_watch: Task<()>,
+        remote_reconnect: bool,
+        host_label: String,
+        banner: Option<ConnBanner>,
+    ) -> Self {
         Self {
             term,
             backend,
@@ -394,10 +412,45 @@ impl TerminalView {
             selection_dragging: None,
             remote_reconnect,
             host_label,
-            banner: None,
+            banner,
             _drain_task: drain_task,
             _disconnect_watch: disconnect_watch,
         }
+    }
+
+    /// Shared construction: wire the model, feeder, drain task, and focus; the
+    /// backend is built by `make_backend` (given the initial size and the byte
+    /// sink the feeder reads from). The backend is agnostic here — `TerminalView`
+    /// never learns whether it's local, SSH, or serial (CLAUDE.md §2).
+    fn with_backend(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        remote_reconnect: bool,
+        host_label: String,
+        make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
+    ) -> Self {
+        let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
+
+        let (backend, disconnect_watch) = Self::spawn_generation(
+            term.clone(),
+            events_tx.clone(),
+            DEFAULT_COLS as u16,
+            DEFAULT_ROWS as u16,
+            make_backend,
+            cx,
+        );
+
+        Self::assemble(
+            focus_handle,
+            term,
+            events_tx,
+            drain_task,
+            backend,
+            disconnect_watch,
+            remote_reconnect,
+            host_label,
+            None,
+        )
     }
 
     #[allow(dead_code)] // consumed by the panel adapter in Phase 5
@@ -435,6 +488,29 @@ impl TerminalView {
             return;
         }
         self.banner = Some(ConnBanner::Failed("连接已断开".to_string()));
+        cx.notify();
+    }
+
+    /// Called by `Workspace` when an SSH dial (initial connect or a
+    /// manual reconnect) fails. Flips the banner to `Failed(reason)` —
+    /// Enter now re-emits `TerminalViewEvent::ReconnectRequested` (see
+    /// `on_key_down`).
+    pub fn mark_connect_failed(&mut self, reason: String, cx: &mut Context<Self>) {
+        if !self.remote_reconnect {
+            return;
+        }
+        self.banner = Some(ConnBanner::Failed(reason));
+        cx.notify();
+    }
+
+    /// Called by `Workspace` right before redialing a dead SSH tab, so
+    /// the banner reads "connecting" instead of stale "failed" text
+    /// during the redial.
+    pub fn mark_connecting(&mut self, cx: &mut Context<Self>) {
+        if !self.remote_reconnect {
+            return;
+        }
+        self.banner = Some(ConnBanner::Connecting);
         cx.notify();
     }
 
