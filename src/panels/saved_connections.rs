@@ -30,15 +30,17 @@
 //! No connection logic here — it only describes intent and persists the list
 //! (CLAUDE.md §1 boundary).
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    Action, App, AppContext, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    WindowHandle, div, px,
+    Action, Anchor, App, AppContext, Bounds, ClickEvent, Context, DragMoveEvent, Entity,
+    EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Pixels,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, WindowHandle,
+    anchored, deferred, div, point, prelude::FluentBuilder, px,
 };
 use gpui_component::Root;
 use gpui_component::button::{Button, ButtonVariants};
@@ -46,8 +48,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::tooltip::Tooltip;
-use gpui_component::{ActiveTheme, Sizable, StyledExt, WindowExt};
+use gpui_component::{ActiveTheme, ElementExt, Sizable, StyledExt, WindowExt};
 use serde::Deserialize;
 
 use crate::panels::icons::{AppIcon, icon};
@@ -231,6 +232,13 @@ pub struct SavedConnectionsPanel {
     /// `on_drag_move`, consumed and cleared by its `on_drop`. `None` when no
     /// drag is in progress or the drag isn't currently over a row.
     drag_reorder_target: Option<(usize, bool)>,
+    /// `Some((ix, row_bounds))` while the mouse is hovering connection row
+    /// `ix` — drives the detail tooltip, which is anchored to `row_bounds`
+    /// so it always flies out from the row's left edge instead of the raw
+    /// gpui `.tooltip()`'s mouse-relative placement (this panel docks on
+    /// the right, so a mouse-anchored tooltip could clip against the
+    /// window edge depending on cursor position within the row).
+    tooltip_target: Option<(usize, Bounds<Pixels>)>,
 }
 
 impl SavedConnectionsPanel {
@@ -258,6 +266,7 @@ impl SavedConnectionsPanel {
             _folder_enter_sub: None,
             new_connection_window: None,
             drag_reorder_target: None,
+            tooltip_target: None,
         }
     }
 
@@ -1294,6 +1303,12 @@ impl SavedConnectionsPanel {
         };
 
         let drag_name: SharedString = name_for_drag.into();
+        let tooltip_lines = conn.tooltip_lines();
+        // Captures this row's own bounds every prepaint (via the invisible
+        // canvas `on_prepaint` overlays), so `on_hover` below can anchor the
+        // tooltip to the row rather than to the mouse.
+        let row_bounds: Rc<Cell<Bounds<Pixels>>> = Rc::new(Cell::new(Bounds::default()));
+        let active_tooltip = self.tooltip_target.filter(|(target, _)| *target == ix);
 
         // Build the row
         div()
@@ -1306,31 +1321,61 @@ impl SavedConnectionsPanel {
             .pl(px(depth as f32 * 16.0 + 8.0))
             .rounded_md()
             .hover(|s| s.bg(cx.theme().list_hover))
-            .tooltip({
-                let tooltip_lines = conn.tooltip_lines();
-                move |window, cx| {
-                    let tooltip_lines = tooltip_lines.clone();
-                    Tooltip::element(move |_window, cx| {
-                        let mut grid = div().flex().flex_col().gap_1().p_2();
-                        for (label, value) in &tooltip_lines {
-                            grid = grid.child(
+            .on_prepaint({
+                let row_bounds = row_bounds.clone();
+                move |bounds, _window, _cx| row_bounds.set(bounds)
+            })
+            .on_hover(cx.listener(move |this, hovered, _window, cx| {
+                if *hovered {
+                    this.tooltip_target = Some((ix, row_bounds.get()));
+                } else if this.tooltip_target.is_some_and(|(target, _)| target == ix) {
+                    this.tooltip_target = None;
+                }
+                cx.notify();
+            }))
+            .when_some(active_tooltip, |row, (_, bounds)| {
+                // Flown out to the left of the row and vertically centered on
+                // it, regardless of where inside the row the cursor is —
+                // `Anchor::RightCenter` pins the tooltip's own right-center
+                // point to `bounds`'s left edge. `anchored()` auto-flips to
+                // the right if there isn't room on the left (e.g. a very
+                // narrow window).
+                row.child(
+                    deferred(
+                        anchored()
+                            .anchor(Anchor::RightCenter)
+                            .position(point(bounds.left(), bounds.center().y))
+                            .offset(point(px(-8.0), px(0.0)))
+                            .child(
                                 div()
                                     .flex()
-                                    .flex_row()
-                                    .gap_3()
-                                    .child(
+                                    .flex_col()
+                                    .gap_1()
+                                    .p_2()
+                                    .bg(cx.theme().popover)
+                                    .text_color(cx.theme().popover_foreground)
+                                    .border_1()
+                                    .border_color(cx.theme().border)
+                                    .shadow_md()
+                                    .rounded(px(6.0))
+                                    .text_sm()
+                                    .children(tooltip_lines.iter().map(|(label, value)| {
                                         div()
-                                            .min_w(px(72.0))
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(label.clone()),
-                                    )
-                                    .child(div().child(value.clone())),
-                            );
-                        }
-                        grid
-                    })
-                    .build(window, cx)
-                }
+                                            .flex()
+                                            .flex_row()
+                                            .gap_3()
+                                            .child(
+                                                div()
+                                                    .min_w(px(72.0))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(label.clone()),
+                                            )
+                                            .child(div().child(value.clone()))
+                                    })),
+                            ),
+                    )
+                    .with_priority(2),
+                )
             })
             .child(clickable)
             .child(action_bar)
