@@ -70,6 +70,21 @@ impl Focusable for TerminalPanel {
 
 impl gpui::EventEmitter<PanelEvent> for TerminalPanel {}
 
+/// Emitted when the dock actually removes this panel
+/// (`Panel::on_removed`, below) — a generic, backend-agnostic "this tab
+/// is gone" signal. `TerminalPanel` doesn't know or care why (matches
+/// its "adapter only" mandate, file header above); `Workspace` is the
+/// one that knows what, if anything, needs cleaning up for a given
+/// backend kind (see `open_ssh` in `workspace.rs`, the only current
+/// subscriber — local/Telnet/Serial tabs emit this too, just unobserved,
+/// since they share no session to clean up).
+#[derive(Clone, Debug)]
+pub enum TerminalPanelEvent {
+    Closed,
+}
+
+impl gpui::EventEmitter<TerminalPanelEvent> for TerminalPanel {}
+
 impl Panel for TerminalPanel {
     fn panel_name(&self) -> &'static str {
         "TerminalPanel"
@@ -119,5 +134,9 @@ impl Panel for TerminalPanel {
         _cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel);
+    }
+
+    fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(TerminalPanelEvent::Closed);
     }
 }
