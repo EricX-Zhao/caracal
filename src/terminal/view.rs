@@ -132,6 +132,29 @@ fn system_monospace_family() -> SharedString {
     "monospace".into()
 }
 
+/// Non-live state shown as a full-terminal banner overlay
+/// (`conn_banner_text`, `TerminalView::render`). Only ever set on a
+/// `remote_reconnect` (SSH) backend.
+#[derive(Clone, Debug, PartialEq)]
+enum ConnBanner {
+    /// Dialing out (initial connect or a manual reconnect). Enter does
+    /// nothing yet — there's nothing to retry.
+    Connecting,
+    /// Dead, with a human-readable reason. Enter re-dials (emits
+    /// `TerminalViewEvent::ReconnectRequested`).
+    Failed(String),
+}
+
+/// Pure text for the connecting/failed banner overlay
+/// (`TerminalView::render`). Extracted standalone so it's unit-testable
+/// without a `Window`/`Context`.
+fn conn_banner_text(host_label: &str, banner: &ConnBanner) -> String {
+    match banner {
+        ConnBanner::Connecting => format!("正在连接 {host_label}…"),
+        ConnBanner::Failed(reason) => format!("{host_label} {reason}，按 Enter 重连"),
+    }
+}
+
 pub struct TerminalView {
     term: SharedTerm,
     backend: Arc<dyn PtyBackend>,
@@ -899,5 +922,24 @@ mod tests {
         let font = config.to_font();
         assert_eq!(font.family.as_ref(), "JetBrains Mono");
         assert!(font.fallbacks.is_some());
+    }
+
+    #[test]
+    fn conn_banner_text_connecting() {
+        assert_eq!(
+            conn_banner_text("root@example.com", &ConnBanner::Connecting),
+            "正在连接 root@example.com…"
+        );
+    }
+
+    #[test]
+    fn conn_banner_text_failed_includes_reason() {
+        assert_eq!(
+            conn_banner_text(
+                "root@example.com",
+                &ConnBanner::Failed("连接失败: Connection refused".to_string())
+            ),
+            "root@example.com 连接失败: Connection refused，按 Enter 重连"
+        );
     }
 }
