@@ -357,6 +357,15 @@ impl Workspace {
             match connect_task.await {
                 Ok(session) => {
                     let _ = this.update_in(cx, move |this, window, cx| {
+                        // The tab may have closed while this dial was in
+                        // flight (`handle_ssh_tab_closed` removes its
+                        // `ssh_reconnect_configs` entry on close) — don't
+                        // resurrect a session (or touch side panels) for a
+                        // host with no open tabs; that would leak a live
+                        // `SshSession` that nothing will ever evict.
+                        if !this.ssh_reconnect_configs.contains_key(&term_for_connect.entity_id()) {
+                            return;
+                        }
                         this.ssh_sessions.insert(key, session.clone());
                         if let Some(t) = term_for_connect.upgrade() {
                             t.update(cx, |view, cx| {
@@ -428,16 +437,31 @@ impl Workspace {
             match connect_task.await {
                 Ok(session) => {
                     let key = config.key();
-                    let _ = this.update(cx, |this, _cx| {
-                        this.ssh_sessions.insert(key, session.clone());
-                    });
-                    let _ = terminal.update(cx, |view, cx| {
-                        let session = session.clone();
-                        view.reconnect_with(
-                            move |cols, rows, bytes_tx| session.open_shell(cols, rows, bytes_tx),
-                            cx,
-                        );
-                    });
+                    let entity_id = terminal.entity_id();
+                    let still_open = this
+                        .update(cx, |this, _cx| {
+                            // The tab may have closed while this redial was
+                            // in flight (`handle_ssh_tab_closed` removes its
+                            // `ssh_reconnect_configs` entry on close) — don't
+                            // resurrect a session for a host with no open
+                            // tabs; that would leak a live `SshSession` that
+                            // nothing will ever evict.
+                            let still_open = this.ssh_reconnect_configs.contains_key(&entity_id);
+                            if still_open {
+                                this.ssh_sessions.insert(key, session.clone());
+                            }
+                            still_open
+                        })
+                        .unwrap_or(false);
+                    if still_open {
+                        let _ = terminal.update(cx, |view, cx| {
+                            let session = session.clone();
+                            view.reconnect_with(
+                                move |cols, rows, bytes_tx| session.open_shell(cols, rows, bytes_tx),
+                                cx,
+                            );
+                        });
+                    }
                 }
                 Err(e) => {
                     log::error!("SSH reconnect to {} failed: {e}", config.key());
