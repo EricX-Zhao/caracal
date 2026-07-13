@@ -49,6 +49,13 @@ pub struct TerminalSettings {
     /// afterward (not a live-reload of already-open panels).
     #[serde(default = "default_monitor_interval_secs")]
     pub monitor_basic_interval_secs: u32,
+    /// Scrollback capacity in lines, passed to alacritty's
+    /// `Config::scrolling_history` when a new terminal tab is constructed
+    /// (`terminal::model::new_term`). Read once per tab; changing this in
+    /// Settings only affects tabs opened afterward, never an already-open
+    /// tab's grid.
+    #[serde(default = "default_scrollback_lines")]
+    pub scrollback_lines: u32,
 }
 
 fn default_font_size() -> f32 {
@@ -57,6 +64,10 @@ fn default_font_size() -> f32 {
 
 fn default_monitor_interval_secs() -> u32 {
     5
+}
+
+fn default_scrollback_lines() -> u32 {
+    10_000
 }
 
 fn default_theme_mode() -> String {
@@ -78,6 +89,7 @@ impl Default for TerminalSettings {
             font_size: default_font_size(),
             monitor_basic_enabled: false,
             monitor_basic_interval_secs: default_monitor_interval_secs(),
+            scrollback_lines: default_scrollback_lines(),
         }
     }
 }
@@ -130,6 +142,7 @@ mod tests {
         let settings = AppSettings::default();
         assert_eq!(settings.terminal.font_family, "");
         assert_eq!(settings.terminal.font_size, 14.0);
+        assert_eq!(settings.terminal.scrollback_lines, 10_000);
         assert_eq!(settings.appearance.theme_mode, "dark");
     }
 
@@ -144,6 +157,7 @@ mod tests {
                 font_size: 16.0,
                 monitor_basic_enabled: true,
                 monitor_basic_interval_secs: 10,
+                scrollback_lines: 20_000,
             },
         };
         let text = toml::to_string_pretty(&settings).expect("serialize");
@@ -152,6 +166,7 @@ mod tests {
         assert_eq!(parsed.terminal.font_size, 16.0);
         assert!(parsed.terminal.monitor_basic_enabled);
         assert_eq!(parsed.terminal.monitor_basic_interval_secs, 10);
+        assert_eq!(parsed.terminal.scrollback_lines, 20_000);
         assert_eq!(parsed.appearance.theme_mode, "light");
     }
 
@@ -165,6 +180,7 @@ mod tests {
             toml::from_str(toml_text).expect("partial settings must still parse");
         assert_eq!(settings.terminal.font_family, "");
         assert_eq!(settings.terminal.font_size, 14.0);
+        assert_eq!(settings.terminal.scrollback_lines, 10_000);
         assert_eq!(settings.appearance.theme_mode, "dark");
     }
 
@@ -207,5 +223,21 @@ mod tests {
             toml::from_str(toml_text).expect("old-format settings must still parse");
         assert!(!settings.terminal.monitor_basic_enabled);
         assert_eq!(settings.terminal.monitor_basic_interval_secs, 5);
+    }
+
+    #[test]
+    fn old_settings_file_without_scrollback_lines_still_deserializes() {
+        // Simulates a settings.toml written before this field existed: a
+        // [terminal] table with font + monitor keys, no scrollback_lines key.
+        let toml_text = r#"
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+            monitor_basic_enabled = true
+            monitor_basic_interval_secs = 10
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert_eq!(settings.terminal.scrollback_lines, 10_000);
     }
 }
