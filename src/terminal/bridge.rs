@@ -95,19 +95,16 @@ pub async fn run_drain(
         };
 
         let mut dirty = false;
-        let mut title: Option<String> = None;
         let mut exited = false;
         let mut write_back: Vec<u8> = Vec::new();
 
         let mut handle = |ev: Event| match ev {
             Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange => dirty = true,
-            Event::Title(t) => {
-                title = Some(t);
-                dirty = true;
-            }
-            Event::ResetTitle => {
-                title = Some(String::new());
-            }
+            // Tab titles are fixed at construction (connection label), not
+            // synced from the shell's OSC title escapes — those default to
+            // "user@host: cwd" on most shells and update on every `cd`,
+            // which is exactly the noisy behavior this ignores.
+            Event::Title(_) | Event::ResetTitle => {}
             Event::PtyWrite(text) => write_back.extend_from_slice(text.as_bytes()),
             Event::ClipboardLoad(_, formatter) => {
                 // Paste-on-request: respond with empty clipboard for now (Phase 3
@@ -125,13 +122,10 @@ pub async fn run_drain(
             handle(ev);
         }
 
-        if dirty || title.is_some() || !write_back.is_empty() {
+        if dirty || !write_back.is_empty() {
             let update = view.update(cx, |view, cx| {
                 if !write_back.is_empty() {
                     view.write_to_backend(&write_back);
-                }
-                if let Some(t) = title.take() {
-                    view.set_title(t);
                 }
                 cx.notify();
             });

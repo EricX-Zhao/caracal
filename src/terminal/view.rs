@@ -231,9 +231,16 @@ impl EventEmitter<TerminalViewEvent> for TerminalView {}
 impl TerminalView {
     /// A terminal backed by the local shell (`LocalPty`).
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_backend(window, cx, false, String::new(), |cols, rows, bytes_tx| {
-            Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
-        })
+        Self::with_backend(
+            window,
+            cx,
+            false,
+            String::new(),
+            "本地终端".to_string(),
+            |cols, rows, bytes_tx| {
+                Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
+            },
+        )
     }
 
     /// A terminal backed by a local shell with custom shell path and working directory.
@@ -244,12 +251,19 @@ impl TerminalView {
         working_dir: Option<&str>,
     ) -> Self {
         let shell = shell.to_string();
-        Self::with_backend(window, cx, false, String::new(), move |cols, rows, bytes_tx| {
-            Arc::new(
-                LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)
-                    .expect("failed to spawn local pty"),
-            )
-        })
+        Self::with_backend(
+            window,
+            cx,
+            false,
+            String::new(),
+            "本地终端".to_string(),
+            move |cols, rows, bytes_tx| {
+                Arc::new(
+                    LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)
+                        .expect("failed to spawn local pty"),
+                )
+            },
+        )
     }
 
     /// A terminal backed by a shell channel on an already-connected [`SshSession`]
@@ -262,9 +276,15 @@ impl TerminalView {
         session: Arc<SshSession>,
         host_label: String,
     ) -> Self {
-        Self::with_backend(window, cx, true, host_label, move |cols, rows, bytes_tx| {
-            session.open_shell(cols, rows, bytes_tx)
-        })
+        let title = host_label.clone();
+        Self::with_backend(
+            window,
+            cx,
+            true,
+            host_label,
+            title,
+            move |cols, rows, bytes_tx| session.open_shell(cols, rows, bytes_tx),
+        )
     }
 
     /// A placeholder SSH tab shown the instant the user double-clicks a
@@ -279,6 +299,7 @@ impl TerminalView {
     /// `mark_connect_failed` (failure).
     pub fn new_ssh_connecting(window: &mut Window, cx: &mut Context<Self>, host_label: String) -> Self {
         let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
+        let title = host_label.clone();
         Self::assemble(
             focus_handle,
             term,
@@ -289,6 +310,7 @@ impl TerminalView {
             true,
             host_label,
             Some(ConnBanner::Connecting),
+            title,
         )
     }
 
@@ -296,30 +318,42 @@ impl TerminalView {
     /// tab dials its own socket — unlike SSH, telnet has no SFTP-style
     /// second channel to justify a shared connection.
     pub fn new_telnet(window: &mut Window, cx: &mut Context<Self>, config: TelnetConfig) -> Self {
-        Self::with_backend(window, cx, false, String::new(), move |_cols, _rows, bytes_tx| {
-            match TelnetBackend::connect(config, bytes_tx.clone()) {
+        let title = format!("{}:{}", config.host, config.port);
+        Self::with_backend(
+            window,
+            cx,
+            false,
+            String::new(),
+            title,
+            move |_cols, _rows, bytes_tx| match TelnetBackend::connect(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
                     let _ = bytes_tx
                         .send(format!("\r\n\x1b[1;31mtelnet connect failed:\x1b[0m {e}\r\n").into_bytes());
                     Arc::new(DeadBackend)
                 }
-            }
-        })
+            },
+        )
     }
 
     /// A terminal backed by a serial port (`SerialBackend`).
     pub fn new_serial(window: &mut Window, cx: &mut Context<Self>, config: SerialConfig) -> Self {
-        Self::with_backend(window, cx, false, String::new(), move |_cols, _rows, bytes_tx| {
-            match SerialBackend::open(config, bytes_tx.clone()) {
+        let title = config.port.clone();
+        Self::with_backend(
+            window,
+            cx,
+            false,
+            String::new(),
+            title,
+            move |_cols, _rows, bytes_tx| match SerialBackend::open(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
                     let _ = bytes_tx
                         .send(format!("\r\n\x1b[1;31mserial open failed:\x1b[0m {e}\r\n").into_bytes());
                     Arc::new(DeadBackend)
                 }
-            }
-        })
+            },
+        )
     }
 
     /// Wire one backend "generation": the bytes channel, the feeder thread,
@@ -396,6 +430,7 @@ impl TerminalView {
         remote_reconnect: bool,
         host_label: String,
         banner: Option<ConnBanner>,
+        title: String,
     ) -> Self {
         Self {
             term,
@@ -403,7 +438,7 @@ impl TerminalView {
             events_tx,
             focus_handle,
             font_config: FontConfig::default(),
-            title: "terminal".to_string(),
+            title,
             exited: false,
             last_cell_w: 0.0,
             last_cell_h: 0.0,
@@ -429,6 +464,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
         remote_reconnect: bool,
         host_label: String,
+        title: String,
         make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
     ) -> Self {
         let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
@@ -452,18 +488,13 @@ impl TerminalView {
             remote_reconnect,
             host_label,
             None,
+            title,
         )
     }
 
     #[allow(dead_code)] // consumed by the panel adapter in Phase 5
     pub fn title(&self) -> &str {
         &self.title
-    }
-
-    pub fn set_title(&mut self, title: String) {
-        if !title.is_empty() {
-            self.title = title;
-        }
     }
 
     pub fn mark_exited(&mut self) {
