@@ -63,10 +63,15 @@ impl Dimensions for TermDimensions {
     }
 }
 
-/// Build a fresh shared terminal at the given size.
-pub fn new_term(cols: usize, rows: usize, events: flume::Sender<Event>) -> SharedTerm {
+/// Build a fresh shared terminal at the given size and scrollback capacity.
+pub fn new_term(
+    cols: usize,
+    rows: usize,
+    scrollback_lines: usize,
+    events: flume::Sender<Event>,
+) -> SharedTerm {
     let config = Config {
-        scrolling_history: 10_000,
+        scrolling_history: scrollback_lines,
         ..Config::default()
     };
     let dims = TermDimensions::new(cols, rows);
@@ -211,4 +216,30 @@ pub fn selection_bg_hsla() -> Hsla {
         g: 0x55,
         b: 0x7a,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::vte::ansi::Processor;
+
+    #[test]
+    fn scrollback_lines_param_caps_grid_history() {
+        let (tx, _rx) = flume::unbounded();
+        // 3-row screen, a deliberately small 5-line scrollback cap — if this
+        // were still hardcoded to the old 10_000 default, total_lines would
+        // end up far above 3 + 5 after only 50 lines of output.
+        let term = new_term(10, 3, 5, tx);
+        {
+            let mut t = term.lock();
+            let mut parser: Processor = Processor::new();
+            let bytes: Vec<u8> = (0..50)
+                .flat_map(|i| format!("line {i}\r\n").into_bytes())
+                .collect();
+            parser.advance(&mut *t, &bytes);
+        }
+        let t = term.lock();
+        assert!(t.total_lines() <= t.screen_lines() + 5);
+    }
 }

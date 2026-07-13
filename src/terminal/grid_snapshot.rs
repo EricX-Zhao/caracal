@@ -165,7 +165,7 @@ mod tests {
 
     fn term_with(bytes: &[u8], cols: usize, rows: usize) -> SharedTerm {
         let (tx, _rx) = flume::unbounded();
-        let term = new_term(cols, rows, tx);
+        let term = new_term(cols, rows, 10_000, tx);
         {
             let mut t = term.lock();
             let mut parser: Processor = Processor::new();

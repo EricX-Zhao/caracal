@@ -16,6 +16,7 @@ use gpui::{
     Styled, Task, Window, div, font, hsla, prelude::FluentBuilder, px,
 };
 
+use crate::settings;
 use crate::terminal::backend::{DeadBackend, LocalPty, PtyBackend};
 use crate::terminal::bridge::{run_drain, run_feeder};
 use crate::terminal::keymap::{PastePayload, encode_key, encode_paste};
@@ -370,7 +371,8 @@ impl TerminalView {
         window.focus(&focus_handle, cx);
 
         let (events_tx, events_rx) = flume::unbounded::<Event>();
-        let term = new_term(DEFAULT_COLS, DEFAULT_ROWS, events_tx.clone());
+        let scrollback_lines = settings::load().terminal.scrollback_lines as usize;
+        let term = new_term(DEFAULT_COLS, DEFAULT_ROWS, scrollback_lines, events_tx.clone());
 
         let drain_task = cx.spawn(async move |weak, cx| {
             run_drain(weak, events_rx, cx).await;
