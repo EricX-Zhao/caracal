@@ -29,6 +29,18 @@ fn parse_monitor_interval(text: &str) -> Option<u32> {
     }
 }
 
+/// Parse the Terminal tab's scrollback-lines field. Rejects non-integer and
+/// out-of-range values — 1,000 keeps a minimally useful history, 50,000 caps
+/// memory use for a single tab's grid.
+fn parse_scrollback_lines(text: &str) -> Option<u32> {
+    let value: u32 = text.trim().parse().ok()?;
+    if (1_000..=50_000).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
 use gpui::{
     App, AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window,
@@ -65,6 +77,7 @@ pub struct SettingsWindow {
     font_family_input: Entity<InputState>,
     font_size_input: Entity<InputState>,
     monitor_interval_input: Entity<InputState>,
+    scrollback_input: Entity<InputState>,
     error: Option<SharedString>,
 }
 
@@ -83,6 +96,10 @@ impl SettingsWindow {
             InputState::new(window, cx)
                 .default_value(committed.terminal.monitor_basic_interval_secs.to_string())
         });
+        let scrollback_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(committed.terminal.scrollback_lines.to_string())
+        });
         Self {
             workspace,
             draft: committed.clone(),
@@ -91,6 +108,7 @@ impl SettingsWindow {
             font_family_input,
             font_size_input,
             monitor_interval_input,
+            scrollback_input,
             error: None,
         }
     }
@@ -113,6 +131,13 @@ impl SettingsWindow {
             return false;
         };
         self.draft.terminal.monitor_basic_interval_secs = interval;
+
+        let scrollback_text = self.scrollback_input.read(cx).value();
+        let Some(scrollback_lines) = parse_scrollback_lines(&scrollback_text) else {
+            self.error = Some("回滚行数必须是 1000-50000 之间的整数".into());
+            return false;
+        };
+        self.draft.terminal.scrollback_lines = scrollback_lines;
 
         self.error = None;
         true
@@ -341,6 +366,19 @@ impl SettingsWindow {
                     )
                     .child(Input::new(&self.monitor_interval_input)),
             )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("回滚行数"),
+                    )
+                    .child(Input::new(&self.scrollback_input)),
+            )
     }
 
     fn monitor_enabled_pill(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -473,5 +511,24 @@ mod tests {
         assert_eq!(parse_font_size("0"), None);
         assert_eq!(parse_font_size("-5"), None);
         assert_eq!(parse_font_size("500"), None);
+    }
+
+    #[test]
+    fn parses_valid_scrollback_lines() {
+        assert_eq!(parse_scrollback_lines("10000"), Some(10_000));
+        assert_eq!(parse_scrollback_lines(" 1000 "), Some(1_000));
+        assert_eq!(parse_scrollback_lines("50000"), Some(50_000));
+    }
+
+    #[test]
+    fn rejects_out_of_range_scrollback_lines() {
+        assert_eq!(parse_scrollback_lines("999"), None);
+        assert_eq!(parse_scrollback_lines("50001"), None);
+    }
+
+    #[test]
+    fn rejects_non_numeric_scrollback_lines() {
+        assert_eq!(parse_scrollback_lines("abc"), None);
+        assert_eq!(parse_scrollback_lines(""), None);
     }
 }
