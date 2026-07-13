@@ -27,12 +27,13 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable, Font,
-    FontFallbacks, IntoElement, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, font, prelude::FluentBuilder, px, size,
+    FontFallbacks, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, font,
+    prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockItem, DockPlacement};
-use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable, v_resizable};
+use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
 use gpui_component::{ActiveTheme, Root};
 
 use crate::config;
@@ -114,10 +115,18 @@ pub struct Workspace {
 
     // --- horizontal body resize state ---------------------------------------
     body_resize: Entity<ResizableState>,
-    /// Vertical split between the terminal dock area and the quick-commands
-    /// drawer, when open — lets the user drag the boundary to resize the
-    /// drawer instead of it being a fixed height.
-    quick_commands_resize: Entity<ResizableState>,
+    /// Current height of the quick-commands drawer, dragged via the handle
+    /// at its top edge. A plain field (not a `gpui_component` resizable
+    /// group) — nesting a `v_resizable` group inside one panel of the outer
+    /// `h_resizable("body-split")` group corrupted the *sibling* panels'
+    /// (left/right side regions) layout entirely, so the drag here is
+    /// implemented directly with raw mouse events instead
+    /// (`start_quick_commands_resize`/`on_quick_commands_drag_move`/
+    /// `stop_quick_commands_resize`).
+    quick_commands_height: Pixels,
+    /// `Some((mouse_y_at_drag_start, height_at_drag_start))` while the quick-
+    /// commands resize handle is being dragged; `None` otherwise.
+    quick_commands_drag: Option<(Pixels, Pixels)>,
 
     /// Focused terminal's title, shown centered in the header.
     active_title: SharedString,
@@ -190,7 +199,6 @@ impl Workspace {
         }
 
         let body_resize = cx.new(|_| ResizableState::default());
-        let quick_commands_resize = cx.new(|_| ResizableState::default());
 
         let workspace_handle = cx.entity().downgrade();
         let quick_commands_panel = cx.new(|cx| QuickCommandsPanel::new(workspace_handle, cx));
@@ -220,7 +228,8 @@ impl Workspace {
             left_active: None,
             right_active: Some(PanelId::Sessions),
             body_resize,
-            quick_commands_resize,
+            quick_commands_height: px(220.0),
+            quick_commands_drag: None,
             active_title: "Caracal".into(),
             _subscriptions: vec![saved_sub],
         }
@@ -890,6 +899,52 @@ impl Workspace {
         }
         cx.notify();
     }
+
+    /// Mouse-down on the quick-commands drawer's resize handle: record where
+    /// the drag started (mouse Y + current height) so
+    /// `on_quick_commands_drag_move` can compute the new height from the
+    /// delta, rather than needing this element's own bounds.
+    fn start_quick_commands_resize(
+        &mut self,
+        ev: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.quick_commands_drag = Some((ev.position.y, self.quick_commands_height));
+        cx.notify();
+    }
+
+    /// Dragging the handle up shrinks the gap between mouse and the drawer's
+    /// top edge, which should *grow* the drawer — hence `start_y - mouse_y`.
+    /// No-ops when not currently dragging (called unconditionally from the
+    /// outer `Render for Workspace`'s `on_mouse_move`).
+    fn on_quick_commands_drag_move(
+        &mut self,
+        ev: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((start_y, start_height)) = self.quick_commands_drag else {
+            return;
+        };
+        let delta = start_y - ev.position.y;
+        let new_height = (start_height + delta).clamp(px(120.0), px(500.0));
+        if new_height != self.quick_commands_height {
+            self.quick_commands_height = new_height;
+            cx.notify();
+        }
+    }
+
+    fn stop_quick_commands_resize(
+        &mut self,
+        _ev: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.quick_commands_drag.take().is_some() {
+            cx.notify();
+        }
+    }
 }
 
 impl Workspace {
@@ -992,37 +1047,50 @@ impl Workspace {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .child(if self.show_quick_commands {
-                            v_resizable("terminal-quick-commands-split")
-                                .with_state(&self.quick_commands_resize)
-                                .child(
-                                    resizable_panel().child(
-                                        div()
-                                            .size_full()
-                                            .overflow_hidden()
-                                            .child(self.dock_area.clone()),
-                                    ),
-                                )
-                                .child(
-                                    resizable_panel()
-                                        .size(px(220.0))
-                                        .size_range(px(120.0)..px(500.0))
-                                        .child(
-                                            div()
-                                                .size_full()
-                                                .border_t_1()
-                                                .border_color(border)
-                                                .child(self.quick_commands_panel.clone()),
-                                        ),
-                                )
-                                .into_any_element()
-                        } else {
+                        .child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.0))
                                 .overflow_hidden()
-                                .child(self.dock_area.clone())
-                                .into_any_element()
+                                .child(self.dock_area.clone()),
+                        )
+                        .when(self.show_quick_commands, |d| {
+                            d.child(
+                                div()
+                                    .w_full()
+                                    .h(self.quick_commands_height)
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        // Drag handle: a thin strip at the drawer's
+                                        // top edge. Mouse-move/up are handled on the
+                                        // outer `Render for Workspace` div (Step in
+                                        // `on_quick_commands_drag_move`/
+                                        // `stop_quick_commands_resize`) so the drag
+                                        // keeps tracking even if the cursor strays off
+                                        // this thin strip mid-drag.
+                                        div()
+                                            .id("quick-commands-resize-handle")
+                                            .w_full()
+                                            .h(px(4.0))
+                                            .flex_shrink_0()
+                                            .cursor(gpui::CursorStyle::ResizeRow)
+                                            .bg(border)
+                                            .hover(|s| s.bg(cx.theme().primary))
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(Self::start_quick_commands_resize),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_h(px(0.0))
+                                            .overflow_hidden()
+                                            .child(self.quick_commands_panel.clone()),
+                                    ),
+                            )
                         }),
                 ),
             )
@@ -1104,6 +1172,12 @@ impl Render for Workspace {
             .flex_col()
             .size_full()
             .font(chrome_font)
+            // Quick-commands drawer resize: mouse-down starts on the handle
+            // itself (`start_quick_commands_resize`), but move/up are
+            // handled here, at the top level, so the drag keeps tracking
+            // even if the cursor strays off the thin 4px handle strip.
+            .on_mouse_move(cx.listener(Self::on_quick_commands_drag_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::stop_quick_commands_resize))
             .child(header)
             .child(
                 div()
