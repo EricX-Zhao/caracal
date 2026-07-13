@@ -3,8 +3,8 @@
 Date: 2026-07-13
 
 Files under change: `src/settings.rs`, `src/panels/settings_window.rs`,
-`src/terminal/model.rs`, `src/terminal/view.rs`, `src/terminal/render.rs`,
-`src/terminal/scrollback.rs`.
+`src/terminal/model.rs`, `src/terminal/view.rs`, `src/terminal/grid_snapshot.rs`,
+`src/panels/terminal.rs`.
 
 ## Background
 
@@ -84,57 +84,93 @@ This spec adds:
   (e.g. `10_000` or a small test-friendly constant) — snapshot tests are not
   expected to exercise the settings path.
 
-### Scrollbar UI (`terminal/view.rs`, `terminal/render.rs`)
+### Scrollbar UI — corrected placement: `panels/terminal.rs`, not `terminal/`
 
+**This codebase enforces a hard architectural boundary** (historically documented
+in a since-removed `CLAUDE.md §1`, still governing the code today — verified via
+`grep -rn gpui_component src/terminal/*.rs`, which returns no `use` statements):
+`src/terminal/` must never import `gpui_component`; that crate is only allowed in
+`src/panels/*.rs` adapters. gpui-component's `Scrollbar`/`ScrollbarHandle`
+therefore **cannot** be used or referenced from `terminal/view.rs` or
+`terminal/render.rs` — the original draft of this section was wrong to place
+the scrollbar there. The correct owner is `TerminalPanel` in
+`panels/terminal.rs:56-61`, the existing thin adapter that already does nothing
+but `div().size_full().child(self.terminal.clone())`.
+
+- **Two small pure-gpui accessors added to `TerminalView`** (`terminal/view.rs`,
+  no `gpui_component` involved, so the boundary holds):
+  - `pub fn shared_term(&self) -> SharedTerm` — clones `self.term` (an `Arc`,
+    cheap).
+  - `pub fn last_cell_height(&self) -> f32` — returns `self.last_cell_h`
+    (already tracked, `view.rs:175`, populated each paint,
+    `view.rs:658-661`; `0.0` before the first paint, `view.rs:406-409`).
 - **Display mode: hover/scroll-activity only, auto-fades otherwise**
-  (confirmed with user) — use gpui-component's `ScrollbarShow::Scrolling` (its
-  default), not `Hover` or `Always`. Reading the actual visibility logic in
-  `scrollbar.rs:604-662`: `Hover` only shows the bar while the pointer is
-  directly over the thin bar/thumb region, so it would *not* react to
-  mouse-wheel scrolling (the cursor is normally over the terminal content, not
-  the bar). `Scrolling` refreshes on every offset change *and* stays visible on
-  hover, fading out ~2–3s after the last change (`FADE_OUT_DELAY`/
-  `FADE_OUT_DURATION`, `scrollbar.rs:28-29`) — this is the mode that actually
-  matches "shows on hover or while scrolling, auto-hides otherwise." This
-  overlays on top of the grid rather than reserving permanent width, so
-  terminal column/row sizing (`terminal_canvas`'s prepaint measurement,
-  `render.rs:60+`) is unaffected.
-- New adapter type, e.g. `TerminalScrollbarHandle`, implementing
-  gpui-component's `ScrollbarHandle` trait
-  (`gpui-component/crates/ui/src/scroll/scrollbar.rs:54-65`):
-  - `content_size() -> Size<Pixels>`: height = `term.grid().total_lines() as f32 * cell_h`;
-    width = the current viewport width (only the vertical axis is used, but the
-    trait is axis-agnostic so both dimensions must be populated consistently
-    with the viewport's own bounds).
-  - `offset() -> Point<Pixels>`: converts `term.grid().display_offset()` (lines
-    scrolled back from live bottom, `0` = bottom) into a **top-relative** pixel
-    offset: `y = (total_lines - screen_lines - display_offset) * cell_h`.
-  - `set_offset(Point<Pixels>)`: inverse conversion — compute the target
-    `display_offset` from the requested `y`, diff it against the current
-    `display_offset`, and call `term.scroll_display(Scroll::Delta(delta))`
-    (reusing the existing scroll entry point in `scrollback.rs` rather than
+  (confirmed with user) — use gpui-component's `ScrollbarShow::Scrolling`
+  explicitly (not `Hover`, not `Always`, and not left to inherit
+  `cx.theme().scrollbar_show`, so this stays correct even if some other panel's
+  theme configuration changes later). Reading the actual visibility logic in
+  `gpui-component/crates/ui/src/scroll/scrollbar.rs:604-662`: `Hover` only shows
+  the bar while the pointer is directly over the thin bar/thumb region, so it
+  would *not* react to mouse-wheel scrolling (the cursor is normally over the
+  terminal content, not the bar). `Scrolling` refreshes on every offset change
+  *and* stays visible on hover, fading out ~2–3s after the last change
+  (`FADE_OUT_DELAY`/`FADE_OUT_DURATION`, `scrollbar.rs:28-29`) — the mode that
+  actually matches "shows on hover or while scrolling, auto-hides otherwise."
+- New adapter type `TerminalScrollbarHandle` (private to `panels/terminal.rs`),
+  implementing gpui-component's `ScrollbarHandle` trait
+  (`gpui-component/crates/ui/src/scroll/scrollbar.rs:54-65`, `Clone`-bounded —
+  `Scrollbar::vertical<H: ScrollbarHandle + Clone>(&H)`). It holds a
+  `SharedTerm` (via `TerminalView::shared_term()`) plus an `Rc<Cell<f32>>` cell
+  height that `TerminalPanel::render` refreshes every frame from
+  `TerminalView::last_cell_height()` (no `cx` reaches `ScrollbarHandle` methods,
+  so the cell height must already be cached outside the entity system by the
+  time they're called).
+  - **Sign convention (verified against `scrollbar.rs:826,861-863,937-946`,
+    same convention gpui's own `ScrollHandle` uses):** `offset().y` is `0` at
+    the *top* of content and increasingly **negative** toward the bottom,
+    down to `-(content_height - viewport_height)`. This is the opposite of a
+    naive "distance scrolled down" reading — get the sign wrong and the thumb
+    drags backwards.
+  - `content_size() -> Size<Pixels>`: `size(px(0.0), total_lines as f32 * cell_h)`.
+    Width is a dummy `0px` — confirmed unused for a vertical-only scrollbar
+    (`scrollbar.rs:541-559` only reads `.height`/`offset().y` when
+    `axis.is_vertical()`).
+  - `offset() -> Point<Pixels>`: let `hidden_above = total_lines - screen_lines
+    - display_offset` (lines of history above the current viewport); return
+    `point(px(0.0), -(hidden_above as f32 * cell_h))`.
+  - `set_offset(Point<Pixels>)`: inverse — `hidden_above = (-offset.y / cell_h).round()`,
+    `target_display_offset = total_lines - screen_lines - hidden_above`, diff
+    against the current `display_offset`, and call
+    `scrollback::apply(&mut term, Scroll::Delta(delta))` (reusing the existing
+    scroll entry point in `terminal/scrollback.rs`, `pub fn`, rather than
     adding a second way to move the viewport).
-  - Both directions read the cell height from the same value already tracked as
-    `last_cell_h: f32` on `TerminalView` (`view.rs:175`, populated each paint at
-    `view.rs:658-661`). Before the first paint this is `0.0`
-    (`view.rs:406-409`); `offset()`/`content_size()` must guard `cell_h == 0.0`
-    and report a degenerate/identity state (e.g. offset `0`, content size equal
-    to viewport size) rather than dividing by zero.
-  - The adapter holds the same shared `Term` handle (`SharedTerm`) the view
-    already owns, plus a shared handle to the cell-height value (e.g. an
-    `Rc<Cell<f32>>` populated alongside `last_cell_h`, since `ScrollbarHandle`
-    methods take `&self` with no access to the view struct), so it stays valid
-    across renders.
-- Rendered as an absolutely-positioned child of `TerminalView::render`'s outer
-  `div` (already `.relative()`, `view.rs:946`), pinned to the right edge — same
-  overlay technique already used there for the connection banner
-  (`view.rs:972-975`).
+  - Both directions guard `cell_h <= 0.0` (before first paint) by returning/
+    treating the offset and content size as zero rather than dividing by zero.
+  - `total_lines()`/`screen_lines()` come from alacritty's `Dimensions` trait
+    (`use alacritty_terminal::grid::Dimensions;`), callable directly on `Term`
+    (`Term<T>: Dimensions`, delegates to the grid internally); `display_offset()`
+    is inherent on `Grid`, reached via `term.grid().display_offset()` (not
+    part of `Dimensions`).
+- `TerminalPanel` gains a field `scrollbar_handle: Option<TerminalScrollbarHandle>`
+  (`None` initially — `TerminalPanel::new` takes no `cx`/`Window` today and
+  isn't changed; the handle is lazily built on first render, when `cx` is
+  available). `TerminalPanel::render` (`panels/terminal.rs:56-61`) becomes:
+  initialize `scrollbar_handle` if `None` (using `terminal.read(cx).shared_term()`),
+  refresh its cached cell height from `terminal.read(cx).last_cell_height()`,
+  then render `div().relative().size_full().child(self.terminal.clone())` with
+  an added child: `div().absolute().inset_0().child(Scrollbar::vertical(handle)
+  .id("terminal-scrollbar").scrollbar_show(ScrollbarShow::Scrolling))` — the
+  explicit `ScrollbarShow::Scrolling` override is why the lower-level
+  `Scrollbar::vertical` builder is used directly instead of the
+  `ScrollableElement::vertical_scrollbar` convenience trait (which has no way
+  to override the show mode away from the ambient theme default).
 - No app-level visibility gate is added for "no scrollback" — this is left to
   the `Scrollbar` element's own standard behavior of not rendering a
   meaningfully-draggable/visible thumb when `content_size` for its axis does not
-  exceed the viewport size, consistent with how every other scrollbar in this
-  codebase (e.g. `overflow_y_scrollbar()` in `saved_connections.rs:1505`) behaves
-  without bespoke conditionals.
+  exceed the viewport size (`scrollbar.rs:568-572`, "hide scrollbar if the
+  scroll area is smaller than the container"), consistent with how every other
+  scrollbar in this codebase (e.g. `overflow_y_scrollbar()` in
+  `saved_connections.rs:1505`) behaves without bespoke conditionals.
 
 ## Testing
 
@@ -145,10 +181,11 @@ This spec adds:
 - Unit tests for `TerminalSettings` default/round-trip: a `settings.toml` missing
   `scrollback_lines` still loads (via `#[serde(default)]`) with the `10_000`
   default, matching the existing forward-compat tests in `settings.rs:128-210`.
-- Unit tests for `TerminalScrollbarHandle`'s offset/content_size math against a
-  `grid_snapshot`-style fixed-size term with known `total_lines()`/`screen_lines()`/
-  `display_offset()`, checking both directions (line-position → pixel offset, and
-  a requested pixel offset → the resulting `display_offset` after `set_offset`).
+- Unit tests for `TerminalScrollbarHandle`'s offset/content_size math (in
+  `panels/terminal.rs`), against a `grid_snapshot`-style fixed-size term with
+  known `total_lines()`/`screen_lines()`/`display_offset()`, checking both
+  directions (line-position → pixel offset, and a requested pixel offset → the
+  resulting `display_offset` after `set_offset`).
 - Manual verification in the running app (via the `run` skill), since
   hover/fade behavior and visual placement are not exercised by unit tests:
   run a long-output command to build up scrollback, confirm the thumb appears
