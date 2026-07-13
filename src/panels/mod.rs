@@ -9,7 +9,7 @@ pub mod icons;
 pub mod monitor;
 pub mod new_connection_window;
 pub mod quick_commands_panel;
-pub mod saved_connections;
+pub mod sessions;
 pub mod settings_window;
 pub mod sftp;
 pub mod side_region;

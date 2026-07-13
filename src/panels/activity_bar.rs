@@ -25,7 +25,7 @@ pub enum Side {
 }
 
 /// Every panel that can be selected from an activity bar. `Sftp` and
-/// `SavedConnections` are backed by real panels; the rest are placeholder
+/// `Sessions` are backed by real panels; the rest are placeholder
 /// [`crate::panels::stub::StubPanel`]s for now.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PanelId {
@@ -34,8 +34,8 @@ pub enum PanelId {
     Network,
     Security,
     // Right bar
-    SavedConnections,
     Sessions,
+    ActiveSessions,
     History,
     Monitor,
 }
@@ -47,8 +47,8 @@ impl PanelId {
             PanelId::Sftp => "sftp",
             PanelId::Network => "network",
             PanelId::Security => "security",
-            PanelId::SavedConnections => "saved",
             PanelId::Sessions => "sessions",
+            PanelId::ActiveSessions => "active-sessions",
             PanelId::History => "history",
             PanelId::Monitor => "monitor",
         }
@@ -57,8 +57,8 @@ impl PanelId {
     pub fn side(self) -> Side {
         match self {
             PanelId::Sftp | PanelId::Network | PanelId::Security => Side::Left,
-            PanelId::SavedConnections
-            | PanelId::Sessions
+            PanelId::Sessions
+            | PanelId::ActiveSessions
             | PanelId::History
             | PanelId::Monitor => Side::Right,
         }
@@ -69,8 +69,8 @@ impl PanelId {
             PanelId::Sftp => AppIcon::FileExplorer,
             PanelId::Network => AppIcon::Network,
             PanelId::Security => AppIcon::SecurityAuth,
-            PanelId::SavedConnections => AppIcon::SavedConnections,
-            PanelId::Sessions => AppIcon::ActiveSessions,
+            PanelId::Sessions => AppIcon::Sessions,
+            PanelId::ActiveSessions => AppIcon::ActiveSessions,
             PanelId::History => AppIcon::CommandHistory,
             PanelId::Monitor => AppIcon::ResourceMonitor,
         }
@@ -82,8 +82,8 @@ impl PanelId {
             PanelId::Sftp => "文件浏览器",
             PanelId::Network => "网络",
             PanelId::Security => "安全 / 认证",
-            PanelId::SavedConnections => "已保存的连接",
-            PanelId::Sessions => "活动会话",
+            PanelId::Sessions => "会话",
+            PanelId::ActiveSessions => "活动会话",
             PanelId::History => "命令历史",
             PanelId::Monitor => "资源监控",
         }
@@ -95,8 +95,8 @@ pub fn side_items(side: Side) -> &'static [PanelId] {
     match side {
         Side::Left => &[PanelId::Sftp, PanelId::Network, PanelId::Security],
         Side::Right => &[
-            PanelId::SavedConnections,
             PanelId::Sessions,
+            PanelId::ActiveSessions,
             PanelId::History,
             PanelId::Monitor,
         ],

@@ -143,7 +143,7 @@ impl QuickCommandsPanel {
     }
 
     /// One toggle pill's styling — shared visual idiom with
-    /// `saved_connections.rs`'s connection-type pills.
+    /// `sessions.rs`'s connection-type pills.
     fn pill(id: &'static str, label: &str, active: bool, cx: &App) -> Stateful<Div> {
         div()
             .id(id)
@@ -240,7 +240,7 @@ impl QuickCommandsPanel {
         )
     }
 
-    /// One command row. Mirrors `saved_connections.rs`'s `render_connection`
+    /// One command row. Mirrors `sessions.rs`'s `render_connection`
     /// structure: a `clickable` sub-div (send) and a separate `action_bar`
     /// sub-div (edit/delete) as SIBLINGS under a non-clickable outer row —
     /// nesting the action icons' `.on_click` inside the row's own `.on_click`
@@ -336,7 +336,7 @@ impl Render for QuickCommandsPanel {
 
         // Built with a `for` loop (not `.children(iter().map(...))`) reusing
         // `cx` sequentially each iteration — matches the established pattern
-        // in `saved_connections.rs`'s `render_tree`/`render_ungrouped_section`
+        // in `sessions.rs`'s `render_tree`/`render_ungrouped_section`
         // (`for group in ... { tree = tree.child(self.render_group(group, 0, cx)); }`),
         // which avoids passing `&mut Context<Self>` into a `.map()` closure.
         let mut list = div()

@@ -218,8 +218,8 @@ pub struct TerminalView {
 /// Emitted by `TerminalView` for events its owner (`Workspace`) needs to act
 /// on, since the view itself doesn't know how to redial a backend (CLAUDE.md
 /// §2 — it stays agnostic to backend kind). Follows the same
-/// event-emitter + `cx.subscribe_in` pattern as `SavedConnectionsEvent`
-/// (`src/panels/saved_connections.rs`).
+/// event-emitter + `cx.subscribe_in` pattern as `SessionsEvent`
+/// (`src/panels/sessions.rs`).
 #[derive(Clone, Debug)]
 pub enum TerminalViewEvent {
     /// The user pressed Enter on a disconnected, reconnectable terminal.

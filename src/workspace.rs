@@ -40,7 +40,7 @@ use crate::panels::activity_bar::{PanelId, Side, activity_button, side_items};
 use crate::panels::header::render_header;
 use crate::panels::icons::{AppIcon, icon};
 use crate::panels::quick_commands_panel::QuickCommandsPanel;
-use crate::panels::saved_connections::{SavedConnectionsEvent, SavedConnectionsPanel};
+use crate::panels::sessions::{SessionsEvent, SessionsPanel};
 use crate::panels::settings_window::SettingsWindow;
 use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
@@ -86,8 +86,8 @@ pub struct Workspace {
     quick_commands_panel: Entity<QuickCommandsPanel>,
 
     // --- panel registry -----------------------------------------------------
-    /// The right-dock "已保存的连接" list (real panel).
-    saved_panel: AnyView,
+    /// The right-dock "会话" list (real panel).
+    sessions_panel: AnyView,
     /// Placeholder panels for the not-yet-implemented nyaterm categories.
     stub_panels: HashMap<PanelId, AnyView>,
     /// One SFTP browser per host key (created on first use, reused after).
@@ -104,7 +104,7 @@ pub struct Workspace {
     /// Host key whose monitor panel the `PanelId::Monitor` slot resolves
     /// to. Unlike `active_sftp`, updating this does NOT force
     /// `right_active` to switch to `PanelId::Monitor` — the right dock's
-    /// default occupant (`SavedConnections`) stays visible unless the
+    /// default occupant (`Sessions`) stays visible unless the
     /// user manually clicks the Monitor activity-bar icon; only *which
     /// host's data* is shown follows focus automatically.
     active_monitor: Option<String>,
@@ -148,25 +148,25 @@ impl Workspace {
         let appearance_font_fallback =
             Self::resolve_appearance_font(&startup_appearance.font_fallback);
 
-        // The persisted "已保存的连接" list. Clicking a row opens the SSH terminal
+        // The persisted "会话" list. Clicking a row opens the SSH terminal
         // or its SFTP browser.
         let cfg = config::load();
         let saved = cx.new(|cx| {
-            SavedConnectionsPanel::new(cfg.connections, cfg.groups, window, cx)
+            SessionsPanel::new(cfg.connections, cfg.groups, window, cx)
         });
         let saved_sub =
             cx.subscribe_in(&saved, window, |this, _panel, event, window, cx| match event {
-                SavedConnectionsEvent::Open(config) => this.open_ssh(config.clone(), window, cx),
-                SavedConnectionsEvent::OpenSftp(config) => {
+                SessionsEvent::Open(config) => this.open_ssh(config.clone(), window, cx),
+                SessionsEvent::OpenSftp(config) => {
                     this.show_sftp(config.clone(), window, cx)
                 }
-                SavedConnectionsEvent::OpenLocal(shell, cwd) => {
+                SessionsEvent::OpenLocal(shell, cwd) => {
                     this.open_local_with(shell.clone(), cwd.clone(), window, cx)
                 }
-                SavedConnectionsEvent::OpenTelnet(config) => {
+                SessionsEvent::OpenTelnet(config) => {
                     this.open_telnet(config.clone(), window, cx)
                 }
-                SavedConnectionsEvent::OpenSerial(config) => {
+                SessionsEvent::OpenSerial(config) => {
                     this.open_serial(config.clone(), window, cx)
                 }
             });
@@ -179,7 +179,7 @@ impl Workspace {
         for pid in [
             PanelId::Network,
             PanelId::Security,
-            PanelId::Sessions,
+            PanelId::ActiveSessions,
             PanelId::History,
         ] {
             let view: AnyView = cx.new(|cx| StubPanel::new(pid.label(), cx)).into();
@@ -203,7 +203,7 @@ impl Workspace {
             appearance_font_fallback,
             show_quick_commands: false,
             quick_commands_panel,
-            saved_panel: saved.into(),
+            sessions_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
             sftp_placeholder,
@@ -214,7 +214,7 @@ impl Workspace {
             // Defaults: left panel closed until an SSH terminal is focused (see
             // `show_sftp`) or the user opens it manually; saved connections on the right.
             left_active: None,
-            right_active: Some(PanelId::SavedConnections),
+            right_active: Some(PanelId::Sessions),
             body_resize,
             active_title: "Caracal".into(),
             _subscriptions: vec![saved_sub],
@@ -866,7 +866,7 @@ impl Workspace {
                     .and_then(|k| self.monitor_panels.get(k).cloned())
                     .unwrap_or_else(|| self.monitor_placeholder.clone()),
             ),
-            PanelId::SavedConnections => Some(self.saved_panel.clone()),
+            PanelId::Sessions => Some(self.sessions_panel.clone()),
             other => self.stub_panels.get(&other).cloned(),
         }
     }

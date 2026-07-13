@@ -12,7 +12,7 @@
 //!   serialSend(send)        → ArrowRight
 //!   recording(circle-dot)   → Play         录制/回放
 //!   syncBackup(backup)      → Inbox        归档
-//!   savedConnections(server)→ HardDrive
+//!   sessions(server)        → HardDrive
 //!   activeSessions(link)    → ExternalLink
 
 use gpui_component::{Icon, IconName};
@@ -30,7 +30,7 @@ pub fn icon(a: AppIcon) -> Icon {
         AppIcon::Refresh => Icon::empty().path("icons/refresh-cw.svg"),
         AppIcon::Delete => Icon::empty().path("icons/trash-2.svg"),
         AppIcon::Pencil => Icon::empty().path("icons/pencil.svg"),
-        AppIcon::SavedConnections => Icon::empty().path("icons/server.svg"),
+        AppIcon::Sessions => Icon::empty().path("icons/server.svg"),
         // 其余走上游 IconName 映射
         _ => Icon::new(IconName::from(a)),
     }
@@ -45,7 +45,7 @@ pub enum AppIcon {
     SecurityAuth,
     SyncBackup,
     // 右栏顶部
-    SavedConnections,
+    Sessions,
     ActiveSessions,
     CommandHistory,
     ResourceMonitor,
@@ -116,9 +116,9 @@ impl From<AppIcon> for IconName {
             ChevronDown => IconName::ChevronDown,
             Telnet => IconName::Network,
             SerialPort => IconName::Cpu,
-            // Upload / Download / Pencil / SavedConnections are handled by custom SVG in
+            // Upload / Download / Pencil / Sessions are handled by custom SVG in
             // `icon()`, not reachable here.
-            Upload | Download | Pencil | SavedConnections => unreachable!(),
+            Upload | Download | Pencil | Sessions => unreachable!(),
         }
     }
 }

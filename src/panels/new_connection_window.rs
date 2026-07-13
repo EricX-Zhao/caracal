@@ -1,6 +1,6 @@
 //! `NewConnectionWindow`: a standalone window (File-menu-independent — opened
 //! from the saved-connections panel's toolbar/context-menu/hover-edit entry
-//! points, see `SavedConnectionsPanel::open_new_connection_window`) for
+//! points, see `SessionsPanel::open_new_connection_window`) for
 //! creating or editing a saved connection. Shares one form for both: `existing`
 //! is `Some((ix, conn))` when editing in place, `None` when creating new.
 //! Ported from the panel's former inline `ConnForm` (see git history / the
@@ -19,24 +19,24 @@ use gpui_component::{ActiveTheme, Sizable};
 
 use crate::config::{ConnectionType, SavedConnection};
 use crate::panels::icons::{AppIcon, icon};
-use crate::panels::saved_connections::SavedConnectionsPanel;
+use crate::panels::sessions::SessionsPanel;
 
 /// Icon-picker options, matching `SavedConnection::resolve_icon`'s existing
 /// string-key matching in `config.rs` (`"terminal"`, `"laptop"`, `"server"`,
 /// `"network"`, `"telnet"`, `"serial"`). `None` means "auto" (icon inferred
 /// from `conn_type`, today's behavior).
 const ICON_OPTIONS: &[(Option<&str>, &str, AppIcon)] = &[
-    (None, "自动", AppIcon::SavedConnections),
+    (None, "自动", AppIcon::Sessions),
     (Some("terminal"), "终端", AppIcon::Terminal),
     (Some("laptop"), "笔记本", AppIcon::LocalTerminal),
-    (Some("server"), "服务器", AppIcon::SavedConnections),
+    (Some("server"), "服务器", AppIcon::Sessions),
     (Some("network"), "网络", AppIcon::Network),
     (Some("telnet"), "Telnet", AppIcon::Telnet),
     (Some("serial"), "串口", AppIcon::SerialPort),
 ];
 
 pub struct NewConnectionWindow {
-    panel: WeakEntity<SavedConnectionsPanel>,
+    panel: WeakEntity<SessionsPanel>,
     /// `Some(ix)` when editing an existing connection in place; `None` when
     /// creating a new one.
     edit_ix: Option<usize>,
@@ -62,14 +62,14 @@ pub struct NewConnectionWindow {
     /// The `sort_order` this connection will be saved with — for edits,
     /// the existing connection's value (position doesn't change on edit);
     /// for new connections, `new_sort_order` as computed by the caller
-    /// (`SavedConnectionsPanel::open_new_connection_window`, which has
+    /// (`SessionsPanel::open_new_connection_window`, which has
     /// access to the full connection list this window doesn't).
     sort_order: i32,
 }
 
 impl NewConnectionWindow {
     pub fn new(
-        panel: WeakEntity<SavedConnectionsPanel>,
+        panel: WeakEntity<SessionsPanel>,
         existing: Option<(usize, SavedConnection)>,
         group_id: Option<String>,
         new_sort_order: i32,
@@ -377,7 +377,7 @@ impl NewConnectionWindow {
         // `PopupMenuItem::on_click` closures are plain closures, not
         // `cx.listener(...)` — they have no direct access to `self`. Capture
         // a `WeakEntity<Self>` and update through it instead, the same way
-        // `saved_connections.rs`'s `confirm_delete_connection` mutates panel
+        // `sessions.rs`'s `confirm_delete_connection` mutates panel
         // state from inside its (also plain, non-listener) `on_ok` closure:
         // `weak_panel.update(cx, |this, cx| this.delete(ix, cx))`.
         let weak = cx.entity().downgrade();

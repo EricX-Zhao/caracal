@@ -1,5 +1,5 @@
 //! Persisted app config: the list of saved connections shown in the
-//! right-dock "已保存的连接" panel. Plain Rust — **no `gpui_component`** here
+//! right-dock "会话" panel. Plain Rust — **no `gpui_component`** here
 //! (CLAUDE.md §1 boundary); the panel calls [`load`]/[`save`].
 //!
 //! Stored at `$XDG_CONFIG_HOME/caracal/connections.toml` (else
@@ -227,7 +227,7 @@ impl SavedConnection {
             match icon_name.as_str() {
                 "terminal" => return AppIcon::Terminal,
                 "laptop" | "code" => return AppIcon::LocalTerminal,
-                "server" | "harddrive" => return AppIcon::SavedConnections,
+                "server" | "harddrive" => return AppIcon::Sessions,
                 "network" => return AppIcon::Network,
                 "telnet" => return AppIcon::Telnet,
                 "serial" | "cpu" => return AppIcon::SerialPort,

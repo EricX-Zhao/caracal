@@ -351,7 +351,7 @@ impl SettingsWindow {
     }
 
     /// One theme-mode pill (shared visual idiom with
-    /// `saved_connections.rs`'s connection-type pills).
+    /// `sessions.rs`'s connection-type pills).
     fn theme_pill(&self, mode: &'static str, label: &'static str, cx: &Context<Self>) -> impl IntoElement {
         let active = self.draft.appearance.theme_mode == mode;
         div()

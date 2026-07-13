@@ -1,7 +1,7 @@
-//! `SavedConnectionsPanel`: the right-dock "已保存的连接" list. Renders the
+//! `SessionsPanel`: the right-dock "会话" list. Renders the
 //! persisted connections ([`crate::config`]) as nyaterm-style tree with groups,
 //! search, sort, and hover actions. Double-clicking a connection emits
-//! [`SavedConnectionsEvent::Open`] (workspace opens the terminal); right-click
+//! [`SessionsEvent::Open`] (workspace opens the terminal); right-click
 //! opens a context menu on both connections and folders; connections can be
 //! dragged into (or out of) a folder to change their group.
 //!
@@ -64,49 +64,49 @@ use crate::terminal::telnet::TelnetConfig;
 /// row identity it was built for so the panel's `on_action` handlers can act
 /// without any extra "currently selected row" state.
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct OpenConnection {
     ix: usize,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct EditConnection {
     ix: usize,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct DuplicateConnection {
     ix: usize,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct DeleteConnection {
     ix: usize,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct NewConnectionInGroup {
     group_id: String,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct NewSubfolder {
     parent_id: String,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct RenameGroup {
     group_id: String,
 }
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct DeleteGroup {
     group_id: String,
 }
@@ -114,11 +114,11 @@ struct DeleteGroup {
 /// Blank-area context menu (right-clicking empty space in the panel, not on
 /// any connection/folder row): root-level "新建连接" / "新建文件夹".
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct NewRootConnection;
 
 #[derive(Clone, PartialEq, Action, Deserialize)]
-#[action(namespace = saved_connections, no_json)]
+#[action(namespace = sessions, no_json)]
 struct NewRootFolder;
 
 /// Drag payload for dragging a connection row onto a folder (or onto the
@@ -153,7 +153,7 @@ enum FolderFormTarget {
 }
 
 /// Emitted when the user picks a saved connection to open.
-pub enum SavedConnectionsEvent {
+pub enum SessionsEvent {
     /// Open an SSH shell terminal.
     Open(SshConfig),
     /// Open an SFTP browser (routed to the bottom "SFTP" dock).
@@ -170,15 +170,15 @@ pub enum SavedConnectionsEvent {
 /// Build the event that opens `conn`, dispatching on its connection type.
 /// Shared by the row's double-click handler and the context menu's "打开"
 /// action so the two call sites can't drift.
-fn open_event(conn: &SavedConnection) -> SavedConnectionsEvent {
+fn open_event(conn: &SavedConnection) -> SessionsEvent {
     match conn.conn_type {
-        ConnectionType::Ssh => SavedConnectionsEvent::Open(conn.to_ssh_config()),
-        ConnectionType::Local => SavedConnectionsEvent::OpenLocal(
+        ConnectionType::Ssh => SessionsEvent::Open(conn.to_ssh_config()),
+        ConnectionType::Local => SessionsEvent::OpenLocal(
             conn.shell_path.clone().unwrap_or_default(),
             conn.working_dir.clone().unwrap_or_default(),
         ),
-        ConnectionType::Telnet => SavedConnectionsEvent::OpenTelnet(conn.to_telnet_config()),
-        ConnectionType::Serial => SavedConnectionsEvent::OpenSerial(conn.to_serial_config()),
+        ConnectionType::Telnet => SessionsEvent::OpenTelnet(conn.to_telnet_config()),
+        ConnectionType::Serial => SessionsEvent::OpenSerial(conn.to_serial_config()),
     }
 }
 
@@ -209,7 +209,7 @@ impl SortMode {
     }
 }
 
-pub struct SavedConnectionsPanel {
+pub struct SessionsPanel {
     focus_handle: FocusHandle,
     connections: Vec<SavedConnection>,
     groups: Vec<SavedConnectionGroup>,
@@ -241,7 +241,7 @@ pub struct SavedConnectionsPanel {
     tooltip_target: Option<(usize, Bounds<Pixels>)>,
 }
 
-impl SavedConnectionsPanel {
+impl SessionsPanel {
     pub fn new(
         connections: Vec<SavedConnection>,
         groups: Vec<SavedConnectionGroup>,
@@ -883,26 +883,26 @@ impl SavedConnectionsPanel {
     }
 }
 
-impl EventEmitter<SavedConnectionsEvent> for SavedConnectionsPanel {}
-impl EventEmitter<PanelEvent> for SavedConnectionsPanel {}
+impl EventEmitter<SessionsEvent> for SessionsPanel {}
+impl EventEmitter<PanelEvent> for SessionsPanel {}
 
-impl Focusable for SavedConnectionsPanel {
+impl Focusable for SessionsPanel {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl Panel for SavedConnectionsPanel {
+impl Panel for SessionsPanel {
     fn panel_name(&self) -> &'static str {
-        "SavedConnections"
+        "Sessions"
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("已保存的连接")
+        SharedString::from("会话")
     }
 }
 
-impl SavedConnectionsPanel {
+impl SessionsPanel {
     /// Render the header with title and count.
     fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.connections.len();
@@ -918,7 +918,7 @@ impl SavedConnectionsPanel {
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().foreground)
-                    .child("已保存的连接"),
+                    .child("会话"),
             )
             .child(
                 div()
@@ -1466,7 +1466,7 @@ impl SavedConnectionsPanel {
                     .py_2()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("暂无保存的连接,点 + 新增"),
+                    .child("暂无会话,点 + 新增"),
             )
         } else {
             None
@@ -1474,7 +1474,7 @@ impl SavedConnectionsPanel {
     }
 }
 
-impl Render for SavedConnectionsPanel {
+impl Render for SessionsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .track_focus(&self.focus_handle)
