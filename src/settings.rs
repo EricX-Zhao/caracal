@@ -26,6 +26,15 @@ pub struct AppearanceSettings {
     /// `"dark"` | `"light"`.
     #[serde(default = "default_theme_mode")]
     pub theme_mode: String,
+    /// Primary application-chrome font. Empty string = detect a system UI
+    /// font at startup/apply time (`Workspace::system_ui_font_family`) — see
+    /// the design spec for why chrome text needs its own resolution
+    /// separate from the terminal's `system_monospace_family`.
+    #[serde(default)]
+    pub font_family: String,
+    /// Fallback chrome font, consulted for glyphs `font_family` lacks.
+    #[serde(default = "default_appearance_font_fallback")]
+    pub font_fallback: String,
 }
 
 /// Terminal-content settings, editable from Settings → Terminal.
@@ -56,6 +65,14 @@ pub struct TerminalSettings {
     /// tab's grid.
     #[serde(default = "default_scrollback_lines")]
     pub scrollback_lines: u32,
+    /// First fallback font (tried before `font_fallback2`), consulted for
+    /// glyphs `font_family` lacks — the icon/powerline glyph slot.
+    #[serde(default = "default_font_fallback1")]
+    pub font_fallback1: String,
+    /// Second fallback font, consulted after `font_fallback1` — the CJK
+    /// glyph slot.
+    #[serde(default = "default_font_fallback2")]
+    pub font_fallback2: String,
 }
 
 fn default_font_size() -> f32 {
@@ -70,6 +87,18 @@ fn default_scrollback_lines() -> u32 {
     10_000
 }
 
+fn default_font_fallback1() -> String {
+    "Symbols Nerd Font".to_string()
+}
+
+fn default_font_fallback2() -> String {
+    "Sarasa Mono SC".to_string()
+}
+
+fn default_appearance_font_fallback() -> String {
+    "Sarasa Mono SC".to_string()
+}
+
 fn default_theme_mode() -> String {
     "dark".to_string()
 }
@@ -78,6 +107,8 @@ impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
             theme_mode: default_theme_mode(),
+            font_family: String::new(),
+            font_fallback: default_appearance_font_fallback(),
         }
     }
 }
@@ -90,6 +121,8 @@ impl Default for TerminalSettings {
             monitor_basic_enabled: false,
             monitor_basic_interval_secs: default_monitor_interval_secs(),
             scrollback_lines: default_scrollback_lines(),
+            font_fallback1: default_font_fallback1(),
+            font_fallback2: default_font_fallback2(),
         }
     }
 }
@@ -143,7 +176,11 @@ mod tests {
         assert_eq!(settings.terminal.font_family, "");
         assert_eq!(settings.terminal.font_size, 14.0);
         assert_eq!(settings.terminal.scrollback_lines, 10_000);
+        assert_eq!(settings.terminal.font_fallback1, "Symbols Nerd Font");
+        assert_eq!(settings.terminal.font_fallback2, "Sarasa Mono SC");
         assert_eq!(settings.appearance.theme_mode, "dark");
+        assert_eq!(settings.appearance.font_family, "");
+        assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
     }
 
     #[test]
@@ -151,6 +188,8 @@ mod tests {
         let settings = AppSettings {
             appearance: AppearanceSettings {
                 theme_mode: "light".to_string(),
+                font_family: "JetBrains Mono".to_string(),
+                font_fallback: "Symbols Nerd Font".to_string(),
             },
             terminal: TerminalSettings {
                 font_family: "Consolas".to_string(),
@@ -158,6 +197,8 @@ mod tests {
                 monitor_basic_enabled: true,
                 monitor_basic_interval_secs: 10,
                 scrollback_lines: 20_000,
+                font_fallback1: "JetBrains Mono".to_string(),
+                font_fallback2: "Symbols Nerd Font".to_string(),
             },
         };
         let text = toml::to_string_pretty(&settings).expect("serialize");
@@ -167,7 +208,11 @@ mod tests {
         assert!(parsed.terminal.monitor_basic_enabled);
         assert_eq!(parsed.terminal.monitor_basic_interval_secs, 10);
         assert_eq!(parsed.terminal.scrollback_lines, 20_000);
+        assert_eq!(parsed.terminal.font_fallback1, "JetBrains Mono");
+        assert_eq!(parsed.terminal.font_fallback2, "Symbols Nerd Font");
         assert_eq!(parsed.appearance.theme_mode, "light");
+        assert_eq!(parsed.appearance.font_family, "JetBrains Mono");
+        assert_eq!(parsed.appearance.font_fallback, "Symbols Nerd Font");
     }
 
     #[test]
@@ -182,6 +227,8 @@ mod tests {
         assert_eq!(settings.terminal.font_size, 14.0);
         assert_eq!(settings.terminal.scrollback_lines, 10_000);
         assert_eq!(settings.appearance.theme_mode, "dark");
+        assert_eq!(settings.appearance.font_family, "");
+        assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
     }
 
     #[test]
@@ -239,5 +286,26 @@ mod tests {
         let settings: AppSettings =
             toml::from_str(toml_text).expect("old-format settings must still parse");
         assert_eq!(settings.terminal.scrollback_lines, 10_000);
+    }
+
+    #[test]
+    fn old_settings_file_without_font_fallback_fields_still_deserializes() {
+        // Simulates a settings.toml written before font_fallback1/2 and
+        // appearance's font fields existed.
+        let toml_text = r#"
+            [appearance]
+            theme_mode = "light"
+
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+            scrollback_lines = 5000
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert_eq!(settings.terminal.font_fallback1, "Symbols Nerd Font");
+        assert_eq!(settings.terminal.font_fallback2, "Sarasa Mono SC");
+        assert_eq!(settings.appearance.font_family, "");
+        assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
     }
 }
