@@ -1448,6 +1448,21 @@ impl SftpPanel {
                         state.set_selected_row(*ix, cx);
                     });
                 }
+                // `TableState::refresh` (called on every directory load —
+                // `SftpPanel::refresh`/`toggle_hidden_files`) rebuilds its
+                // column layout from `FileTableDelegate::columns`, not from
+                // whatever the user last dragged a column to. Without
+                // writing resized widths back here, every directory
+                // navigation silently reverted them to the hardcoded
+                // defaults from `FileTableDelegate::new`.
+                TableEvent::ColumnWidthsChanged(widths) => {
+                    table_state.update(cx, |state, _cx| {
+                        let delegate = state.delegate_mut();
+                        for (col, width) in delegate.columns.iter_mut().zip(widths.iter()) {
+                            col.width = *width;
+                        }
+                    });
+                }
                 _ => {}
             }
         })
