@@ -665,6 +665,21 @@ impl TerminalView {
         self.last_origin_y = origin_y;
     }
 
+    /// The shared `Term` handle, for building read-only viewers outside the
+    /// `Entity`/`cx` system — currently only `panels::terminal`'s scrollbar
+    /// adapter, which needs it inside `ScrollbarHandle` methods that take no
+    /// `cx`.
+    pub fn shared_term(&self) -> SharedTerm {
+        self.term.clone()
+    }
+
+    /// The cell height measured at the last paint (`0.0` before the first
+    /// paint). Used by `panels::terminal`'s scrollbar adapter, which has no
+    /// `cx` inside its `ScrollbarHandle` methods to read this live.
+    pub fn last_cell_height(&self) -> f32 {
+        self.last_cell_h
+    }
+
     fn on_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         // Non-live state (connecting or dead SSH connection): swallow all
         // input except Enter, and only forward that as
