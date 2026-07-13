@@ -23,8 +23,8 @@ mod workspace;
 
 use std::borrow::Cow;
 
-use gpui::{App, AppContext, Bounds, KeyBinding, Styled, WindowBounds, WindowOptions, actions, px, size};
-use gpui_component::{ActiveTheme, Root, Theme, ThemeMode};
+use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, actions, px, size};
+use gpui_component::{Root, Theme, ThemeMode};
 use gpui_platform::application;
 
 use crate::assets::CaracalAssets;
@@ -150,8 +150,16 @@ fn main() {
                 |window, cx| {
                     let workspace = cx.new(|cx| Workspace::new(window, cx));
                     // The window's top-level view must be a gpui-component `Root`
-                    // (provides theme context, overlays, notifications).
-                    cx.new(|cx| Root::new(workspace, window, cx).bg(cx.theme().background))
+                    // (provides theme context, overlays, notifications). Don't
+                    // add `.bg(cx.theme().background)` here: `Root::render`
+                    // already paints `cx.theme().tokens.background` fresh every
+                    // frame, but `refine_style` applies our override *after*
+                    // that, permanently baking in whatever color was current at
+                    // this exact construction moment — so any later theme
+                    // toggle would silently stop repainting Root's own
+                    // background (anything without its own explicit `.bg(...)`
+                    // showed this as a stuck stale-theme color).
+                    cx.new(|cx| Root::new(workspace, window, cx))
                 },
             )
             .expect("failed to open window");

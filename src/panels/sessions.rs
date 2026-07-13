@@ -413,7 +413,10 @@ impl SessionsPanel {
                         cx,
                     )
                 });
-                cx.new(|cx| Root::new(new_window, window, cx).bg(cx.theme().background))
+                // No `.bg(cx.theme().background)` here — see `main.rs`'s Root
+                // construction for why that freezes the background at the
+                // theme active when this window opens.
+                cx.new(|cx| Root::new(new_window, window, cx))
             },
         );
         match result {

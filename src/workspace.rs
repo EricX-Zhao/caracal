@@ -667,7 +667,10 @@ impl Workspace {
             move |window, cx| {
                 let settings_window =
                     cx.new(|cx| SettingsWindow::new(workspace.clone(), window, cx));
-                cx.new(|cx| Root::new(settings_window, window, cx).bg(cx.theme().background))
+                // No `.bg(cx.theme().background)` here — see `main.rs`'s Root
+                // construction for why that freezes the background at the
+                // theme active when this window opens.
+                cx.new(|cx| Root::new(settings_window, window, cx))
             },
         );
         match result {
