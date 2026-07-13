@@ -46,11 +46,52 @@ use gpui::{
     Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window,
     div, prelude::FluentBuilder, px, red, transparent_black,
 };
+use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
-use gpui_component::{ActiveTheme, Theme, ThemeMode};
+use gpui_component::menu::PopupMenuItem;
+use gpui_component::{ActiveTheme, Sizable, Theme, ThemeMode};
 
 use crate::settings::{self, AppSettings};
+use crate::terminal::view::{CJK_FALLBACK, DEFAULT_FONT_FAMILY, SYMBOL_FALLBACK};
 use crate::workspace::Workspace;
+
+/// The 4 choices every font-family dropdown offers. `""` means "detect a
+/// system font at apply/seed time" — see `TerminalView::set_font_family`/
+/// `set_font_fallbacks` and `Workspace::apply_appearance_font_settings`
+/// (neither dropdown resolves it here; the picker only ever stores one of
+/// these 4 raw values).
+const FONT_CHOICES: &[(&str, &str)] = &[
+    ("", "系统默认"),
+    (DEFAULT_FONT_FAMILY, "JetBrains Mono"),
+    (CJK_FALLBACK, "Sarasa Mono SC"),
+    (SYMBOL_FALLBACK, "Symbols Nerd Font"),
+];
+
+/// Identifies which font-setting field a `SettingsWindow::font_picker`
+/// dropdown reads/writes.
+#[derive(Clone, Copy)]
+enum FontSlot {
+    TerminalPrimary,
+    TerminalFallback1,
+    TerminalFallback2,
+    AppearancePrimary,
+    AppearanceFallback,
+}
+
+impl FontSlot {
+    /// Stable ASCII id suffix for the dropdown's `ElementId` — independent
+    /// of the (Chinese, and non-unique across tabs — "首选字体" appears for
+    /// both Terminal and Appearance) display label.
+    fn id_suffix(self) -> &'static str {
+        match self {
+            FontSlot::TerminalPrimary => "terminal-primary",
+            FontSlot::TerminalFallback1 => "terminal-fallback1",
+            FontSlot::TerminalFallback2 => "terminal-fallback2",
+            FontSlot::AppearancePrimary => "appearance-primary",
+            FontSlot::AppearanceFallback => "appearance-fallback",
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SettingsTab {
@@ -74,7 +115,6 @@ pub struct SettingsWindow {
     committed: AppSettings,
     draft: AppSettings,
     active_tab: SettingsTab,
-    font_family_input: Entity<InputState>,
     font_size_input: Entity<InputState>,
     monitor_interval_input: Entity<InputState>,
     scrollback_input: Entity<InputState>,
@@ -84,11 +124,6 @@ pub struct SettingsWindow {
 impl SettingsWindow {
     pub fn new(workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let committed = settings::load();
-        let font_family_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("留空 = 内置默认字体")
-                .default_value(committed.terminal.font_family.clone())
-        });
         let font_size_input = cx.new(|cx| {
             InputState::new(window, cx).default_value(committed.terminal.font_size.to_string())
         });
@@ -105,7 +140,6 @@ impl SettingsWindow {
             draft: committed.clone(),
             committed,
             active_tab: SettingsTab::Appearance,
-            font_family_input,
             font_size_input,
             monitor_interval_input,
             scrollback_input,
@@ -117,7 +151,6 @@ impl SettingsWindow {
     /// (and sets `self.error`) without mutating the draft further if the
     /// font-size field doesn't parse.
     fn sync_inputs_to_draft(&mut self, cx: &App) -> bool {
-        self.draft.terminal.font_family = self.font_family_input.read(cx).value().to_string();
         let size_text = self.font_size_input.read(cx).value();
         let Some(size) = parse_font_size(&size_text) else {
             self.error = Some("字号必须是 6-96 之间的数字".into());
@@ -211,6 +244,84 @@ impl SettingsWindow {
     fn toggle_monitor_enabled(&mut self, cx: &mut Context<Self>) {
         self.draft.terminal.monitor_basic_enabled = !self.draft.terminal.monitor_basic_enabled;
         cx.notify();
+    }
+
+    fn font_slot_value(&self, slot: FontSlot) -> &str {
+        match slot {
+            FontSlot::TerminalPrimary => &self.draft.terminal.font_family,
+            FontSlot::TerminalFallback1 => &self.draft.terminal.font_fallback1,
+            FontSlot::TerminalFallback2 => &self.draft.terminal.font_fallback2,
+            FontSlot::AppearancePrimary => &self.draft.appearance.font_family,
+            FontSlot::AppearanceFallback => &self.draft.appearance.font_fallback,
+        }
+    }
+
+    fn set_font_slot(&mut self, slot: FontSlot, value: &str, cx: &mut Context<Self>) {
+        let field = match slot {
+            FontSlot::TerminalPrimary => &mut self.draft.terminal.font_family,
+            FontSlot::TerminalFallback1 => &mut self.draft.terminal.font_fallback1,
+            FontSlot::TerminalFallback2 => &mut self.draft.terminal.font_fallback2,
+            FontSlot::AppearancePrimary => &mut self.draft.appearance.font_family,
+            FontSlot::AppearanceFallback => &mut self.draft.appearance.font_fallback,
+        };
+        *field = value.to_string();
+        cx.notify();
+    }
+
+    /// One "首选/备选" font dropdown: a text label above, a `DropdownButton`
+    /// below showing the current choice's display name and offering all of
+    /// `FONT_CHOICES`. Shared by all 5 font fields across both tabs — see
+    /// the design spec for why a fixed dropdown (not free text) is used
+    /// here, including for what used to be a free-text field.
+    fn font_picker(&self, label: &'static str, slot: FontSlot, cx: &Context<Self>) -> impl IntoElement {
+        let current = self.font_slot_value(slot).to_string();
+        let display = FONT_CHOICES
+            .iter()
+            .find(|(value, _)| *value == current)
+            .map(|(_, label)| *label)
+            .unwrap_or("系统默认");
+        let weak = cx.entity().downgrade();
+        div()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            )
+            .child(
+                DropdownButton::new(SharedString::from(format!(
+                    "font-picker-{}",
+                    slot.id_suffix()
+                )))
+                .xsmall()
+                .button(
+                    Button::new(SharedString::from(format!(
+                        "font-picker-btn-{}",
+                        slot.id_suffix()
+                    )))
+                    .xsmall()
+                    .label(display.to_string()),
+                )
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let mut menu = menu;
+                    for &(value, choice_label) in FONT_CHOICES {
+                        let value = value.to_string();
+                        let weak = weak.clone();
+                        menu = menu.item(PopupMenuItem::new(choice_label).on_click(
+                            move |_ev, _window, cx| {
+                                let value = value.clone();
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.set_font_slot(slot, &value, cx);
+                                });
+                            },
+                        ));
+                    }
+                    menu
+                }),
+            )
     }
 
     /// One sidebar tab button.
@@ -307,6 +418,8 @@ impl SettingsWindow {
                             .child(self.theme_pill("light", "浅色", cx)),
                     ),
             )
+            .child(self.font_picker("首选字体", FontSlot::AppearancePrimary, cx))
+            .child(self.font_picker("备选字体", FontSlot::AppearanceFallback, cx))
     }
 
     /// Terminal-content settings: currently just font family/size, which only
@@ -317,19 +430,9 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("字体族"),
-                    )
-                    .child(Input::new(&self.font_family_input)),
-            )
+            .child(self.font_picker("首选字体", FontSlot::TerminalPrimary, cx))
+            .child(self.font_picker("备选字体 1", FontSlot::TerminalFallback1, cx))
+            .child(self.font_picker("备选字体 2", FontSlot::TerminalFallback2, cx))
             .child(
                 div()
                     .flex()
