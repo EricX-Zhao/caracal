@@ -491,6 +491,15 @@ impl SftpPanel {
         let Some(input) = self.path_input.as_ref() else {
             return;
         };
+        // Skip while the user is actively editing: this runs on every
+        // render (called unconditionally from `Render::render`), and
+        // typing a character notifies this same input, which re-triggers
+        // a render — without this guard, every keystroke would be
+        // immediately overwritten by `self.path` (the last *committed*
+        // navigation), making the field appear impossible to type into.
+        if input.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
         let v = self.path.clone();
         let current = input.read(cx).value().to_string();
         if current != v {
