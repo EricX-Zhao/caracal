@@ -32,7 +32,7 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, font,
     prelude::FluentBuilder, px, size,
 };
-use gpui_component::dock::{DockArea, DockItem, DockPlacement};
+use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelStyle};
 use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
 use gpui_component::{ActiveTheme, Root};
 
@@ -156,7 +156,14 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Center-only dock: terminal tabs live here. No left/right docks.
-        let dock_area = cx.new(|cx| DockArea::new("caracal-main", Some(1), window, cx));
+        // `PanelStyle::Auto` (the default) collapses to a plain, unstyled
+        // title bar when there's exactly one tab — no background/border, so
+        // it looks inconsistent with the bordered tab chips shown once a
+        // second tab opens. `TabBar` always renders the same styled strip,
+        // even with a single tab.
+        let dock_area = cx.new(|cx| {
+            DockArea::new("caracal-main", Some(1), window, cx).panel_style(PanelStyle::TabBar)
+        });
 
         // Seed the chrome font (see `apply_appearance_font_settings`'s doc
         // comment) once at startup — resolved eagerly here, not on every
