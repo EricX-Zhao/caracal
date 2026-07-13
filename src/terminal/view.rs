@@ -269,14 +269,18 @@ impl TerminalView {
     /// A terminal backed by a shell channel on an already-connected [`SshSession`]
     /// (shared with the SFTP panel — one connection per host, CLAUDE.md §2).
     /// `remote_reconnect: true` — a dead SSH shell shows the reconnect banner
-    /// (see `mark_disconnected`, `reconnect_with`).
+    /// (see `mark_disconnected`, `reconnect_with`). `host_label` (e.g.
+    /// "user@host") is only for that banner text; `title` (e.g. "my-server:1",
+    /// computed by `Workspace::open_ssh` from the saved connection's display
+    /// name plus a dedup counter) is the tab name — the two deliberately
+    /// don't have to match.
     pub fn new_ssh_shell(
         window: &mut Window,
         cx: &mut Context<Self>,
         session: Arc<SshSession>,
         host_label: String,
+        title: String,
     ) -> Self {
-        let title = host_label.clone();
         Self::with_backend(
             window,
             cx,
@@ -297,9 +301,13 @@ impl TerminalView {
     /// swaps in the real generation via `reconnect_with` once
     /// `SshSession::connect` resolves (success) or calls
     /// `mark_connect_failed` (failure).
-    pub fn new_ssh_connecting(window: &mut Window, cx: &mut Context<Self>, host_label: String) -> Self {
+    pub fn new_ssh_connecting(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        host_label: String,
+        title: String,
+    ) -> Self {
         let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
-        let title = host_label.clone();
         Self::assemble(
             focus_handle,
             term,

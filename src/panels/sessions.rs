@@ -154,8 +154,12 @@ enum FolderFormTarget {
 
 /// Emitted when the user picks a saved connection to open.
 pub enum SessionsEvent {
-    /// Open an SSH shell terminal.
-    Open(SshConfig),
+    /// Open an SSH shell terminal. The `String` is the connection's display
+    /// name (`SavedConnection::display_name()` — its own `name` field, or
+    /// `user@host` if unset), used by `Workspace::open_ssh` to build the tab
+    /// title (`"{name}:{n}"`, deduplicated across concurrently-open tabs for
+    /// the same host).
+    Open(SshConfig, String),
     /// Open an SFTP browser (routed to the bottom "SFTP" dock).
     #[allow(dead_code)]
     OpenSftp(SshConfig),
@@ -172,7 +176,7 @@ pub enum SessionsEvent {
 /// action so the two call sites can't drift.
 fn open_event(conn: &SavedConnection) -> SessionsEvent {
     match conn.conn_type {
-        ConnectionType::Ssh => SessionsEvent::Open(conn.to_ssh_config()),
+        ConnectionType::Ssh => SessionsEvent::Open(conn.to_ssh_config(), conn.display_name()),
         ConnectionType::Local => SessionsEvent::OpenLocal(
             conn.shell_path.clone().unwrap_or_default(),
             conn.working_dir.clone().unwrap_or_default(),

@@ -22,7 +22,7 @@
 //! kept alive while the dock holds the panel entity; unbounded event channels
 //! mean a backgrounded tab never back-pressures. Switching back shows the latest.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
@@ -66,6 +66,12 @@ pub struct Workspace {
     /// count that decides whether closing a tab should tear down the
     /// shared session.
     ssh_reconnect_configs: HashMap<EntityId, SshConfig>,
+    /// Tab numbers currently in use per SSH connection (`SshConfig::key()`),
+    /// so `open_ssh` can render tab titles as `"{name}:{n}"` — the Nth
+    /// *currently open* tab for that host, reusing the lowest number freed
+    /// by a closed tab rather than growing forever. Populated in `open_ssh`,
+    /// released in `handle_ssh_tab_closed`.
+    ssh_tab_numbers: HashMap<String, HashSet<u32>>,
     /// Every `TerminalView` this workspace has created, so settings changes
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
@@ -168,7 +174,9 @@ impl Workspace {
         });
         let saved_sub =
             cx.subscribe_in(&saved, window, |this, _panel, event, window, cx| match event {
-                SessionsEvent::Open(config) => this.open_ssh(config.clone(), window, cx),
+                SessionsEvent::Open(config, name) => {
+                    this.open_ssh(config.clone(), name.clone(), window, cx)
+                }
                 SessionsEvent::OpenSftp(config) => {
                     this.show_sftp(config.clone(), window, cx)
                 }
@@ -207,6 +215,7 @@ impl Workspace {
             dock_area,
             ssh_sessions: HashMap::new(),
             ssh_reconnect_configs: HashMap::new(),
+            ssh_tab_numbers: HashMap::new(),
             terminal_views: Vec::new(),
             settings_window: None,
             focused_terminal: None,
@@ -311,17 +320,67 @@ impl Workspace {
         self.show_monitor_placeholder(window, cx);
     }
 
+    /// The lowest positive integer not already in `used` — the numbering
+    /// scheme for concurrently-open SSH tabs sharing one connection
+    /// ("name:1", "name:2", ...), reusing whatever a closed tab freed rather
+    /// than growing forever. Pure/standalone so it's unit-testable without a
+    /// live `Workspace` (which needs a `Window` to construct).
+    fn lowest_free_number(used: &HashSet<u32>) -> u32 {
+        let mut n = 1;
+        while used.contains(&n) {
+            n += 1;
+        }
+        n
+    }
+
+    /// Allocate the lowest unused positive tab number for the SSH connection
+    /// keyed by `key`, marking it used. `release_ssh_tab_number` frees it
+    /// again when that tab closes.
+    fn allocate_ssh_tab_number(&mut self, key: &str) -> u32 {
+        let used = self.ssh_tab_numbers.entry(key.to_string()).or_default();
+        let n = Self::lowest_free_number(used);
+        used.insert(n);
+        n
+    }
+
+    /// Release a tab number previously returned by `allocate_ssh_tab_number`,
+    /// so the next tab opened for this connection can reuse it.
+    fn release_ssh_tab_number(&mut self, key: &str, number: u32) {
+        if let Some(used) = self.ssh_tab_numbers.get_mut(key) {
+            used.remove(&number);
+            if used.is_empty() {
+                self.ssh_tab_numbers.remove(key);
+            }
+        }
+    }
+
     /// Open an SSH shell terminal (reusing the host's shared connection) as a
     /// new central tab, and wire it so refocusing it later swaps its host's
     /// SFTP browser into the left region and updates the header title.
-    pub fn open_ssh(&mut self, config: SshConfig, window: &mut Window, cx: &mut Context<Self>) {
+    /// `display_name` is the saved connection's own name (or `user@host` if
+    /// unset, see `SavedConnection::display_name`) — the tab title becomes
+    /// `"{display_name}:{n}"`, `n` deduplicating concurrently-open tabs for
+    /// the same host.
+    pub fn open_ssh(
+        &mut self,
+        config: SshConfig,
+        display_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = config.key();
         let host_label = format!("{}@{}", config.user, config.host);
+        let tab_number = self.allocate_ssh_tab_number(&key);
+        let title = format!("{display_name}:{tab_number}");
 
         let terminal = if let Some(session) = self.ssh_sessions.get(&key).cloned() {
-            cx.new(|cx| TerminalView::new_ssh_shell(window, cx, session, host_label.clone()))
+            cx.new(|cx| {
+                TerminalView::new_ssh_shell(window, cx, session, host_label.clone(), title.clone())
+            })
         } else {
-            cx.new(|cx| TerminalView::new_ssh_connecting(window, cx, host_label.clone()))
+            cx.new(|cx| {
+                TerminalView::new_ssh_connecting(window, cx, host_label.clone(), title.clone())
+            })
         };
         Self::seed_font_from_settings(&terminal, cx);
         let follow = config.clone();
@@ -366,9 +425,11 @@ impl Workspace {
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
         let closed_config = config.clone();
         let closed_term = term_weak.clone();
+        let closed_key = key.clone();
         let closed_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
+            this.release_ssh_tab_number(&closed_key, tab_number);
         });
         self._subscriptions.push(closed_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -1202,5 +1263,24 @@ mod tests {
     #[test]
     fn resolve_appearance_font_passes_through_explicit_value() {
         assert_eq!(Workspace::resolve_appearance_font("Consolas"), "Consolas".to_string());
+    }
+
+    #[test]
+    fn lowest_free_number_starts_at_one_when_empty() {
+        assert_eq!(Workspace::lowest_free_number(&HashSet::new()), 1);
+    }
+
+    #[test]
+    fn lowest_free_number_skips_used_numbers() {
+        let used: HashSet<u32> = [1, 2, 3].into_iter().collect();
+        assert_eq!(Workspace::lowest_free_number(&used), 4);
+    }
+
+    #[test]
+    fn lowest_free_number_reuses_a_gap() {
+        // 1 and 3 are in use, 2 was freed (e.g. a closed tab) — the next
+        // allocation should reuse 2, not jump to 4.
+        let used: HashSet<u32> = [1, 3].into_iter().collect();
+        assert_eq!(Workspace::lowest_free_number(&used), 2);
     }
 }
