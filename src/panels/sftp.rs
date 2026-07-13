@@ -14,7 +14,10 @@
 //! 6. Bottom path bar — full path echo.
 //!
 //! The top (file browser) and bottom (transfers) panes are split by a
-//! draggable `v_resizable` handle.
+//! hand-rolled draggable handle (raw mouse events, not gpui-component's
+//! `v_resizable` — nesting a resizable panel group inside another one's
+//! panel corrupts sibling panels; see `workspace.rs`'s quick-commands
+//! drawer for the same fix applied to a different nesting site).
 //!
 //! Background transfers (CLAUDE.md §2 + the SshSession refactor): every
 //! download/upload runs as a tokio task spawned by the session thread, so the
@@ -27,17 +30,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, AppContext, AsyncApp, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div,
-    prelude::FluentBuilder, px,
+    App, AppContext, AsyncApp, ClipboardItem, Context, CursorStyle, Entity, FocusHandle,
+    Focusable, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, WeakEntity, Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::notification::NotificationType;
-use gpui_component::resizable::{resizable_panel, v_resizable, ResizableState};
 use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState};
 use gpui_component::{ActiveTheme, Disableable, IconName, Sizable, WindowExt};
 
@@ -302,7 +304,12 @@ pub struct SftpPanel {
     transfers: Vec<Transfer>,
     path_input: Option<Entity<InputState>>,
     _path_sub: Option<Subscription>,
-    resize_state: Entity<ResizableState>,
+    /// Height of the bottom (transfers) pane; the top (file browser) pane
+    /// fills the rest via `flex_1`.
+    transfer_pane_height: Pixels,
+    /// `(drag-start mouse Y, drag-start pane height)`, set while dragging the
+    /// handle between the two panes; `None` when not dragging.
+    transfer_pane_drag: Option<(Pixels, Pixels)>,
     /// Inline name-entry row: shown when the user clicks 新建文件 / 新建文件夹.
     pending_op: Option<(PendingOpKind, Entity<InputState>)>,
     /// Default local download directory. Editable in the bottom bar.
@@ -335,7 +342,6 @@ impl SftpPanel {
                 .col_resizable(true)
                 .sortable(true)
         });
-        let resize_state = cx.new(|_| ResizableState::default());
         let mut this = Self {
             session,
             label: label.into(),
@@ -346,7 +352,8 @@ impl SftpPanel {
             transfers: Vec::new(),
             path_input: None,
             _path_sub: None,
-            resize_state,
+            transfer_pane_height: px(200.0),
+            transfer_pane_drag: None,
             pending_op: None,
             download_dir,
             show_hidden: false,
@@ -1115,21 +1122,75 @@ impl Render for SftpPanel {
         let bottom_pane = div()
             .flex()
             .flex_col()
-            .flex_1()
+            .h(self.transfer_pane_height)
+            .flex_shrink_0()
             .min_w(px(0.0))
             .child(transfer_header)
             .child(transfer_body)
             .child(download_dir_bar);
 
-        v_resizable("sftp-layout")
-            .with_state(&self.resize_state)
-            .child(resizable_panel().child(top_pane))
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .on_mouse_move(cx.listener(Self::on_transfer_pane_drag_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::stop_transfer_pane_resize))
+            .child(top_pane)
             .child(
-                resizable_panel()
-                    .size(px(200.))
-                    .size_range(px(80.)..px(600.))
-                    .child(bottom_pane),
+                div()
+                    .id("sftp-transfer-resize-handle")
+                    .w_full()
+                    .h(px(4.0))
+                    .flex_shrink_0()
+                    .cursor(CursorStyle::ResizeRow)
+                    .bg(cx.theme().border)
+                    .hover(|s| s.bg(cx.theme().primary))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(Self::start_transfer_pane_resize),
+                    ),
             )
+            .child(bottom_pane)
+    }
+}
+
+impl SftpPanel {
+    fn start_transfer_pane_resize(
+        &mut self,
+        ev: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.transfer_pane_drag = Some((ev.position.y, self.transfer_pane_height));
+        cx.notify();
+    }
+
+    fn on_transfer_pane_drag_move(
+        &mut self,
+        ev: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((start_y, start_height)) = self.transfer_pane_drag else {
+            return;
+        };
+        let delta = start_y - ev.position.y;
+        let new_height = (start_height + delta).clamp(px(80.0), px(600.0));
+        if new_height != self.transfer_pane_height {
+            self.transfer_pane_height = new_height;
+            cx.notify();
+        }
+    }
+
+    fn stop_transfer_pane_resize(
+        &mut self,
+        _ev: &MouseUpEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transfer_pane_drag.take().is_some() {
+            cx.notify();
+        }
     }
 }
 
