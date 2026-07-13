@@ -26,12 +26,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, Entity, EntityId, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div,
-    prelude::FluentBuilder, px, size,
+    AnyView, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, prelude::FluentBuilder, px, size,
 };
-use gpui_component::dock::{DockArea, DockPlacement};
+use gpui_component::dock::{DockArea, DockItem, DockPlacement};
 use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
 use gpui_component::{ActiveTheme, Root};
 
@@ -742,8 +742,36 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.dock_area.update(cx, |dock_area, cx| {
+            // When the Center dock's tab group empties out (every terminal
+            // tab closed), its `TabPanel` detaches itself from the live
+            // `StackPanel` (`TabPanel::remove_self_if_empty` in
+            // gpui-component), but nothing prunes the matching entry from
+            // `DockArea.center`'s separate `DockItem::Split.items` tree —
+            // that tree is only ever appended to, never pruned on removal.
+            // Left alone, `add_panel` below would find that stale, now
+            // invisible `Tabs` entry and silently repopulate it instead of
+            // creating a new, visible tab group: the "double-click a saved
+            // connection does nothing after closing every tab" bug. Rebuild
+            // a fresh, empty center whenever we detect this.
+            if Self::center_tab_group_is_stale(dock_area, cx) {
+                let weak = cx.entity().downgrade();
+                let fresh_center = DockItem::split(Axis::Horizontal, vec![], &weak, window, cx);
+                dock_area.set_center(fresh_center, window, cx);
+            }
             dock_area.add_panel(panel, DockPlacement::Center, None, window, cx);
         });
+    }
+
+    /// True if the Center dock's tab group exists but is empty — see
+    /// `add_center`'s doc comment for why this needs special handling.
+    fn center_tab_group_is_stale(dock_area: &DockArea, cx: &App) -> bool {
+        match dock_area.center() {
+            DockItem::Split { items, .. } => items.iter().any(|item| {
+                matches!(item, DockItem::Tabs { view, .. } if view.read(cx).active_panel(cx).is_none())
+            }),
+            DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx).is_none(),
+            _ => false,
+        }
     }
 
     // --- panel registry / slots ---------------------------------------------
