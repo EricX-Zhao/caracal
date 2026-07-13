@@ -49,6 +49,7 @@ use gpui::{
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::PopupMenuItem;
+use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme, Sizable, Theme, ThemeMode};
 
 use crate::settings::{self, AppSettings};
@@ -461,13 +462,7 @@ impl SettingsWindow {
                             .text_color(cx.theme().muted_foreground)
                             .child("资源监控 (基础)"),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(self.monitor_enabled_pill(cx)),
-                    ),
+                    .child(self.monitor_enabled_switch(cx)),
             )
             .child(
                 div()
@@ -497,22 +492,13 @@ impl SettingsWindow {
             )
     }
 
-    fn monitor_enabled_pill(&self, cx: &Context<Self>) -> impl IntoElement {
-        let active = self.draft.terminal.monitor_basic_enabled;
-        div()
-            .id("settings-monitor-enabled")
-            .px_2()
-            .py_0p5()
-            .rounded_sm()
-            .bg(if active { cx.theme().primary } else { cx.theme().accent })
-            .text_color(if active {
-                cx.theme().primary_foreground
-            } else {
-                cx.theme().foreground
-            })
-            .hover(|s| s.bg(cx.theme().accent))
-            .child(if active { "已启用" } else { "已禁用" })
-            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+    /// Standard boolean-toggle style for this settings window: a pill switch
+    /// (`gpui_component::switch::Switch`), not a text pill button — see the
+    /// "UI conventions" note in `docs/superpowers/specs/2026-07-07-settings-page-design.md`.
+    fn monitor_enabled_switch(&self, cx: &Context<Self>) -> impl IntoElement {
+        Switch::new("settings-monitor-enabled")
+            .checked(self.draft.terminal.monitor_basic_enabled)
+            .on_click(cx.listener(|this, _checked: &bool, _window, cx| {
                 this.toggle_monitor_enabled(cx);
             }))
     }

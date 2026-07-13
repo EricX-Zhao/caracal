@@ -127,6 +127,16 @@ fields get added to `AppSettings` when those sub-projects need them, not specula
   hardcoded `ThemeMode::Dark`; the existing `ToggleTheme` action handler additionally calls
   `settings::save` with the new mode.
 
+## UI conventions
+
+- **Boolean on/off settings use `gpui_component::switch::Switch`** (a pill-shaped toggle,
+  filled with `cx.theme().primary` when checked), not a custom text pill/button (`"已启用"` /
+  `"已禁用"`). The resource-monitor "启用/禁用" toggle originally used a hand-rolled pill
+  button; it was switched to `Switch` on 2026-07-13 and is the reference implementation —
+  see `SettingsWindow::monitor_enabled_switch` in `settings_window.rs`. Every future
+  on/off setting added to this settings window (or any other settings surface in the app)
+  should use `Switch` the same way, not reinvent a pill/checkbox look.
+
 ## Testing
 
 - `src/settings.rs`: unit tests mirroring `config.rs`'s existing test shape — missing file →
