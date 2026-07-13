@@ -27,18 +27,17 @@ use std::sync::Arc;
 
 use gpui::{
     AnyView, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable, Font,
-    FontFallbacks, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    FontFallbacks, IntoElement, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, WindowBounds,
     WindowHandle, WindowOptions, div, font, prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockItem, DockPlacement};
-use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
+use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable, v_resizable};
 use gpui_component::{ActiveTheme, Root};
 
 use crate::config;
-use crate::panels::activity_bar::{PanelId, Side, activity_button, side_items};
+use crate::panels::activity_bar::{PanelId, Side, activity_button, quick_commands_button, side_items};
 use crate::panels::header::render_header;
-use crate::panels::icons::{AppIcon, icon};
 use crate::panels::quick_commands_panel::QuickCommandsPanel;
 use crate::panels::sessions::{SessionsEvent, SessionsPanel};
 use crate::panels::settings_window::SettingsWindow;
@@ -115,6 +114,10 @@ pub struct Workspace {
 
     // --- horizontal body resize state ---------------------------------------
     body_resize: Entity<ResizableState>,
+    /// Vertical split between the terminal dock area and the quick-commands
+    /// drawer, when open — lets the user drag the boundary to resize the
+    /// drawer instead of it being a fixed height.
+    quick_commands_resize: Entity<ResizableState>,
 
     /// Focused terminal's title, shown centered in the header.
     active_title: SharedString,
@@ -187,6 +190,7 @@ impl Workspace {
         }
 
         let body_resize = cx.new(|_| ResizableState::default());
+        let quick_commands_resize = cx.new(|_| ResizableState::default());
 
         let workspace_handle = cx.entity().downgrade();
         let quick_commands_panel = cx.new(|cx| QuickCommandsPanel::new(workspace_handle, cx));
@@ -216,6 +220,7 @@ impl Workspace {
             left_active: None,
             right_active: Some(PanelId::Sessions),
             body_resize,
+            quick_commands_resize,
             active_title: "Caracal".into(),
             _subscriptions: vec![saved_sub],
         }
@@ -903,7 +908,8 @@ impl Workspace {
             .items_center()
             .gap_1()
             .pt_1()
-            .w_full();
+            .w_full()
+            .flex_1();
         for &pid in side_items(side) {
             let active = active_id == Some(pid);
             col = col.child(
@@ -911,6 +917,20 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _ev, window, cx| {
                         this.toggle_panel(pid, window, cx)
                     })),
+            );
+        }
+
+        // Quick-commands toggle: pinned to the bottom of the right bar (a
+        // spacer above pushes it down), separate from the PanelId-backed
+        // buttons above since it toggles a bottom drawer, not a side slot.
+        if matches!(side, Side::Right) {
+            col = col.child(div().flex_1()).child(
+                quick_commands_button(self.show_quick_commands, cx).on_click(cx.listener(
+                    |this, _ev, _window, cx| {
+                        this.show_quick_commands = !this.show_quick_commands;
+                        cx.notify();
+                    },
+                )),
             );
         }
 
@@ -972,23 +992,37 @@ impl Workspace {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .child(
+                        .child(if self.show_quick_commands {
+                            v_resizable("terminal-quick-commands-split")
+                                .with_state(&self.quick_commands_resize)
+                                .child(
+                                    resizable_panel().child(
+                                        div()
+                                            .size_full()
+                                            .overflow_hidden()
+                                            .child(self.dock_area.clone()),
+                                    ),
+                                )
+                                .child(
+                                    resizable_panel()
+                                        .size(px(220.0))
+                                        .size_range(px(120.0)..px(500.0))
+                                        .child(
+                                            div()
+                                                .size_full()
+                                                .border_t_1()
+                                                .border_color(border)
+                                                .child(self.quick_commands_panel.clone()),
+                                        ),
+                                )
+                                .into_any_element()
+                        } else {
                             div()
                                 .flex_1()
                                 .min_h(px(0.0))
                                 .overflow_hidden()
-                                .child(self.dock_area.clone()),
-                        )
-                        .when(self.show_quick_commands, |d| {
-                            d.child(
-                                div()
-                                    .w_full()
-                                    .h(px(220.0))
-                                    .flex_shrink_0()
-                                    .border_t_1()
-                                    .border_color(border)
-                                    .child(self.quick_commands_panel.clone()),
-                            )
+                                .child(self.dock_area.clone())
+                                .into_any_element()
                         }),
                 ),
             )
@@ -1009,10 +1043,10 @@ impl Workspace {
         div().flex_1().min_w(px(0.0)).child(group)
     }
 
-    /// Bottom status bar: a left icon cluster (currently just the
-    /// quick-commands toggle; structured so a second icon can be added later
-    /// without redesign) and a right-aligned cursor-position readout for the
-    /// focused terminal (blank when nothing is focused).
+    /// Bottom status bar: a right-aligned cursor-position readout for the
+    /// focused terminal (blank when nothing is focused). The quick-commands
+    /// toggle lives in the right activity bar (`quick_commands_button`), not
+    /// here.
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let cursor_text = self
             .focused_terminal
@@ -1030,29 +1064,11 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .justify_between()
+            .justify_end()
             .px_2()
             .bg(cx.theme().muted)
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(
-                div()
-                    .id("status-quick-commands")
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .text_color(if self.show_quick_commands {
-                        cx.theme().primary
-                    } else {
-                        cx.theme().muted_foreground
-                    })
-                    .hover(|s| s.text_color(cx.theme().foreground))
-                    .child(icon(AppIcon::QuickCmd))
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        this.show_quick_commands = !this.show_quick_commands;
-                        cx.notify();
-                    })),
-            )
             .child(
                 div()
                     .text_xs()

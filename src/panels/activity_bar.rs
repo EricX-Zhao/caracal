@@ -142,3 +142,42 @@ pub fn activity_button(pid: PanelId, active: bool, side: Side, cx: &App) -> Stat
         .child(icon(pid.app_icon()).large())
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
 }
+
+/// The quick-commands drawer toggle, pinned to the bottom of the right
+/// activity bar. Same visual treatment as [`activity_button`], but not
+/// backed by a `PanelId` — it toggles a bottom drawer
+/// (`Workspace::show_quick_commands`), not a side-panel slot, so it doesn't
+/// participate in `side_items`/`toggle_panel`.
+pub fn quick_commands_button(active: bool, cx: &App) -> Stateful<Div> {
+    let text_color = if active {
+        cx.theme().foreground
+    } else {
+        cx.theme().muted_foreground
+    };
+
+    div()
+        .id("activity-quick-commands")
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w_full()
+        .h(px(40.0))
+        .text_color(text_color)
+        .when(active, |this| this.bg(cx.theme().list_active))
+        .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
+        .when(active, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .top_1()
+                    .bottom_1()
+                    .w(px(2.0))
+                    .rounded_full()
+                    .bg(cx.theme().primary)
+                    .right_0(),
+            )
+        })
+        .child(icon(AppIcon::QuickCmd).large())
+        .tooltip(move |window, cx| Tooltip::new("快捷命令").build(window, cx))
+}
