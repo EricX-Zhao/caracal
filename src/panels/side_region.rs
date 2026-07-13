@@ -1,19 +1,24 @@
 //! Side region — the panel container that sits between an activity bar and the
 //! center. Each side shows exactly one panel (the active activity-bar item).
 //!
-//! The panel view is embedded the same way `gpui_component`'s `DockArea`
-//! `TabPanel` does it: a `relative flex_1` container whose child is the view
-//! `.cached(StyleRefinement::default().absolute().size_full())`. This gives the
-//! panel *definite pixel bounds*, which virtualized children like the SFTP
-//! `DataTable` need in order to render rows (without it the list stays blank).
+//! The panel view is given *definite pixel bounds* — a `relative flex_1`
+//! container whose child is a plain `absolute size_full` div wrapping the
+//! view — which virtualized children like the SFTP `DataTable` need in order
+//! to render rows (without it the list stays blank). This used to be done via
+//! `AnyView::cached(...)`, which bundles that same style onto the view's own
+//! layout node — but caching also means the view's *paint* (not just layout)
+//! gets replayed from a previous frame whenever `Context::notify` wasn't
+//! called on that exact entity, independent of `cx.refresh_windows()`
+//! (confirmed: switching the app theme left this region showing whatever
+//! theme was active last time this exact entity repainted, e.g. a light-mode
+//! header bar surviving into an otherwise-dark frame). A plain wrapping div
+//! gives the same bounds without opting into that caching, so the view's
+//! `render()` — and therefore `cx.theme()` — is always read fresh.
 //!
 //! The region's *width* is controlled by the enclosing `h_resizable` group in
 //! `workspace.rs`; this function only produces the region's content.
 
-use gpui::{
-    AnyElement, AnyView, Hsla, IntoElement, ParentElement, StyleRefinement, Styled, div,
-    prelude::FluentBuilder, px,
-};
+use gpui::{AnyElement, AnyView, Hsla, IntoElement, ParentElement, Styled, div, prelude::FluentBuilder, px};
 
 /// Build a side region's content for `view`.
 ///
@@ -32,7 +37,7 @@ pub fn side_region_content(view: AnyView, border: Hsla, left_side: bool) -> AnyE
                 .relative()
                 .flex_1()
                 .min_h(px(0.0))
-                .child(view.cached(StyleRefinement::default().absolute().size_full())),
+                .child(div().absolute().size_full().child(view)),
         )
         .into_any_element()
 }
