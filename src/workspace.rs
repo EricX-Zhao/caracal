@@ -972,7 +972,24 @@ impl Workspace {
                         .flex_1()
                         .min_w(px(0.0))
                         .overflow_hidden()
-                        .child(self.dock_area.clone()),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(0.0))
+                                .overflow_hidden()
+                                .child(self.dock_area.clone()),
+                        )
+                        .when(self.show_quick_commands, |d| {
+                            d.child(
+                                div()
+                                    .w_full()
+                                    .h(px(220.0))
+                                    .flex_shrink_0()
+                                    .border_t_1()
+                                    .border_color(border)
+                                    .child(self.quick_commands_panel.clone()),
+                            )
+                        }),
                 ),
             )
             .child(
@@ -1060,9 +1077,6 @@ impl Render for Workspace {
         let right_bar = self.render_activity_bar(Side::Right, cx);
         let body = self.render_body(cx);
         let status_bar = self.render_status_bar(cx);
-        let border = cx.theme().border;
-        let show_quick_commands = self.show_quick_commands;
-        let quick_commands_panel = self.quick_commands_panel.clone();
 
         let mut chrome_font: Font = font(self.appearance_font_family.clone());
         chrome_font.fallbacks = Some(FontFallbacks::from_fonts(vec![
@@ -1085,17 +1099,6 @@ impl Render for Workspace {
                     .child(body)
                     .child(right_bar),
             )
-            .when(show_quick_commands, |d| {
-                d.child(
-                    div()
-                        .w_full()
-                        .h(px(220.0))
-                        .flex_shrink_0()
-                        .border_t_1()
-                        .border_color(border)
-                        .child(quick_commands_panel),
-                )
-            })
             .child(status_bar)
             .children(gpui_component::Root::render_notification_layer(window, cx))
             .children(gpui_component::Root::render_dialog_layer(window, cx))
