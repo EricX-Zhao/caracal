@@ -229,26 +229,31 @@ pub enum TerminalViewEvent {
 impl EventEmitter<TerminalViewEvent> for TerminalView {}
 
 impl TerminalView {
-    /// A terminal backed by the local shell (`LocalPty`).
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// A terminal backed by the local shell (`LocalPty`). `title` is the tab
+    /// name — pass `"本地终端"` for a bare/menu-triggered local shell, or a
+    /// saved connection's `display_name()` when opened from the sessions
+    /// list (see `Workspace::open_local`/`open_local_with`).
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, title: String) -> Self {
         Self::with_backend(
             window,
             cx,
             false,
             String::new(),
-            "本地终端".to_string(),
+            title,
             |cols, rows, bytes_tx| {
                 Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
             },
         )
     }
 
-    /// A terminal backed by a local shell with custom shell path and working directory.
+    /// A terminal backed by a local shell with custom shell path and working
+    /// directory. `title` is the tab name, same convention as `new`'s.
     pub fn new_local_with(
         window: &mut Window,
         cx: &mut Context<Self>,
         shell: &str,
         working_dir: Option<&str>,
+        title: String,
     ) -> Self {
         let shell = shell.to_string();
         Self::with_backend(
@@ -256,7 +261,7 @@ impl TerminalView {
             cx,
             false,
             String::new(),
-            "本地终端".to_string(),
+            title,
             move |cols, rows, bytes_tx| {
                 Arc::new(
                     LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)

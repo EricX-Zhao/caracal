@@ -163,8 +163,9 @@ pub enum SessionsEvent {
     /// Open an SFTP browser (routed to the bottom "SFTP" dock).
     #[allow(dead_code)]
     OpenSftp(SshConfig),
-    /// Open a local terminal.
-    OpenLocal(String, String),
+    /// Open a local terminal. The third `String` is the connection's display
+    /// name, same convention as `Open`'s — used as the tab title.
+    OpenLocal(String, String, String),
     /// Open a raw Telnet terminal.
     OpenTelnet(TelnetConfig),
     /// Open a serial-port terminal.
@@ -180,6 +181,7 @@ fn open_event(conn: &SavedConnection) -> SessionsEvent {
         ConnectionType::Local => SessionsEvent::OpenLocal(
             conn.shell_path.clone().unwrap_or_default(),
             conn.working_dir.clone().unwrap_or_default(),
+            conn.display_name(),
         ),
         ConnectionType::Telnet => SessionsEvent::OpenTelnet(conn.to_telnet_config()),
         ConnectionType::Serial => SessionsEvent::OpenSerial(conn.to_serial_config()),

@@ -180,8 +180,8 @@ impl Workspace {
                 SessionsEvent::OpenSftp(config) => {
                     this.show_sftp(config.clone(), window, cx)
                 }
-                SessionsEvent::OpenLocal(shell, cwd) => {
-                    this.open_local_with(shell.clone(), cwd.clone(), window, cx)
+                SessionsEvent::OpenLocal(shell, cwd, name) => {
+                    this.open_local_with(shell.clone(), cwd.clone(), name.clone(), window, cx)
                 }
                 SessionsEvent::OpenTelnet(config) => {
                     this.open_telnet(config.clone(), window, cx)
@@ -267,7 +267,7 @@ impl Workspace {
     /// focusing it swaps the SFTP slot back to the placeholder (SFTP only makes
     /// sense over SSH) and updates the header title.
     pub fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let terminal = cx.new(|cx| TerminalView::new(window, cx));
+        let terminal = cx.new(|cx| TerminalView::new(window, cx, "本地终端".to_string()));
         Self::seed_font_from_settings(&terminal, cx);
         let handle = terminal.read(cx).focus_handle(cx);
         let term_weak = terminal.downgrade();
@@ -285,15 +285,18 @@ impl Workspace {
     }
 
     /// Open a local-shell terminal with custom shell and working directory.
+    /// `title` is the saved connection's display name (see
+    /// `SessionsEvent::OpenLocal`'s doc comment).
     pub fn open_local_with(
         &mut self,
         shell: String,
         cwd: String,
+        title: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let terminal = if shell.is_empty() && cwd.is_empty() {
-            cx.new(|cx| TerminalView::new(window, cx))
+            cx.new(|cx| TerminalView::new(window, cx, title))
         } else {
             cx.new(|cx| {
                 TerminalView::new_local_with(
@@ -301,6 +304,7 @@ impl Workspace {
                     cx,
                     &shell,
                     if cwd.is_empty() { None } else { Some(&cwd) },
+                    title,
                 )
             })
         };
