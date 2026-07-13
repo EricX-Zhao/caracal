@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.svg" width="128" height="128" alt="Caracal logo">
+</p>
+
 # Caracal
 
 A native, GPU-accelerated terminal / SSH / Telnet / serial client built on
@@ -52,6 +56,18 @@ No extra system packages are needed beyond the Rust (MSVC) toolchain.
 Every push to `main` builds Windows and Linux binaries via
 [GitHub Actions](.github/workflows/build.yml); tagged releases (`vX.Y.Z`)
 publish them as GitHub Releases.
+
+## Acknowledgments
+
+Caracal owes a debt to the terminal clients that came before it:
+
+- **[WindTerm](https://github.com/kingToolbox/WindTerm)** — for proving how
+  far a single native terminal/SSH client can go: sessions, SFTP, serial, and
+  more, all in one fast, keyboard-driven tool. A lot of Caracal's feature
+  shape follows that lead.
+- **NyaTerm** — an earlier project that planted the seed for this one.
+
+Thank you both.
 
 ## License
 
