@@ -26,10 +26,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
+    AnyView, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable, Font,
+    FontFallbacks, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, prelude::FluentBuilder, px, size,
+    WindowHandle, WindowOptions, div, font, prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockItem, DockPlacement};
 use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
@@ -124,6 +124,14 @@ pub struct Workspace {
     /// focus changes. Replaced (dropping the old subscription) every time
     /// `set_active_title_from` runs, so only the current focus is observed.
     _focused_terminal_observation: Option<Subscription>,
+    /// The application chrome's primary/fallback font, already resolved
+    /// (never the raw `""` "系统默认" sentinel) — seeded from
+    /// `AppSettings.appearance` in `Workspace::new`, re-resolved by
+    /// `apply_appearance_font_settings` on Settings → Apply. Applied by
+    /// `Render for Workspace` via an explicit `.font(...)` override on its
+    /// own top-level element (see that impl's doc comment).
+    appearance_font_family: SharedString,
+    appearance_font_fallback: SharedString,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -131,6 +139,14 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Center-only dock: terminal tabs live here. No left/right docks.
         let dock_area = cx.new(|cx| DockArea::new("caracal-main", Some(1), window, cx));
+
+        // Seed the chrome font (see `apply_appearance_font_settings`'s doc
+        // comment) once at startup — resolved eagerly here, not on every
+        // render.
+        let startup_appearance = settings::load().appearance;
+        let appearance_font_family = Self::resolve_appearance_font(&startup_appearance.font_family);
+        let appearance_font_fallback =
+            Self::resolve_appearance_font(&startup_appearance.font_fallback);
 
         // The persisted "已保存的连接" list. Clicking a row opens the SSH terminal
         // or its SFTP browser.
@@ -183,6 +199,8 @@ impl Workspace {
             settings_window: None,
             focused_terminal: None,
             _focused_terminal_observation: None,
+            appearance_font_family,
+            appearance_font_fallback,
             show_quick_commands: false,
             quick_commands_panel,
             saved_panel: saved.into(),
@@ -579,6 +597,66 @@ impl Workspace {
         }
     }
 
+    /// The system's default UI-chrome font family, used when Appearance's
+    /// primary/fallback font is left at "系统默认" (empty string). Mirrors
+    /// `terminal::view`'s `system_monospace_family()` but resolves a UI font,
+    /// not monospace — chrome text (menus, buttons, panels) reading in a
+    /// monospace font looks unusually rigid.
+    fn system_ui_font_family() -> SharedString {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(out) = std::process::Command::new("fc-match")
+                .args(["-f", "%{family[0]}", "sans-serif"])
+                .output()
+                && out.status.success()
+            {
+                let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !name.is_empty() {
+                    return name.into();
+                }
+            }
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return "Segoe UI".into();
+        }
+        // macOS (and any detection failure above): gpui-component's own
+        // default sentinel, which already resolves correctly there — only
+        // Windows/Linux needed an override (see `main.rs`'s existing
+        // `Theme::global_mut(cx).font_family` comment).
+        #[allow(unreachable_code)]
+        ".SystemUIFont".into()
+    }
+
+    /// Resolve an Appearance font-setting value: `""` (系统默认) becomes a
+    /// detected system UI font; anything else passes through unchanged.
+    /// Called only at startup (`Workspace::new`) and on Settings →
+    /// Apply/Confirm (`apply_appearance_font_settings`) — never from
+    /// `Render::render`, since this can spawn a subprocess on Linux.
+    fn resolve_appearance_font(raw: &str) -> SharedString {
+        if raw.is_empty() {
+            Self::system_ui_font_family()
+        } else {
+            raw.into()
+        }
+    }
+
+    /// Resolve and store a new Appearance primary/fallback font, then
+    /// `cx.notify()` so `Render for Workspace`'s own `.font(...)` override
+    /// (see that impl's doc comment) picks it up immediately — no restart
+    /// required. Called by `SettingsWindow` on Apply/Confirm, alongside
+    /// `apply_font_settings` (terminal) and `Theme::change` (theme mode).
+    pub fn apply_appearance_font_settings(
+        &mut self,
+        font_family: String,
+        font_fallback: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.appearance_font_family = Self::resolve_appearance_font(&font_family);
+        self.appearance_font_fallback = Self::resolve_appearance_font(&font_fallback);
+        cx.notify();
+    }
+
     /// Seed a newly-created terminal's font from persisted settings, so a new
     /// tab picks up whatever was last applied via Settings → Terminal instead
     /// of always starting at the compiled-in default.
@@ -968,6 +1046,14 @@ impl Workspace {
 }
 
 impl Render for Workspace {
+    /// `gpui-component`'s `Root` (which wraps this `Workspace`, see
+    /// `main.rs`) renders its own top-level `.font_family(cx.theme()
+    /// .font_family.clone())` — a single family, no fallback field exists on
+    /// `Theme` at all (`gpui-component/crates/ui/src/theme/mod.rs`). Rather
+    /// than patch that vendored crate, this `div`'s own more specific
+    /// `.font(...)` below overrides it for all of `Workspace`'s content
+    /// (effectively the whole app UI) via GPUI's normal style cascade — a
+    /// descendant's explicit font setting wins over an ancestor's.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = render_header(cx.entity().downgrade(), self.active_title.clone(), cx);
         let left_bar = self.render_activity_bar(Side::Left, cx);
@@ -978,10 +1064,16 @@ impl Render for Workspace {
         let show_quick_commands = self.show_quick_commands;
         let quick_commands_panel = self.quick_commands_panel.clone();
 
+        let mut chrome_font: Font = font(self.appearance_font_family.clone());
+        chrome_font.fallbacks = Some(FontFallbacks::from_fonts(vec![
+            self.appearance_font_fallback.to_string(),
+        ]));
+
         div()
             .flex()
             .flex_col()
             .size_full()
+            .font(chrome_font)
             .child(header)
             .child(
                 div()
@@ -1013,4 +1105,9 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_appearance_font_passes_through_explicit_value() {
+        assert_eq!(Workspace::resolve_appearance_font("Consolas"), "Consolas".to_string());
+    }
 }
