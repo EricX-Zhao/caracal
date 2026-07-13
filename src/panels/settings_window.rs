@@ -168,8 +168,10 @@ impl SettingsWindow {
 
         let font_family = self.draft.terminal.font_family.clone();
         let font_size = px(self.draft.terminal.font_size);
+        let font_fallback1 = self.draft.terminal.font_fallback1.clone();
+        let font_fallback2 = self.draft.terminal.font_fallback2.clone();
         let _ = self.workspace.update(cx, |workspace, cx| {
-            workspace.apply_font_settings(font_family, font_size, cx);
+            workspace.apply_font_settings(font_family, font_size, font_fallback1, font_fallback2, cx);
         });
 
         self.committed = self.draft.clone();

@@ -50,18 +50,18 @@ pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
 
 /// The bundled symbol font (registered in `main`) used as the default fallback so
 /// Nerd Font / powerline glyphs resolve even when the primary font lacks them.
-const SYMBOL_FALLBACK: &str = "Symbols Nerd Font";
+pub(crate) const SYMBOL_FALLBACK: &str = "Symbols Nerd Font";
 
 /// The bundled CJK font (registered in `main`) used as a fallback so Chinese
 /// glyphs resolve even on a system with no East Asian fonts installed (the
 /// original cause of Windows mojibake — see the design spec).
-const CJK_FALLBACK: &str = "Sarasa Mono SC";
+pub(crate) const CJK_FALLBACK: &str = "Sarasa Mono SC";
 
 /// The bundled default primary terminal font (registered in `main`). Hardcoded
 /// rather than relying on per-OS "system monospace" detection, which had no
 /// working implementation on Windows/macOS (see `system_monospace_family`,
 /// kept below for the explicit "reset to system font" path).
-const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
+pub(crate) const DEFAULT_FONT_FAMILY: &str = "JetBrains Mono";
 
 /// User-configurable terminal font. The primary defaults to a bundled font
 /// (`DEFAULT_FONT_FAMILY`) for consistent cross-platform rendering; a settings
@@ -637,6 +637,19 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Replace the fallback chain, in order. Empty entries resolve to the
+    /// system monospace font — same "" convention `set_font_family` already
+    /// uses — so a settings value of `""` for either fallback slot means
+    /// "detect a system font here too", not "no fallback".
+    #[allow(dead_code)]
+    pub fn set_font_fallbacks(&mut self, fallbacks: Vec<SharedString>, cx: &mut Context<Self>) {
+        self.font_config.fallbacks = fallbacks
+            .into_iter()
+            .map(|f| if f.is_empty() { system_monospace_family() } else { f })
+            .collect();
+        cx.notify();
+    }
+
     #[allow(dead_code)]
     pub fn set_font_size(&mut self, size: Pixels, cx: &mut Context<Self>) {
         self.font_config.size = size;
@@ -1027,6 +1040,21 @@ mod tests {
         let font = config.to_font();
         assert_eq!(font.family.as_ref(), "JetBrains Mono");
         assert!(font.fallbacks.is_some());
+    }
+
+    #[test]
+    fn set_font_fallbacks_replaces_chain_in_order() {
+        let mut config = FontConfig::default();
+        // Directly exercise the struct + to_font(), matching how the other
+        // FontConfig tests in this module already work (TerminalView itself
+        // needs a live gpui window to construct).
+        config.fallbacks = vec!["Fallback One".into(), "Fallback Two".into()];
+        let font = config.to_font();
+        let fallbacks = font.fallbacks.expect("fallbacks should be set");
+        assert_eq!(
+            fallbacks.fallback_list(),
+            &["Fallback One".to_string(), "Fallback Two".to_string()]
+        );
     }
 
     #[test]

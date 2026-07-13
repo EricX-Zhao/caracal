@@ -51,7 +51,7 @@ use crate::settings;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::telnet::TelnetConfig;
-use crate::terminal::view::{FontConfig, TerminalView, TerminalViewEvent};
+use crate::terminal::view::{TerminalView, TerminalViewEvent};
 
 pub struct Workspace {
     /// Hosts the CENTER terminal tabs only (no side docks anymore).
@@ -579,47 +579,43 @@ impl Workspace {
         }
     }
 
-    /// Resolve a font-family setting for applying to a `TerminalView`. Empty
-    /// means "use the bundled default" (`FontConfig::default().family`), per
-    /// what `settings_window.rs`'s "留空 = 内置默认字体" placeholder promises —
-    /// this is deliberately NOT the same as `TerminalView::set_font_family`'s
-    /// own empty-string meaning ("reset to system monospace"), which remains
-    /// available as a separate, still-unused path for a possible future
-    /// "reset to system font" control.
-    fn resolved_font_family(raw: &str) -> String {
-        if raw.is_empty() {
-            FontConfig::default().family.to_string()
-        } else {
-            raw.to_string()
-        }
-    }
-
     /// Seed a newly-created terminal's font from persisted settings, so a new
     /// tab picks up whatever was last applied via Settings → Terminal instead
     /// of always starting at the compiled-in default.
     fn seed_font_from_settings(terminal: &Entity<TerminalView>, cx: &mut Context<Self>) {
         let loaded = settings::load();
-        let family = Self::resolved_font_family(&loaded.terminal.font_family);
         terminal.update(cx, |view, cx| {
-            view.set_font_family(family, cx);
+            view.set_font_family(loaded.terminal.font_family.clone(), cx);
             view.set_font_size(px(loaded.terminal.font_size), cx);
+            view.set_font_fallbacks(
+                vec![
+                    loaded.terminal.font_fallback1.clone().into(),
+                    loaded.terminal.font_fallback2.clone().into(),
+                ],
+                cx,
+            );
         });
     }
 
-    /// Broadcast a new font family/size to every currently-open terminal tab,
-    /// pruning any that have since closed. Called by [`SettingsWindow`] on
-    /// Apply/Confirm.
+    /// Broadcast a new font family/size/fallback chain to every currently-open
+    /// terminal tab, pruning any that have since closed. Called by
+    /// [`SettingsWindow`] on Apply/Confirm.
     pub fn apply_font_settings(
         &mut self,
         font_family: String,
         font_size: Pixels,
+        font_fallback1: String,
+        font_fallback2: String,
         cx: &mut Context<Self>,
     ) {
-        let font_family = Self::resolved_font_family(&font_family);
         self.terminal_views.retain(|weak| {
             weak.update(cx, |view, cx| {
                 view.set_font_family(font_family.clone(), cx);
                 view.set_font_size(font_size, cx);
+                view.set_font_fallbacks(
+                    vec![font_fallback1.clone().into(), font_fallback2.clone().into()],
+                    cx,
+                );
             })
             .is_ok()
         });
@@ -1017,14 +1013,4 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn resolved_font_family_empty_uses_bundled_default() {
-        assert_eq!(Workspace::resolved_font_family(""), "JetBrains Mono");
-    }
-
-    #[test]
-    fn resolved_font_family_passes_through_explicit_value() {
-        assert_eq!(Workspace::resolved_font_family("Consolas"), "Consolas");
-    }
 }
