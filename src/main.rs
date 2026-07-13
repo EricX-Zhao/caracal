@@ -44,6 +44,13 @@ pub(crate) fn toggle_theme(cx: &mut App) {
         ThemeMode::Dark
     };
     Theme::change(next, None, cx);
+    // `Theme::change` only calls `window.refresh()` for the window it's given
+    // (none, here — this fires from a global action with no window in scope),
+    // so without this, changed colors sit in the global `Theme` but never get
+    // repainted: docked panels that don't already redraw for unrelated reasons
+    // (cursor blink, hover, etc.) stay on the old theme until something else
+    // forces a frame.
+    cx.refresh_windows();
 
     let mut settings = settings::load();
     settings.appearance.theme_mode = if next.is_dark() { "dark" } else { "light" }.to_string();

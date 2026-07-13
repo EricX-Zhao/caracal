@@ -198,6 +198,10 @@ impl SettingsWindow {
             ThemeMode::Dark
         };
         Theme::change(mode, None, cx);
+        // See `crate::toggle_theme`: `Theme::change` only refreshes the window
+        // it's passed (none, here), so force every open window to repaint or
+        // panels that don't redraw for other reasons keep showing stale colors.
+        cx.refresh_windows();
 
         let font_family = self.draft.terminal.font_family.clone();
         let font_size = px(self.draft.terminal.font_size);
