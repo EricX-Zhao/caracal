@@ -6,6 +6,13 @@
 //! the `application()` factory in `gpui_platform` `#[cfg]`-gates the right
 //! platform implementation (`gpui_linux` / `gpui_macos` / `gpui_windows`).
 
+// On Windows, a plain console-subsystem exe pops up a black cmd window
+// alongside the GUI window (that's where `env_logger`'s output goes). Only
+// suppress it in release builds — `cargo run`/`cargo build` (debug) keep the
+// console so `RUST_LOG=debug` is visible while developing. No effect on
+// Linux/macOS (the attribute is a no-op there).
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod assets;
 mod config;
 mod panels;
