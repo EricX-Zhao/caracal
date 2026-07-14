@@ -379,7 +379,9 @@ impl SettingsWindow {
                     .label(current),
             )
             .dropdown_menu(move |menu, _window, _cx| {
-                let mut menu = menu;
+                // ~40 bundled themes is too many to show at once — cap the
+                // popup at roughly 8 rows tall and let it scroll instead.
+                let mut menu = menu.max_h(px(280.0)).scrollable(true);
                 for name in &names {
                     let name = name.clone();
                     let weak = weak.clone();
