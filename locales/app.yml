@@ -14,6 +14,57 @@ Settings:
     language_en:
       zh-CN: "English"
       en: "English"
+  theme_label:
+    zh-CN: "主题"
+    en: "Theme"
+  system_default:
+    zh-CN: "系统默认"
+    en: "System Default"
+  font_primary:
+    zh-CN: "首选字体"
+    en: "Primary Font"
+  font_fallback:
+    zh-CN: "备选字体"
+    en: "Fallback Font"
+  font_fallback_1:
+    zh-CN: "备选字体 1"
+    en: "Fallback Font 1"
+  font_fallback_2:
+    zh-CN: "备选字体 2"
+    en: "Fallback Font 2"
+  font_size_px:
+    zh-CN: "字号 (px)"
+    en: "Font Size (px)"
+  monitor_basic:
+    zh-CN: "资源监控 (基础)"
+    en: "Resource Monitor (Basic)"
+  monitor_interval_secs:
+    zh-CN: "轮询间隔 (秒)"
+    en: "Poll Interval (seconds)"
+  scrollback_lines:
+    zh-CN: "回滚行数"
+    en: "Scrollback Lines"
+  font_size_invalid:
+    zh-CN: "字号必须是 6-96 之间的数字"
+    en: "Font size must be a number between 6 and 96"
+  monitor_interval_invalid:
+    zh-CN: "轮询间隔必须是 1-3600 之间的整数(秒)"
+    en: "Poll interval must be an integer between 1 and 3600 (seconds)"
+  scrollback_lines_invalid:
+    zh-CN: "回滚行数必须是 1000-50000 之间的整数"
+    en: "Scrollback lines must be an integer between 1000 and 50000"
+  save_failed:
+    zh-CN: "保存设置失败"
+    en: "Failed to save settings"
+  cancel:
+    zh-CN: "取消"
+    en: "Cancel"
+  apply:
+    zh-CN: "应用"
+    en: "Apply"
+  confirm:
+    zh-CN: "确定"
+    en: "Confirm"
 ActivityBar:
   file_explorer:
     zh-CN: "文件浏览器"

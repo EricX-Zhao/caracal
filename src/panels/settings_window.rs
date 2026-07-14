@@ -60,13 +60,21 @@ use crate::workspace::Workspace;
 /// system font at apply/seed time" — see `TerminalView::set_font_family`/
 /// `set_font_fallbacks` and `Workspace::apply_appearance_font_settings`
 /// (neither dropdown resolves it here; the picker only ever stores one of
-/// these 4 raw values).
-const FONT_CHOICES: &[(&str, &str)] = &[
-    ("", "系统默认"),
-    (DEFAULT_FONT_FAMILY, "JetBrains Mono"),
-    (CJK_FALLBACK, "Sarasa Mono SC"),
-    (SYMBOL_FALLBACK, "Symbols Nerd Font"),
-];
+/// these 4 raw values). Just the raw values, not (value, display-label)
+/// pairs — every non-empty value's display label is identical to the value
+/// itself (font family names aren't translated), so `font_choice_label`
+/// derives it instead of duplicating it here.
+const FONT_CHOICES: &[&str] = &["", DEFAULT_FONT_FAMILY, CJK_FALLBACK, SYMBOL_FALLBACK];
+
+/// Display label for one `FONT_CHOICES` value: the localized "system
+/// default" sentinel for `""`, or the font family name itself otherwise.
+fn font_choice_label(value: &str) -> SharedString {
+    if value.is_empty() {
+        SharedString::from(rust_i18n::t!("Settings.system_default"))
+    } else {
+        SharedString::from(value.to_string())
+    }
+}
 
 /// Identifies which font-setting field a `SettingsWindow::font_picker`
 /// dropdown reads/writes.
@@ -154,21 +162,21 @@ impl SettingsWindow {
     fn sync_inputs_to_draft(&mut self, cx: &App) -> bool {
         let size_text = self.font_size_input.read(cx).value();
         let Some(size) = parse_font_size(&size_text) else {
-            self.error = Some("字号必须是 6-96 之间的数字".into());
+            self.error = Some(rust_i18n::t!("Settings.font_size_invalid").into());
             return false;
         };
         self.draft.terminal.font_size = size;
 
         let interval_text = self.monitor_interval_input.read(cx).value();
         let Some(interval) = parse_monitor_interval(&interval_text) else {
-            self.error = Some("轮询间隔必须是 1-3600 之间的整数(秒)".into());
+            self.error = Some(rust_i18n::t!("Settings.monitor_interval_invalid").into());
             return false;
         };
         self.draft.terminal.monitor_basic_interval_secs = interval;
 
         let scrollback_text = self.scrollback_input.read(cx).value();
         let Some(scrollback_lines) = parse_scrollback_lines(&scrollback_text) else {
-            self.error = Some("回滚行数必须是 1000-50000 之间的整数".into());
+            self.error = Some(rust_i18n::t!("Settings.scrollback_lines_invalid").into());
             return false;
         };
         self.draft.terminal.scrollback_lines = scrollback_lines;
@@ -188,7 +196,7 @@ impl SettingsWindow {
         }
         if let Err(e) = settings::save(&self.draft) {
             log::error!("failed to save settings: {e}");
-            self.error = Some("保存设置失败".into());
+            self.error = Some(rust_i18n::t!("Settings.save_failed").into());
             cx.notify();
             return false;
         }
@@ -283,13 +291,18 @@ impl SettingsWindow {
     /// `FONT_CHOICES`. Shared by all 5 font fields across both tabs — see
     /// the design spec for why a fixed dropdown (not free text) is used
     /// here, including for what used to be a free-text field.
-    fn font_picker(&self, label: &'static str, slot: FontSlot, cx: &Context<Self>) -> impl IntoElement {
+    fn font_picker(
+        &self,
+        label: impl Into<SharedString>,
+        slot: FontSlot,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let current = self.font_slot_value(slot).to_string();
         let display = FONT_CHOICES
             .iter()
-            .find(|(value, _)| *value == current)
-            .map(|(_, label)| *label)
-            .unwrap_or("系统默认");
+            .find(|&&value| value == current)
+            .map(|&value| font_choice_label(value))
+            .unwrap_or_else(|| font_choice_label(""));
         let weak = cx.entity().downgrade();
         div()
             .flex()
@@ -299,7 +312,7 @@ impl SettingsWindow {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(label),
+                    .child(label.into()),
             )
             .child(
                 DropdownButton::new(SharedString::from(format!(
@@ -313,11 +326,12 @@ impl SettingsWindow {
                         slot.id_suffix()
                     )))
                     .xsmall()
-                    .label(display.to_string()),
+                    .label(display),
                 )
                 .dropdown_menu(move |menu, _window, _cx| {
                     let mut menu = menu;
-                    for &(value, choice_label) in FONT_CHOICES {
+                    for &value in FONT_CHOICES {
+                        let choice_label = font_choice_label(value);
                         let value = value.to_string();
                         let weak = weak.clone();
                         menu = menu.item(PopupMenuItem::new(choice_label).on_click(
@@ -471,12 +485,20 @@ impl SettingsWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("主题"),
+                            .child(rust_i18n::t!("Settings.theme_label")),
                     )
                     .child(self.theme_dropdown(cx)),
             )
-            .child(self.font_picker("首选字体", FontSlot::AppearancePrimary, cx))
-            .child(self.font_picker("备选字体", FontSlot::AppearanceFallback, cx))
+            .child(self.font_picker(
+                rust_i18n::t!("Settings.font_primary"),
+                FontSlot::AppearancePrimary,
+                cx,
+            ))
+            .child(self.font_picker(
+                rust_i18n::t!("Settings.font_fallback"),
+                FontSlot::AppearanceFallback,
+                cx,
+            ))
     }
 
     /// Terminal-content settings: currently just font family/size, which only
@@ -487,9 +509,17 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.font_picker("首选字体", FontSlot::TerminalPrimary, cx))
-            .child(self.font_picker("备选字体 1", FontSlot::TerminalFallback1, cx))
-            .child(self.font_picker("备选字体 2", FontSlot::TerminalFallback2, cx))
+            .child(self.font_picker(rust_i18n::t!("Settings.font_primary"), FontSlot::TerminalPrimary, cx))
+            .child(self.font_picker(
+                rust_i18n::t!("Settings.font_fallback_1"),
+                FontSlot::TerminalFallback1,
+                cx,
+            ))
+            .child(self.font_picker(
+                rust_i18n::t!("Settings.font_fallback_2"),
+                FontSlot::TerminalFallback2,
+                cx,
+            ))
             .child(
                 div()
                     .flex()
@@ -499,7 +529,7 @@ impl SettingsWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("字号 (px)"),
+                            .child(rust_i18n::t!("Settings.font_size_px")),
                     )
                     .child(Input::new(&self.font_size_input)),
             )
@@ -512,7 +542,7 @@ impl SettingsWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("资源监控 (基础)"),
+                            .child(rust_i18n::t!("Settings.monitor_basic")),
                     )
                     .child(self.monitor_enabled_switch(cx)),
             )
@@ -525,7 +555,7 @@ impl SettingsWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("轮询间隔 (秒)"),
+                            .child(rust_i18n::t!("Settings.monitor_interval_secs")),
                     )
                     .child(Input::new(&self.monitor_interval_input)),
             )
@@ -538,7 +568,7 @@ impl SettingsWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("回滚行数"),
+                            .child(rust_i18n::t!("Settings.scrollback_lines")),
                     )
                     .child(Input::new(&self.scrollback_input)),
             )
@@ -616,7 +646,7 @@ impl Render for SettingsWindow {
                             .py_0p5()
                             .rounded_sm()
                             .hover(|s| s.bg(cx.theme().accent))
-                            .child("取消")
+                            .child(rust_i18n::t!("Settings.cancel"))
                             .on_click(cx.listener(Self::on_click_cancel)),
                     )
                     .child(
@@ -626,7 +656,7 @@ impl Render for SettingsWindow {
                             .py_0p5()
                             .rounded_sm()
                             .hover(|s| s.bg(cx.theme().accent))
-                            .child("应用")
+                            .child(rust_i18n::t!("Settings.apply"))
                             .on_click(cx.listener(Self::on_click_apply)),
                     )
                     .child(
@@ -637,7 +667,7 @@ impl Render for SettingsWindow {
                             .rounded_sm()
                             .bg(cx.theme().primary)
                             .text_color(cx.theme().primary_foreground)
-                            .child("确定")
+                            .child(rust_i18n::t!("Settings.confirm"))
                             .on_click(cx.listener(Self::on_click_confirm)),
                     ),
             )
