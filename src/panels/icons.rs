@@ -79,6 +79,11 @@ pub enum AppIcon {
     ChevronDown,
     Telnet,
     SerialPort,
+    // 标题栏窗口控制按钮（Linux/Windows 专用；macOS 用系统原生交通灯按钮）
+    WindowMinimize,
+    WindowMaximize,
+    WindowRestore,
+    WindowClose,
 }
 
 impl From<AppIcon> for IconName {
@@ -116,6 +121,10 @@ impl From<AppIcon> for IconName {
             ChevronDown => IconName::ChevronDown,
             Telnet => IconName::Network,
             SerialPort => IconName::Cpu,
+            WindowMinimize => IconName::WindowMinimize,
+            WindowMaximize => IconName::WindowMaximize,
+            WindowRestore => IconName::WindowRestore,
+            WindowClose => IconName::WindowClose,
             // Upload / Download / Pencil / Sessions are handled by custom SVG in
             // `icon()`, not reachable here.
             Upload | Download | Pencil | Sessions => unreachable!(),

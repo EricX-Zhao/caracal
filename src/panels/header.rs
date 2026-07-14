@@ -8,7 +8,8 @@
 //! module stays a thin presentational adapter (CLAUDE.md §1).
 
 use gpui::{
-    App, IntoElement, ParentElement, SharedString, Styled, WeakEntity, div, px,
+    App, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
+    SharedString, Styled, WeakEntity, Window, WindowButton, WindowButtonLayout, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
@@ -23,6 +24,87 @@ fn new_local_item(ws: WeakEntity<Workspace>) -> PopupMenuItem {
     PopupMenuItem::new("新建本地终端").on_click(move |_ev, window, cx| {
         let _ = ws.update(cx, |w, cx| w.open_local(window, cx));
     })
+}
+
+/// Icon for the maximize/restore button: swaps to the "restore" glyph once
+/// the window is already maximized, so the button always reads as "the
+/// thing this click will do next".
+fn maximize_icon(is_maximized: bool) -> AppIcon {
+    if is_maximized {
+        AppIcon::WindowRestore
+    } else {
+        AppIcon::WindowMaximize
+    }
+}
+
+/// Fallback button layout for platforms/desktops that don't report one via
+/// `cx.button_layout()` (Windows always; a Linux DE without
+/// `gtk-decoration-layout`): minimize/maximize/close, right-aligned. Doesn't
+/// reuse `WindowButtonLayout::linux_default()` because that constructor is
+/// `#[cfg(any(target_os = "linux", target_os = "freebsd"))]`-gated in gpui —
+/// this needs to compile on Windows too.
+fn or_default_layout(layout: Option<WindowButtonLayout>) -> WindowButtonLayout {
+    layout.unwrap_or(WindowButtonLayout {
+        left: [None, None, None],
+        right: [
+            Some(WindowButton::Minimize),
+            Some(WindowButton::Maximize),
+            Some(WindowButton::Close),
+        ],
+    })
+}
+
+/// Mouse-down handler for the title bar's draggable region (the centered
+/// title, and the empty space around it): a single click starts an
+/// interactive window move; a double-click toggles maximize instead.
+/// `titlebar_double_click` only does anything on macOS — it respects
+/// whatever the user's actual System Settings double-click action is there
+/// (confirmed: only `gpui_macos` overrides the shared no-op default) — so
+/// Linux/Windows get an explicit `zoom_window()` call instead.
+fn drag_or_maximize(ev: &MouseDownEvent, window: &mut Window, _cx: &mut App) {
+    if ev.click_count == 2 {
+        if cfg!(target_os = "macos") {
+            window.titlebar_double_click();
+        } else {
+            window.zoom_window();
+        }
+    } else {
+        window.start_window_move();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maximize_icon_switches_on_maximized_state() {
+        assert_eq!(maximize_icon(false), AppIcon::WindowMaximize);
+        assert_eq!(maximize_icon(true), AppIcon::WindowRestore);
+    }
+
+    #[test]
+    fn or_default_layout_passes_through_a_reported_layout() {
+        let reported = WindowButtonLayout {
+            left: [Some(WindowButton::Close), None, None],
+            right: [Some(WindowButton::Minimize), Some(WindowButton::Maximize), None],
+        };
+        assert_eq!(or_default_layout(Some(reported)), reported);
+    }
+
+    #[test]
+    fn or_default_layout_falls_back_to_right_aligned_min_max_close() {
+        let layout = or_default_layout(None);
+        assert_eq!(layout.left, [None, None, None]);
+        assert_eq!(
+            layout.right,
+            [
+                Some(WindowButton::Minimize),
+                Some(WindowButton::Maximize),
+                Some(WindowButton::Close),
+            ]
+        );
+    }
 }
 
 /// Build the header row. `active_title` is the focused terminal's title (or
