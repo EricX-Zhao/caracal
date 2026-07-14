@@ -5,6 +5,11 @@ edition = "2024"
 description = "Native GPUI GPU-accelerated terminal / SSH / serial client"
 license = "MIT OR Apache-2.0"
 
+[build-dependencies]
+# Embeds assets/icon.ico into the Windows .exe (taskbar/Explorer/Alt-Tab
+# icon) — build.rs skips this on non-Windows targets.
+winresource = "0.1"
+
 [dependencies]
 
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }

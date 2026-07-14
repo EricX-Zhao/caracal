@@ -65,7 +65,8 @@ Caracal owes a debt to the terminal clients that came before it:
   far a single native terminal/SSH client can go: sessions, SFTP, serial, and
   more, all in one fast, keyboard-driven tool. A lot of Caracal's feature
   shape follows that lead.
-- **NyaTerm** — an earlier project that planted the seed for this one.
+- **[NyaTerm](https://github.com/nyakang/nyaterm)** — an earlier project that
+  planted the seed for this one.
 
 Thank you both.
 

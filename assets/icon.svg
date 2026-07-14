@@ -4,57 +4,55 @@
       <stop offset="0" stop-color="#0f1420"/>
       <stop offset="1" stop-color="#1b2436"/>
     </linearGradient>
-    <radialGradient id="glow" cx="256" cy="300" r="220" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#f5a742" stop-opacity="0.16"/>
+    <radialGradient id="glow" cx="256" cy="308" r="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f5a742" stop-opacity="0.18"/>
       <stop offset="1" stop-color="#f5a742" stop-opacity="0"/>
     </radialGradient>
-    <radialGradient id="fur" cx="210" cy="250" r="230" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#e6b483"/>
-      <stop offset="1" stop-color="#c1875a"/>
+    <radialGradient id="fur" cx="215" cy="255" r="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0c294"/>
+      <stop offset="1" stop-color="#d99b66"/>
     </radialGradient>
   </defs>
 
   <!-- App-icon background -->
   <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
-  <circle cx="256" cy="300" r="220" fill="url(#glow)"/>
+  <circle cx="256" cy="308" r="230" fill="url(#glow)"/>
 
-  <!-- Ear tufts (the caracal's signature) -->
-  <polygon points="118,72 140,72 108,14" fill="#181818"/>
-  <polygon points="394,72 372,72 404,14" fill="#181818"/>
+  <!-- Ear tufts (soft, fluffy — the caracal's signature) -->
+  <ellipse cx="122" cy="94" rx="17" ry="24" fill="#202020" transform="rotate(-18 122 94)"/>
+  <ellipse cx="390" cy="94" rx="17" ry="24" fill="#202020" transform="rotate(18 390 94)"/>
 
-  <!-- Ears -->
-  <polygon points="176,206 238,182 128,64" fill="url(#fur)"/>
-  <polygon points="336,206 274,182 384,64" fill="url(#fur)"/>
-  <polygon points="182,192 222,180 162,120" fill="#f2ddc0"/>
-  <polygon points="330,192 290,180 350,120" fill="#f2ddc0"/>
+  <!-- Ears (soft petal shape, chibi-proportioned) -->
+  <path d="M 168,225 Q 140,180 130,110 Q 175,150 205,195 Z" fill="url(#fur)"/>
+  <path d="M 344,225 Q 372,180 382,110 Q 337,150 307,195 Z" fill="url(#fur)"/>
+  <path d="M 178,208 Q 160,175 150,135 Q 180,160 198,195 Z" fill="#f8ddc4"/>
+  <path d="M 334,208 Q 352,175 362,135 Q 332,160 314,195 Z" fill="#f8ddc4"/>
 
   <!-- Head -->
-  <circle cx="256" cy="300" r="132" fill="url(#fur)"/>
+  <circle cx="256" cy="308" r="150" fill="url(#fur)"/>
 
-  <!-- Tear stripes -->
-  <path d="M 206,312 C 200,340 196,368 202,392" stroke="#3a2418" stroke-width="6"
-        fill="none" opacity="0.55" stroke-linecap="round"/>
-  <path d="M 306,312 C 312,340 316,368 310,392" stroke="#3a2418" stroke-width="6"
-        fill="none" opacity="0.55" stroke-linecap="round"/>
+  <!-- Blush -->
+  <circle cx="182" cy="342" r="15" fill="#ff8a7a" opacity="0.32"/>
+  <circle cx="330" cy="342" r="15" fill="#ff8a7a" opacity="0.32"/>
 
   <!-- Whiskers -->
-  <g stroke="#f5ede1" stroke-width="3" opacity="0.7" stroke-linecap="round">
-    <line x1="170" y1="340" x2="110" y2="332"/>
-    <line x1="170" y1="352" x2="106" y2="352"/>
-    <line x1="170" y1="364" x2="110" y2="372"/>
-    <line x1="342" y1="340" x2="402" y2="332"/>
-    <line x1="342" y1="352" x2="406" y2="352"/>
-    <line x1="342" y1="364" x2="402" y2="372"/>
+  <g stroke="#fff6ea" stroke-width="4" opacity="0.75" stroke-linecap="round">
+    <line x1="184" y1="350" x2="122" y2="344"/>
+    <line x1="184" y1="364" x2="120" y2="370"/>
+    <line x1="328" y1="350" x2="390" y2="344"/>
+    <line x1="328" y1="364" x2="392" y2="370"/>
   </g>
 
-  <!-- Eyes -->
-  <ellipse cx="214" cy="298" rx="16" ry="20" fill="#123524"/>
-  <ellipse cx="298" cy="298" rx="16" ry="20" fill="#123524"/>
-  <ellipse cx="214" cy="300" rx="6" ry="10" fill="#0a0a0a"/>
-  <ellipse cx="298" cy="300" rx="6" ry="10" fill="#0a0a0a"/>
+  <!-- Eyes: big, round, glossy — cute over accurate -->
+  <ellipse cx="210" cy="306" rx="23" ry="27" fill="#123524"/>
+  <ellipse cx="302" cy="306" rx="23" ry="27" fill="#123524"/>
+  <ellipse cx="210" cy="311" rx="10" ry="14" fill="#060606"/>
+  <ellipse cx="302" cy="311" rx="10" ry="14" fill="#060606"/>
+  <circle cx="203" cy="296" r="5.5" fill="#ffffff"/>
+  <circle cx="295" cy="296" r="5.5" fill="#ffffff"/>
 
   <!-- Nose + mouth -->
-  <polygon points="246,332 266,332 256,348" fill="#2b1810"/>
-  <path d="M 220,362 Q 238,378 256,362 Q 274,378 292,362" stroke="#2b1810"
-        stroke-width="5" fill="none" stroke-linecap="round"/>
+  <ellipse cx="256" cy="344" rx="10" ry="7" fill="#2b1810"/>
+  <path d="M 224,368 Q 240,382 256,368 Q 272,382 288,368" stroke="#2b1810"
+        stroke-width="5.5" fill="none" stroke-linecap="round"/>
 </svg>
