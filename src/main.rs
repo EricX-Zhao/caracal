@@ -23,7 +23,10 @@ mod workspace;
 
 use std::borrow::Cow;
 
-use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, actions, px, size};
+use gpui::{
+    App, AppContext, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowDecorations,
+    WindowOptions, actions, point, px, size,
+};
 use gpui_component::{Root, Theme, ThemeMode};
 use gpui_platform::application;
 
@@ -145,6 +148,22 @@ fn main() {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     focus: true,
+                    // Hides the native titlebar (macOS/Windows) so header.rs's
+                    // own 40px row is the only title bar the user sees.
+                    // `traffic_light_position` only affects macOS (ignored
+                    // elsewhere); it's positioned to land inside that row.
+                    titlebar: Some(TitlebarOptions {
+                        title: None,
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(12.0), px(12.0))),
+                    }),
+                    // Requests client-side decorations on Linux/Wayland (per
+                    // that field's own doc comment: "Wayland only... may be
+                    // ignored" elsewhere). This is the sole trigger for
+                    // gpui_component::Root's window_border() to switch from a
+                    // no-op passthrough to real shadow + 8-direction
+                    // resize-edge hit-testing.
+                    window_decorations: Some(WindowDecorations::Client),
                     ..Default::default()
                 },
                 |window, cx| {
