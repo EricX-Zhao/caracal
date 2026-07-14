@@ -13,7 +13,6 @@
 //!   recording(circle-dot)   → Play         录制/回放
 //!   syncBackup(backup)      → Inbox        归档
 //!   sessions(server)        → HardDrive
-//!   activeSessions(link)    → ExternalLink
 
 use gpui_component::{Icon, IconName};
 
@@ -46,7 +45,6 @@ pub enum AppIcon {
     SyncBackup,
     // 右栏顶部
     Sessions,
-    ActiveSessions,
     CommandHistory,
     ResourceMonitor,
     AiAssistant,
@@ -94,7 +92,6 @@ impl From<AppIcon> for IconName {
             Network => IconName::Network,
             SecurityAuth => IconName::CircleUser,
             SyncBackup => IconName::Inbox,
-            ActiveSessions => IconName::ExternalLink,
             CommandHistory => IconName::Undo2,
             ResourceMonitor => IconName::ChartPie,
             AiAssistant => IconName::Bot,

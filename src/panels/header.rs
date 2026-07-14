@@ -1,7 +1,7 @@
 //! Top header bar — an in-app title bar (~40px) with a small brand mark, a
-//! menu bar (File / Terminal / Help — no View menu: theme selection now
-//! lives entirely in Settings → Appearance, see `settings_window.rs`) built
-//! from gpui-component dropdown menus, a centered active-tab title (also the
+//! menu bar (File / Terminal — no View or Help menu: theme selection lives
+//! entirely in Settings → Appearance, see `settings_window.rs`) built from
+//! gpui-component dropdown menus, a centered active-tab title (also the
 //! window's draggable region),
 //! and — on Linux/Windows — a minimize/maximize/close button cluster (macOS
 //! keeps its native traffic-light buttons instead; see `main.rs`'s
@@ -219,17 +219,6 @@ pub fn render_header(
         .label("终端")
         .dropdown_menu(move |menu, _window, _cx| menu.item(new_local_item(ws_terminal.clone())));
 
-    let help_menu = Button::new("menu-help")
-        .ghost()
-        .xsmall()
-        .label("帮助")
-        .dropdown_menu(move |menu, _window, _cx| {
-            menu.item(PopupMenuItem::link(
-                "项目主页",
-                "https://github.com/Kilo-Org/kilocode",
-            ))
-        });
-
     div()
         .h(px(40.0))
         .flex()
@@ -259,8 +248,7 @@ pub fn render_header(
                         .child(icon(AppIcon::Terminal)),
                 )
                 .child(file_menu)
-                .child(terminal_menu)
-                .child(help_menu),
+                .child(terminal_menu),
         )
         // Centered active title — also the draggable region: this flex_1
         // area is mostly empty space around the centered text, so a

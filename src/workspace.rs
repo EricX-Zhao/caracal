@@ -203,12 +203,7 @@ impl Workspace {
 
         // One stub panel per not-yet-implemented category.
         let mut stub_panels: HashMap<PanelId, AnyView> = HashMap::new();
-        for pid in [
-            PanelId::Network,
-            PanelId::Security,
-            PanelId::ActiveSessions,
-            PanelId::History,
-        ] {
+        for pid in [PanelId::Network, PanelId::Security, PanelId::History] {
             let view: AnyView = cx.new(|cx| StubPanel::new(pid.label(), cx)).into();
             stub_panels.insert(pid, view);
         }

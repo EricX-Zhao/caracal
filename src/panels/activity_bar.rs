@@ -35,7 +35,6 @@ pub enum PanelId {
     Security,
     // Right bar
     Sessions,
-    ActiveSessions,
     History,
     Monitor,
 }
@@ -48,7 +47,6 @@ impl PanelId {
             PanelId::Network => "network",
             PanelId::Security => "security",
             PanelId::Sessions => "sessions",
-            PanelId::ActiveSessions => "active-sessions",
             PanelId::History => "history",
             PanelId::Monitor => "monitor",
         }
@@ -57,10 +55,7 @@ impl PanelId {
     pub fn side(self) -> Side {
         match self {
             PanelId::Sftp | PanelId::Network | PanelId::Security => Side::Left,
-            PanelId::Sessions
-            | PanelId::ActiveSessions
-            | PanelId::History
-            | PanelId::Monitor => Side::Right,
+            PanelId::Sessions | PanelId::History | PanelId::Monitor => Side::Right,
         }
     }
 
@@ -70,7 +65,6 @@ impl PanelId {
             PanelId::Network => AppIcon::Network,
             PanelId::Security => AppIcon::SecurityAuth,
             PanelId::Sessions => AppIcon::Sessions,
-            PanelId::ActiveSessions => AppIcon::ActiveSessions,
             PanelId::History => AppIcon::CommandHistory,
             PanelId::Monitor => AppIcon::ResourceMonitor,
         }
@@ -83,7 +77,6 @@ impl PanelId {
             PanelId::Network => "网络",
             PanelId::Security => "安全 / 认证",
             PanelId::Sessions => "会话",
-            PanelId::ActiveSessions => "活动会话",
             PanelId::History => "命令历史",
             PanelId::Monitor => "资源监控",
         }
@@ -94,12 +87,7 @@ impl PanelId {
 pub fn side_items(side: Side) -> &'static [PanelId] {
     match side {
         Side::Left => &[PanelId::Sftp, PanelId::Network, PanelId::Security],
-        Side::Right => &[
-            PanelId::Sessions,
-            PanelId::ActiveSessions,
-            PanelId::History,
-            PanelId::Monitor,
-        ],
+        Side::Right => &[PanelId::Sessions, PanelId::History, PanelId::Monitor],
     }
 }
 
