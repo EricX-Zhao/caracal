@@ -202,9 +202,11 @@ impl SettingsWindow {
             Some(theme) => Theme::global_mut(cx).apply_config(&theme),
             None => Theme::change(ThemeMode::Dark, None, cx),
         }
+        rust_i18n::set_locale(&self.draft.general.language);
         // `Theme::change`/`apply_config` only refresh the window they're
         // given (none, here), so force every open window to repaint or
-        // panels that don't redraw for other reasons keep showing stale colors.
+        // panels that don't redraw for other reasons keep showing stale
+        // colors/text — covers both the theme and language change above.
         cx.refresh_windows();
 
         let font_family = self.draft.terminal.font_family.clone();
@@ -398,18 +400,58 @@ impl SettingsWindow {
             })
     }
 
-    fn render_placeholder_tab(&self, title: &str, cx: &Context<Self>) -> impl IntoElement {
+    fn render_general_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_label = if self.draft.general.language == "en" {
+            rust_i18n::t!("Settings.General.language_en")
+        } else {
+            rust_i18n::t!("Settings.General.language_zh_cn")
+        };
+        let weak = cx.entity().downgrade();
+
         div()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .size_full()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(div().text_color(cx.theme().foreground).child(title.to_string()))
-            .child("此设置尚未实现")
+            .gap_0p5()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(rust_i18n::t!("Settings.General.language_label")),
+            )
+            .child(
+                DropdownButton::new("settings-language-picker")
+                    .xsmall()
+                    .button(
+                        Button::new("settings-language-picker-btn")
+                            .xsmall()
+                            .label(current_label),
+                    )
+                    .dropdown_menu(move |menu, _window, _cx| {
+                        let weak_zh = weak.clone();
+                        let weak_en = weak.clone();
+                        menu.item(
+                            PopupMenuItem::new(rust_i18n::t!("Settings.General.language_zh_cn"))
+                                .on_click(move |_ev, _window, cx| {
+                                    let _ = weak_zh.update(cx, |this, cx| {
+                                        this.set_language("zh-CN", cx);
+                                    });
+                                }),
+                        )
+                        .item(
+                            PopupMenuItem::new(rust_i18n::t!("Settings.General.language_en"))
+                                .on_click(move |_ev, _window, cx| {
+                                    let _ = weak_en.update(cx, |this, cx| {
+                                        this.set_language("en", cx);
+                                    });
+                                }),
+                        )
+                    }),
+            )
+    }
+
+    fn set_language(&mut self, language: &str, cx: &mut Context<Self>) {
+        self.draft.general.language = language.to_string();
+        cx.notify();
     }
 
     /// UI-level appearance only (theme). The terminal's own font lives on the
@@ -518,7 +560,7 @@ impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let content = match self.active_tab {
-            SettingsTab::General => self.render_placeholder_tab("General", cx).into_any_element(),
+            SettingsTab::General => self.render_general_tab(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_tab(cx).into_any_element(),
             SettingsTab::Terminal => self.render_terminal_tab(cx).into_any_element(),
         };

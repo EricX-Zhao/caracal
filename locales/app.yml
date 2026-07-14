@@ -3,3 +3,14 @@ Header:
   brand_tooltip:
     zh-CN: "终端"
     en: "Terminal"
+Settings:
+  General:
+    language_label:
+      zh-CN: "语言"
+      en: "Language"
+    language_zh_cn:
+      zh-CN: "简体中文"
+      en: "简体中文"
+    language_en:
+      zh-CN: "English"
+      en: "English"
