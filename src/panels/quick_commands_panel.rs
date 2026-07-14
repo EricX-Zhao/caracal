@@ -69,8 +69,13 @@ impl QuickCommandsPanel {
             self.form = None;
         } else {
             self.form = Some(QuickCommandForm {
-                label: cx.new(|cx| InputState::new(window, cx).placeholder("名称")),
-                command: cx.new(|cx| InputState::new(window, cx).placeholder("命令")),
+                label: cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(rust_i18n::t!("QuickCommands.name_placeholder"))
+                }),
+                command: cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(rust_i18n::t!("QuickCommands.command_placeholder"))
+                }),
                 execution_mode: ExecutionMode::Execute,
                 edit_id: None,
             });
@@ -98,7 +103,7 @@ impl QuickCommandsPanel {
         let label = form.label.read(cx).value().to_string();
         let command = form.command.read(cx).value().to_string();
         if label.trim().is_empty() || command.trim().is_empty() {
-            self.form_error = Some("名称和命令都不能为空".into());
+            self.form_error = Some(SharedString::from(rust_i18n::t!("QuickCommands.name_and_command_required")));
             cx.notify();
             return;
         }
@@ -144,7 +149,7 @@ impl QuickCommandsPanel {
 
     /// One toggle pill's styling — shared visual idiom with
     /// `sessions.rs`'s connection-type pills.
-    fn pill(id: &'static str, label: &str, active: bool, cx: &App) -> Stateful<Div> {
+    fn pill(id: &'static str, label: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div> {
         div()
             .id(id)
             .px_2()
@@ -160,7 +165,7 @@ impl QuickCommandsPanel {
             } else {
                 cx.theme().foreground
             })
-            .child(label.to_string())
+            .child(label.into())
     }
 
     fn render_form(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
@@ -183,14 +188,14 @@ impl QuickCommandsPanel {
                         .flex_row()
                         .gap_2()
                         .child(
-                            Self::pill("qc-mode-execute", "执行", is_execute, cx).on_click(
+                            Self::pill("qc-mode-execute", rust_i18n::t!("QuickCommands.mode_execute"), is_execute, cx).on_click(
                                 cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                     this.set_form_mode(ExecutionMode::Execute, cx);
                                 }),
                             ),
                         )
                         .child(
-                            Self::pill("qc-mode-append", "追加", !is_execute, cx).on_click(
+                            Self::pill("qc-mode-append", rust_i18n::t!("QuickCommands.mode_append"), !is_execute, cx).on_click(
                                 cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                     this.set_form_mode(ExecutionMode::Append, cx);
                                 }),
@@ -218,7 +223,7 @@ impl QuickCommandsPanel {
                                 .py_0p5()
                                 .rounded_sm()
                                 .hover(|s| s.bg(cx.theme().accent))
-                                .child("取消")
+                                .child(rust_i18n::t!("QuickCommands.cancel"))
                                 .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                     this.toggle_form(window, cx);
                                 })),
@@ -231,7 +236,7 @@ impl QuickCommandsPanel {
                                 .rounded_sm()
                                 .bg(cx.theme().primary)
                                 .text_color(cx.theme().primary_foreground)
-                                .child("保存")
+                                .child(rust_i18n::t!("QuickCommands.save"))
                                 .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
                                     this.save_form(cx);
                                 })),
@@ -251,8 +256,8 @@ impl QuickCommandsPanel {
         let id_for_edit = id.clone();
         let id_for_delete = id.clone();
         let mode_label = match cmd.execution_mode {
-            ExecutionMode::Execute => "执行",
-            ExecutionMode::Append => "追加",
+            ExecutionMode::Execute => rust_i18n::t!("QuickCommands.mode_execute"),
+            ExecutionMode::Append => rust_i18n::t!("QuickCommands.mode_append"),
         };
 
         let action_bar = div()
@@ -355,7 +360,7 @@ impl Render for QuickCommandsPanel {
                     .size_full()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("暂无快捷命令，点 + 添加"),
+                    .child(rust_i18n::t!("QuickCommands.empty_state")),
             );
         } else {
             for cmd in &commands {
@@ -381,7 +386,7 @@ impl Render for QuickCommandsPanel {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("快捷命令"),
+                            .child(rust_i18n::t!("QuickCommands.title")),
                     )
                     .child(
                         div()
@@ -390,7 +395,11 @@ impl Render for QuickCommandsPanel {
                             .py_0p5()
                             .rounded_sm()
                             .hover(|s| s.bg(cx.theme().accent))
-                            .child(if self.form.is_some() { "取消" } else { "+ 添加" })
+                            .child(if self.form.is_some() {
+                                rust_i18n::t!("QuickCommands.cancel")
+                            } else {
+                                rust_i18n::t!("QuickCommands.add_button")
+                            })
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.toggle_form(window, cx);
                             })),

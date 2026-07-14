@@ -47,3 +47,34 @@ Stub:
   not_implemented:
     zh-CN: "此面板尚未实现"
     en: "This panel isn't implemented yet"
+QuickCommands:
+  title:
+    zh-CN: "快捷命令"
+    en: "Quick Commands"
+  empty_state:
+    zh-CN: "暂无快捷命令，点 + 添加"
+    en: "No quick commands yet — click + to add one"
+  name_placeholder:
+    zh-CN: "名称"
+    en: "Name"
+  command_placeholder:
+    zh-CN: "命令"
+    en: "Command"
+  name_and_command_required:
+    zh-CN: "名称和命令都不能为空"
+    en: "Name and command cannot both be empty"
+  mode_execute:
+    zh-CN: "执行"
+    en: "Execute"
+  mode_append:
+    zh-CN: "追加"
+    en: "Append"
+  cancel:
+    zh-CN: "取消"
+    en: "Cancel"
+  save:
+    zh-CN: "保存"
+    en: "Save"
+  add_button:
+    zh-CN: "+ 添加"
+    en: "+ Add"
