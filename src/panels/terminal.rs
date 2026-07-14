@@ -14,6 +14,7 @@ use gpui::{
     Window, div, point, px, size,
 };
 use gpui_component::dock::{Panel, PanelControl, PanelEvent, PanelView, TabPanel};
+use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarShow};
 use gpui_component::ActiveTheme;
 
@@ -142,12 +143,48 @@ impl Render for TerminalPanel {
         let handle = self.scrollbar_handle.as_ref().expect("initialized above");
         handle.cell_h.set(self.terminal.read(cx).last_cell_height());
 
+        let has_selection = self.terminal.read(cx).has_selection();
+        let weak_terminal = self.terminal.downgrade();
+
         // Embed the inner terminal entity (it renders/handles input itself),
-        // plus a right-side scrollbar overlay driven by `handle`.
+        // plus a right-side scrollbar overlay driven by `handle`. The
+        // right-click context menu lives here rather than in
+        // `terminal::view` (CLAUDE.md §1 boundary: that file stays
+        // `gpui_component`-free) — copy/paste themselves are delegated back
+        // to the inner view's `pub(crate)` methods so this adapter doesn't
+        // duplicate clipboard/selection logic.
         div()
             .relative()
             .size_full()
-            .child(self.terminal.clone())
+            .child(
+                div()
+                    .size_full()
+                    .child(self.terminal.clone())
+                    .context_menu(move |menu, _window, _cx| {
+                        // `context_menu`'s builder is an `Fn` (invoked on every
+                        // render of the menu), so it must not move its captures —
+                        // clone into locals per invocation, same reasoning as
+                        // `SftpPanel`'s transfer-row context menu.
+                        let weak_copy = weak_terminal.clone();
+                        let weak_paste = weak_terminal.clone();
+                        menu.item(
+                            PopupMenuItem::new(rust_i18n::t!("Terminal.copy"))
+                                .disabled(!has_selection)
+                                .on_click(move |_ev, _window, cx| {
+                                    let _ = weak_copy.update(cx, |view, cx| {
+                                        view.copy_selection_to_clipboard(cx);
+                                    });
+                                }),
+                        )
+                        .item(PopupMenuItem::new(rust_i18n::t!("Terminal.paste")).on_click(
+                            move |_ev, _window, cx| {
+                                let _ = weak_paste.update(cx, |view, cx| {
+                                    view.paste_from_clipboard(cx);
+                                });
+                            },
+                        ))
+                    }),
+            )
             .child(
                 div().absolute().inset_0().child(
                     Scrollbar::vertical(handle)

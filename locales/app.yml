@@ -194,6 +194,12 @@ Terminal:
   disconnected:
     zh-CN: "连接已断开"
     en: "Disconnected"
+  copy:
+    zh-CN: "复制"
+    en: "Copy"
+  paste:
+    zh-CN: "粘贴"
+    en: "Paste"
 Sessions:
   title:
     zh-CN: "会话"

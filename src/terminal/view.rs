@@ -831,8 +831,8 @@ impl TerminalView {
 
     /// Mouse-down: start a selection. Click type (Simple / Semantic /
     /// Lines) comes from the platform's `click_count`. A right-click
-    /// starts nothing — we use it only to clear any existing selection
-    /// in the future (Phase 5+ context-menu work).
+    /// starts nothing here — `TerminalPanel` wraps this view in a
+    /// `gpui_component` context menu instead (CLAUDE.md §1 boundary).
     fn on_mouse_down(
         &mut self,
         ev: &MouseDownEvent,
@@ -966,9 +966,19 @@ impl TerminalView {
         self.paste_from_clipboard(cx);
     }
 
+    /// Whether there's a non-empty selection to copy — lets `TerminalPanel`
+    /// (the `gpui_component` context-menu owner, CLAUDE.md §1 boundary)
+    /// decide whether to grey out its "Copy" menu item without duplicating
+    /// selection/clipboard logic there.
+    pub fn has_selection(&self) -> bool {
+        !selection::is_empty(&self.term.lock())
+    }
+
     /// Copy the current selection to the system clipboard. No-op when
-    /// the selection is empty / absent.
-    fn copy_selection_to_clipboard(&self, cx: &mut Context<Self>) {
+    /// the selection is empty / absent. `pub(crate)`: called directly by
+    /// `TerminalPanel`'s right-click context menu, not just the in-view
+    /// Ctrl+Shift+C shortcut.
+    pub(crate) fn copy_selection_to_clipboard(&self, cx: &mut Context<Self>) {
         let text = {
             let t = self.term.lock();
             selection::selected_text(&t)
@@ -980,8 +990,10 @@ impl TerminalView {
 
     /// Paste from the system clipboard. Honours the term's
     /// `BRACKETED_PASTE` mode by wrapping the payload in
-    /// `ESC[200~…ESC[201~`.
-    fn paste_from_clipboard(&self, cx: &mut Context<Self>) {
+    /// `ESC[200~…ESC[201~`. `pub(crate)`: called directly by
+    /// `TerminalPanel`'s right-click context menu, not just the in-view
+    /// Ctrl+Shift+V shortcut.
+    pub(crate) fn paste_from_clipboard(&self, cx: &mut Context<Self>) {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
