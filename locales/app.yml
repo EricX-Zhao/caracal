@@ -258,3 +258,142 @@ Sessions:
   empty_state:
     zh-CN: "暂无会话,点 + 新增"
     en: "No sessions yet — click + to add one"
+NewConnectionWindow:
+  icon_label:
+    zh-CN: "图标"
+    en: "Icon"
+  icon_auto:
+    zh-CN: "自动"
+    en: "Auto"
+  icon_terminal:
+    zh-CN: "终端"
+    en: "Terminal"
+  icon_laptop:
+    zh-CN: "笔记本"
+    en: "Laptop"
+  icon_server:
+    zh-CN: "服务器"
+    en: "Server"
+  icon_network:
+    zh-CN: "网络"
+    en: "Network"
+  icon_serial:
+    zh-CN: "串口"
+    en: "Serial"
+  name_placeholder:
+    zh-CN: "名称(可选)"
+    en: "Name (optional)"
+  name_label:
+    zh-CN: "名称"
+    en: "Name"
+  host_placeholder:
+    zh-CN: "主机 host"
+    en: "Host"
+  host_label:
+    zh-CN: "主机"
+    en: "Host"
+  port_placeholder:
+    zh-CN: "端口"
+    en: "Port"
+  port_label_ssh:
+    zh-CN: "端口 (默认 22)"
+    en: "Port (default 22)"
+  port_label_telnet:
+    zh-CN: "端口 (默认 23)"
+    en: "Port (default 23)"
+  user_placeholder:
+    zh-CN: "用户名 user"
+    en: "Username"
+  user_label:
+    zh-CN: "用户名"
+    en: "Username"
+  password_placeholder:
+    zh-CN: "密码"
+    en: "Password"
+  private_key_path_placeholder:
+    zh-CN: "私钥文件路径"
+    en: "Private key file path"
+  private_key_passphrase_placeholder:
+    zh-CN: "密码短语(可选)"
+    en: "Passphrase (optional)"
+  shell_path_placeholder:
+    zh-CN: "shell 路径(默认 $SHELL)"
+    en: "Shell path (default $SHELL)"
+  shell_path_label:
+    zh-CN: "Shell 路径"
+    en: "Shell Path"
+  working_dir_placeholder:
+    zh-CN: "工作目录(默认 $HOME)"
+    en: "Working directory (default $HOME)"
+  working_dir_label:
+    zh-CN: "工作目录"
+    en: "Working Directory"
+  baud_rate_label:
+    zh-CN: "波特率"
+    en: "Baud Rate"
+  data_bits_label:
+    zh-CN: "数据位"
+    en: "Data Bits"
+  parity_label:
+    zh-CN: "校验位"
+    en: "Parity"
+  parity_none:
+    zh-CN: "无"
+    en: "None"
+  parity_odd:
+    zh-CN: "奇校验"
+    en: "Odd"
+  parity_even:
+    zh-CN: "偶校验"
+    en: "Even"
+  stop_bits_label:
+    zh-CN: "停止位"
+    en: "Stop Bits"
+  flow_control_label:
+    zh-CN: "流控"
+    en: "Flow Control"
+  flow_none:
+    zh-CN: "无"
+    en: "None"
+  flow_software:
+    zh-CN: "软件(XON/XOFF)"
+    en: "Software (XON/XOFF)"
+  flow_hardware:
+    zh-CN: "硬件(RTS/CTS)"
+    en: "Hardware (RTS/CTS)"
+  serial_device_label:
+    zh-CN: "串口设备"
+    en: "Serial Device"
+  select_button:
+    zh-CN: "选择"
+    en: "Select"
+  no_serial_ports_detected:
+    zh-CN: "未检测到串口设备"
+    en: "No serial devices detected"
+  auth_method_label:
+    zh-CN: "认证方式"
+    en: "Auth Method"
+  auth_password:
+    zh-CN: "密码"
+    en: "Password"
+  auth_key:
+    zh-CN: "密钥"
+    en: "Key"
+  private_key_file_label:
+    zh-CN: "私钥文件"
+    en: "Private Key File"
+  browse_button:
+    zh-CN: "浏览..."
+    en: "Browse..."
+  type_local:
+    zh-CN: "本地终端"
+    en: "Local Terminal"
+  type_serial:
+    zh-CN: "串口"
+    en: "Serial"
+  cancel:
+    zh-CN: "取消"
+    en: "Cancel"
+  save:
+    zh-CN: "保存"
+    en: "Save"

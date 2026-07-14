@@ -24,15 +24,19 @@ use crate::panels::sessions::SessionsPanel;
 /// Icon-picker options, matching `SavedConnection::resolve_icon`'s existing
 /// string-key matching in `config.rs` (`"terminal"`, `"laptop"`, `"server"`,
 /// `"network"`, `"telnet"`, `"serial"`). `None` means "auto" (icon inferred
-/// from `conn_type`, today's behavior).
+/// from `conn_type`, today's behavior). The second element is a locale key
+/// (`t!(...)` supports a runtime/non-literal key, just skipping the
+/// compile-time key-minify optimization — confirmed against
+/// `rust-i18n-macro`'s `tr.rs`), not the display text itself, since this is
+/// a `const` array and `t!()` isn't const-evaluable.
 const ICON_OPTIONS: &[(Option<&str>, &str, AppIcon)] = &[
-    (None, "自动", AppIcon::Sessions),
-    (Some("terminal"), "终端", AppIcon::Terminal),
-    (Some("laptop"), "笔记本", AppIcon::LocalTerminal),
-    (Some("server"), "服务器", AppIcon::Sessions),
-    (Some("network"), "网络", AppIcon::Network),
+    (None, "NewConnectionWindow.icon_auto", AppIcon::Sessions),
+    (Some("terminal"), "NewConnectionWindow.icon_terminal", AppIcon::Terminal),
+    (Some("laptop"), "NewConnectionWindow.icon_laptop", AppIcon::LocalTerminal),
+    (Some("server"), "NewConnectionWindow.icon_server", AppIcon::Sessions),
+    (Some("network"), "NewConnectionWindow.icon_network", AppIcon::Network),
     (Some("telnet"), "Telnet", AppIcon::Telnet),
-    (Some("serial"), "串口", AppIcon::SerialPort),
+    (Some("serial"), "NewConnectionWindow.icon_serial", AppIcon::SerialPort),
 ];
 
 pub struct NewConnectionWindow {
@@ -93,12 +97,12 @@ impl NewConnectionWindow {
             conn_type: conn.as_ref().map(|c| c.conn_type.clone()).unwrap_or(ConnectionType::Ssh),
             name: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("名称(可选)")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.name_placeholder"))
                     .default_value(text(|c| &c.name))
             }),
             host: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("主机 host")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.host_placeholder"))
                     .default_value(text(|c| &c.host))
             }),
             port: cx.new(|cx| {
@@ -107,18 +111,18 @@ impl NewConnectionWindow {
                 // fields list) already states the right one for whichever
                 // type is currently selected.
                 InputState::new(window, cx)
-                    .placeholder("端口")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.port_placeholder"))
                     .default_value(conn.as_ref().map(|c| c.port.to_string()).unwrap_or_default())
             }),
             user: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("用户名 user")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.user_placeholder"))
                     .default_value(text(|c| &c.user))
             }),
             password: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
-                    .placeholder("密码")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.password_placeholder"))
                     .default_value(text(|c| &c.password))
             }),
             auth_method: conn
@@ -127,7 +131,7 @@ impl NewConnectionWindow {
                 .unwrap_or_else(|| "password".to_string()),
             private_key_path: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("私钥文件路径")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.private_key_path_placeholder"))
                     .default_value(
                         conn.as_ref()
                             .and_then(|c| c.private_key_path.clone())
@@ -137,7 +141,7 @@ impl NewConnectionWindow {
             private_key_passphrase: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
-                    .placeholder("密码短语(可选)")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.private_key_passphrase_placeholder"))
                     .default_value(
                         conn.as_ref()
                             .and_then(|c| c.private_key_passphrase.clone())
@@ -146,14 +150,14 @@ impl NewConnectionWindow {
             }),
             shell_path: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("shell 路径(默认 $SHELL)")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.shell_path_placeholder"))
                     .default_value(
                         conn.as_ref().and_then(|c| c.shell_path.clone()).unwrap_or_default(),
                     )
             }),
             working_dir: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("工作目录(默认 $HOME)")
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.working_dir_placeholder"))
                     .default_value(
                         conn.as_ref().and_then(|c| c.working_dir.clone()).unwrap_or_default(),
                     )
@@ -338,7 +342,12 @@ impl NewConnectionWindow {
         window.remove_window();
     }
 
-    fn field(&self, label: &str, state: &Entity<InputState>, cx: &App) -> impl IntoElement {
+    fn field(
+        &self,
+        label: impl Into<SharedString>,
+        state: &Entity<InputState>,
+        cx: &App,
+    ) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -347,14 +356,14 @@ impl NewConnectionWindow {
             .child(Input::new(state))
     }
 
-    fn field_label(&self, label: &str, cx: &App) -> impl IntoElement {
+    fn field_label(&self, label: impl Into<SharedString>, cx: &App) -> impl IntoElement {
         div()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .child(SharedString::from(label.to_string()))
+            .child(label.into())
     }
 
-    fn pill(id: &'static str, label: &str, active: bool, cx: &App) -> Stateful<Div> {
+    fn pill(id: &'static str, label: impl Into<SharedString>, active: bool, cx: &App) -> Stateful<Div> {
         div()
             .id(id)
             .px_2()
@@ -366,7 +375,7 @@ impl NewConnectionWindow {
             } else {
                 cx.theme().foreground
             })
-            .child(label.to_string())
+            .child(label.into())
     }
 
     fn render_icon_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -385,14 +394,14 @@ impl NewConnectionWindow {
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(self.field_label("图标", cx))
+            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.icon_label"), cx))
             .child(
                 DropdownButton::new("icon-picker")
                     .small()
                     .button(
                         Button::new("icon-picker-btn")
                             .icon(icon(current.2))
-                            .label(current.1),
+                            .label(rust_i18n::t!(current.1)),
                     )
                     .dropdown_menu(move |menu, _window, _cx| {
                         let mut menu = menu;
@@ -400,7 +409,7 @@ impl NewConnectionWindow {
                             let key = key.map(|k| k.to_string());
                             let weak = weak.clone();
                             menu = menu.item(
-                                PopupMenuItem::new(*label).icon(icon(*app_icon)).on_click(
+                                PopupMenuItem::new(rust_i18n::t!(*label)).icon(icon(*app_icon)).on_click(
                                     move |_ev, _window, cx| {
                                         let _ = weak.update(cx, |this, cx| {
                                             this.icon_key = key.clone();
@@ -420,7 +429,7 @@ impl NewConnectionWindow {
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(self.field_label("数据位", cx))
+            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.data_bits_label"), cx))
             .child(
                 div()
                     .flex()
@@ -466,30 +475,38 @@ impl NewConnectionWindow {
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(self.field_label("校验位", cx))
+            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.parity_label"), cx))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .gap_2()
                     .child(
-                        Self::pill("parity-none", "无", self.parity == "none", cx).on_click(
-                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                this.parity = "none".to_string();
-                                cx.notify();
-                            }),
-                        ),
+                        Self::pill(
+                            "parity-none",
+                            rust_i18n::t!("NewConnectionWindow.parity_none"),
+                            self.parity == "none",
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.parity = "none".to_string();
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        Self::pill("parity-odd", "奇校验", self.parity == "odd", cx).on_click(
-                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                this.parity = "odd".to_string();
-                                cx.notify();
-                            }),
-                        ),
+                        Self::pill(
+                            "parity-odd",
+                            rust_i18n::t!("NewConnectionWindow.parity_odd"),
+                            self.parity == "odd",
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.parity = "odd".to_string();
+                            cx.notify();
+                        })),
                     )
                     .child(
-                        Self::pill("parity-even", "偶校验", self.parity == "even", cx).on_click(
+                        Self::pill("parity-even", rust_i18n::t!("NewConnectionWindow.parity_even"), self.parity == "even", cx).on_click(
                             cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                                 this.parity = "even".to_string();
                                 cx.notify();
@@ -504,7 +521,7 @@ impl NewConnectionWindow {
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(self.field_label("停止位", cx))
+            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.stop_bits_label"), cx))
             .child(
                 div()
                     .flex()
@@ -534,24 +551,28 @@ impl NewConnectionWindow {
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(self.field_label("流控", cx))
+            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.flow_control_label"), cx))
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .gap_2()
                     .child(
-                        Self::pill("flow-none", "无", self.flow_control == "none", cx).on_click(
-                            cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                this.flow_control = "none".to_string();
-                                cx.notify();
-                            }),
-                        ),
+                        Self::pill(
+                            "flow-none",
+                            rust_i18n::t!("NewConnectionWindow.flow_none"),
+                            self.flow_control == "none",
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.flow_control = "none".to_string();
+                            cx.notify();
+                        })),
                     )
                     .child(
                         Self::pill(
                             "flow-software",
-                            "软件(XON/XOFF)",
+                            rust_i18n::t!("NewConnectionWindow.flow_software"),
                             self.flow_control == "software",
                             cx,
                         )
@@ -563,7 +584,7 @@ impl NewConnectionWindow {
                     .child(
                         Self::pill(
                             "flow-hardware",
-                            "硬件(RTS/CTS)",
+                            rust_i18n::t!("NewConnectionWindow.flow_hardware"),
                             self.flow_control == "hardware",
                             cx,
                         )
@@ -581,7 +602,7 @@ impl NewConnectionWindow {
             .flex()
             .flex_col()
             .gap_0p5()
-            .child(self.field_label("串口设备", cx))
+            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.serial_device_label"), cx))
             .child(
                 div()
                     .flex()
@@ -592,11 +613,16 @@ impl NewConnectionWindow {
                     .child(
                         DropdownButton::new("serial-port-picker")
                             .small()
-                            .button(Button::new("serial-port-picker-btn").label("选择"))
+                            .button(
+                                Button::new("serial-port-picker-btn")
+                                    .label(rust_i18n::t!("NewConnectionWindow.select_button")),
+                            )
                             .dropdown_menu(move |menu, _window, _cx| {
                                 let ports = crate::terminal::serial::list_ports();
                                 if ports.is_empty() {
-                                    return menu.label("未检测到串口设备");
+                                    return menu.label(rust_i18n::t!(
+                                        "NewConnectionWindow.no_serial_ports_detected"
+                                    ));
                                 }
                                 let mut menu = menu;
                                 for path in ports {
@@ -629,24 +655,36 @@ impl NewConnectionWindow {
                     .flex()
                     .flex_col()
                     .gap_0p5()
-                    .child(self.field_label("认证方式", cx))
+                    .child(self.field_label(rust_i18n::t!("NewConnectionWindow.auth_method_label"), cx))
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .gap_2()
-                            .child(Self::pill("auth-password", "密码", !is_key, cx).on_click(
-                                cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            .child(
+                                Self::pill(
+                                    "auth-password",
+                                    rust_i18n::t!("NewConnectionWindow.auth_password"),
+                                    !is_key,
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                                     this.auth_method = "password".to_string();
                                     cx.notify();
-                                }),
-                            ))
-                            .child(Self::pill("auth-key", "密钥", is_key, cx).on_click(
-                                cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                })),
+                            )
+                            .child(
+                                Self::pill(
+                                    "auth-key",
+                                    rust_i18n::t!("NewConnectionWindow.auth_key"),
+                                    is_key,
+                                    cx,
+                                )
+                                .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                                     this.auth_method = "key".to_string();
                                     cx.notify();
-                                }),
-                            )),
+                                })),
+                            ),
                     ),
             )
             .child(if is_key {
@@ -659,7 +697,7 @@ impl NewConnectionWindow {
                             .flex()
                             .flex_col()
                             .gap_0p5()
-                            .child(self.field_label("私钥文件", cx))
+                            .child(self.field_label(rust_i18n::t!("NewConnectionWindow.private_key_file_label"), cx))
                             .child(
                                 div()
                                     .flex()
@@ -674,7 +712,7 @@ impl NewConnectionWindow {
                                             .py_0p5()
                                             .rounded_sm()
                                             .bg(cx.theme().accent)
-                                            .child("浏览...")
+                                            .child(rust_i18n::t!("NewConnectionWindow.browse_button"))
                                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                                 let path_input = this.private_key_path.clone();
                                                 let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
@@ -713,10 +751,19 @@ impl NewConnectionWindow {
                                     ),
                             ),
                     )
-                    .child(self.field("密码短语(可选)", &self.private_key_passphrase.clone(), cx))
+                    .child(self.field(
+                        rust_i18n::t!("NewConnectionWindow.private_key_passphrase_placeholder"),
+                        &self.private_key_passphrase.clone(),
+                        cx,
+                    ))
                     .into_any_element()
             } else {
-                self.field("密码", &self.password.clone(), cx).into_any_element()
+                self.field(
+                    rust_i18n::t!("NewConnectionWindow.password_placeholder"),
+                    &self.password.clone(),
+                    cx,
+                )
+                .into_any_element()
             })
     }
 }
@@ -742,42 +789,84 @@ impl Render for NewConnectionWindow {
                             this.conn_type = ConnectionType::Ssh;
                             cx.notify();
                         })))
-                    .child(Self::pill("type-local", "本地终端", conn_type == ConnectionType::Local, cx)
+                    .child(
+                        Self::pill(
+                            "type-local",
+                            rust_i18n::t!("NewConnectionWindow.type_local"),
+                            conn_type == ConnectionType::Local,
+                            cx,
+                        )
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                             this.conn_type = ConnectionType::Local;
                             cx.notify();
-                        })))
+                        })),
+                    )
                     .child(Self::pill("type-telnet", "Telnet", conn_type == ConnectionType::Telnet, cx)
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                             this.conn_type = ConnectionType::Telnet;
                             cx.notify();
                         })))
-                    .child(Self::pill("type-serial", "串口", conn_type == ConnectionType::Serial, cx)
+                    .child(
+                        Self::pill(
+                            "type-serial",
+                            rust_i18n::t!("NewConnectionWindow.type_serial"),
+                            conn_type == ConnectionType::Serial,
+                            cx,
+                        )
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                             this.conn_type = ConnectionType::Serial;
                             cx.notify();
-                        }))),
+                        })),
+                    ),
             )
             .child(self.render_icon_picker(cx))
-            .child(self.field("名称", &self.name.clone(), cx))
+            .child(self.field(rust_i18n::t!("NewConnectionWindow.name_label"), &self.name.clone(), cx))
             .children(match conn_type {
                 ConnectionType::Ssh => vec![
-                    self.field("主机", &self.host.clone(), cx).into_any_element(),
-                    self.field("端口 (默认 22)", &self.port.clone(), cx).into_any_element(),
-                    self.field("用户名", &self.user.clone(), cx).into_any_element(),
+                    self.field(rust_i18n::t!("NewConnectionWindow.host_label"), &self.host.clone(), cx)
+                        .into_any_element(),
+                    self.field(
+                        rust_i18n::t!("NewConnectionWindow.port_label_ssh"),
+                        &self.port.clone(),
+                        cx,
+                    )
+                    .into_any_element(),
+                    self.field(rust_i18n::t!("NewConnectionWindow.user_label"), &self.user.clone(), cx)
+                        .into_any_element(),
                     self.render_ssh_auth_fields(cx).into_any_element(),
                 ],
                 ConnectionType::Local => vec![
-                    self.field("Shell 路径", &self.shell_path.clone(), cx).into_any_element(),
-                    self.field("工作目录", &self.working_dir.clone(), cx).into_any_element(),
+                    self.field(
+                        rust_i18n::t!("NewConnectionWindow.shell_path_label"),
+                        &self.shell_path.clone(),
+                        cx,
+                    )
+                    .into_any_element(),
+                    self.field(
+                        rust_i18n::t!("NewConnectionWindow.working_dir_label"),
+                        &self.working_dir.clone(),
+                        cx,
+                    )
+                    .into_any_element(),
                 ],
                 ConnectionType::Telnet => vec![
-                    self.field("主机", &self.host.clone(), cx).into_any_element(),
-                    self.field("端口 (默认 23)", &self.port.clone(), cx).into_any_element(),
+                    self.field(rust_i18n::t!("NewConnectionWindow.host_label"), &self.host.clone(), cx)
+                        .into_any_element(),
+                    self.field(
+                        rust_i18n::t!("NewConnectionWindow.port_label_telnet"),
+                        &self.port.clone(),
+                        cx,
+                    )
+                    .into_any_element(),
                 ],
                 ConnectionType::Serial => vec![
                     self.serial_port_field(cx).into_any_element(),
-                    self.field("波特率", &self.baud_rate.clone(), cx).into_any_element(),
+                    self.field(
+                        rust_i18n::t!("NewConnectionWindow.baud_rate_label"),
+                        &self.baud_rate.clone(),
+                        cx,
+                    )
+                    .into_any_element(),
                     self.data_bits_field(cx).into_any_element(),
                     self.parity_field(cx).into_any_element(),
                     self.stop_bits_field(cx).into_any_element(),
@@ -797,7 +886,7 @@ impl Render for NewConnectionWindow {
                             .py_0p5()
                             .rounded_sm()
                             .hover(|s| s.bg(cx.theme().accent))
-                            .child("取消")
+                            .child(rust_i18n::t!("NewConnectionWindow.cancel"))
                             .on_click(cx.listener(|_this, _ev: &ClickEvent, window, _cx| {
                                 window.remove_window();
                             })),
@@ -810,7 +899,7 @@ impl Render for NewConnectionWindow {
                             .rounded_sm()
                             .bg(cx.theme().primary)
                             .text_color(cx.theme().primary_foreground)
-                            .child("保存")
+                            .child(rust_i18n::t!("NewConnectionWindow.save"))
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.save(window, cx);
                             })),
