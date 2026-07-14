@@ -40,6 +40,19 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Swatinem/rust-cache's default key doesn't include the specific
+          # OS version — ubuntu-22.04 and ubuntu-24.04 (ubuntu-latest) both
+          # report runner.os == "Linux", so switching the matrix from
+          # ubuntu-latest to ubuntu-22.04 silently reused a target/ dir
+          # built under 24.04's toolchain/system libs. Cargo's fingerprints
+          # matched (nothing looked stale) so it skipped rebuilding
+          # dependencies entirely, but gpui_platform's cached build
+          # artifacts were incompatible with the new environment, hence
+          # "can't find crate for gpui_platform" despite no dependency
+          # ever showing up in the "Compiling ..." log. Keying by matrix.os
+          # isolates each OS's cache so this can't happen again.
+          key: ${{ matrix.os }}
 
       # gpui_platform's x11/wayland/font-kit features and the serialport
       # crate's device-enumeration support need these dev headers/libs at
