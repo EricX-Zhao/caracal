@@ -115,7 +115,7 @@ impl FileTableDelegate {
             all_entries: Vec::new(),
             entries: Vec::new(),
             columns: vec![
-                Column::new("name", rust_i18n::t!("Sftp.col_name")).width(px(150.)).sortable(),
+                Column::new("name", rust_i18n::t!("Sftp.col_name")).width(px(220.)).sortable(),
                 Column::new("mtime", rust_i18n::t!("Sftp.col_mtime")).width(px(110.)),
                 Column::new("size", rust_i18n::t!("Sftp.col_size")).width(px(64.)).sortable().text_right(),
                 Column::new("perms", rust_i18n::t!("Sftp.col_perms")).width(px(72.)),
