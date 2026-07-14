@@ -169,3 +169,22 @@ pub fn quick_commands_button(active: bool, cx: &App) -> Stateful<Div> {
         .child(icon(AppIcon::QuickCmd).large())
         .tooltip(move |window, cx| Tooltip::new("快捷命令").build(window, cx))
 }
+
+/// The Settings shortcut, pinned to the bottom of the left activity bar
+/// (now the only way to reach Settings — the header's File menu that used
+/// to hold it is gone, see `panels::header`). Opens the standalone Settings
+/// window (`Workspace::open_settings`); not backed by a `PanelId` since it's
+/// a separate window, not a side-panel slot.
+pub fn settings_button(cx: &App) -> Stateful<Div> {
+    div()
+        .id("activity-settings")
+        .flex()
+        .items_center()
+        .justify_center()
+        .w_full()
+        .h(px(40.0))
+        .text_color(cx.theme().muted_foreground)
+        .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
+        .child(icon(AppIcon::Settings).large())
+        .tooltip(move |window, cx| Tooltip::new("设置").build(window, cx))
+}

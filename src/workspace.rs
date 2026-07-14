@@ -37,7 +37,9 @@ use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
 use gpui_component::{ActiveTheme, Root};
 
 use crate::config;
-use crate::panels::activity_bar::{PanelId, Side, activity_button, quick_commands_button, side_items};
+use crate::panels::activity_bar::{
+    PanelId, Side, activity_button, quick_commands_button, settings_button, side_items,
+};
 use crate::panels::header::render_header;
 use crate::panels::quick_commands_panel::QuickCommandsPanel;
 use crate::panels::sessions::{SessionsEvent, SessionsPanel};
@@ -263,27 +265,6 @@ impl Workspace {
                 None
             }
         }
-    }
-
-    /// Open a local-shell terminal as a new central tab, and wire it so
-    /// focusing it swaps the SFTP slot back to the placeholder (SFTP only makes
-    /// sense over SSH) and updates the header title.
-    pub fn open_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let terminal = cx.new(|cx| TerminalView::new(window, cx, "本地终端".to_string()));
-        Self::seed_font_from_settings(&terminal, cx);
-        let handle = terminal.read(cx).focus_handle(cx);
-        let term_weak = terminal.downgrade();
-        self.terminal_views.push(term_weak.clone());
-        let sub = cx.on_focus(&handle, window, move |this, window, cx| {
-            this.set_active_title_from(&term_weak, cx);
-            this.show_sftp_placeholder(window, cx);
-            this.show_monitor_placeholder(window, cx);
-        });
-        self._subscriptions.push(sub);
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
-        self.add_center(Arc::new(panel), window, cx);
-        self.show_sftp_placeholder(window, cx);
-        self.show_monitor_placeholder(window, cx);
     }
 
     /// Open a local-shell terminal with custom shell and working directory.
@@ -1059,6 +1040,16 @@ impl Workspace {
             );
         }
 
+        // Settings shortcut: pinned to the bottom of the left bar (mirrors
+        // quick-commands' placement on the right) — opens the standalone
+        // Settings window, not a side-panel slot.
+        if matches!(side, Side::Left) {
+            col = col.child(div().flex_1()).child(
+                settings_button(cx)
+                    .on_click(cx.listener(|this, _ev, window, cx| this.open_settings(window, cx))),
+            );
+        }
+
         div()
             .flex()
             .flex_col()
@@ -1226,7 +1217,7 @@ impl Render for Workspace {
     /// (effectively the whole app UI) via GPUI's normal style cascade — a
     /// descendant's explicit font setting wins over an ancestor's.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header = render_header(cx.entity().downgrade(), self.active_title.clone(), window, cx);
+        let header = render_header(self.active_title.clone(), window, cx);
         let left_bar = self.render_activity_bar(Side::Left, cx);
         let right_bar = self.render_activity_bar(Side::Right, cx);
         let body = self.render_body(cx);

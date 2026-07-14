@@ -1,36 +1,24 @@
 //! Top header bar — an in-app title bar (~40px) with a small brand mark, a
-//! menu bar (File / Terminal — no View or Help menu: theme selection lives
-//! entirely in Settings → Appearance, see `settings_window.rs`) built from
-//! gpui-component dropdown menus, a centered active-tab title (also the
-//! window's draggable region),
-//! and — on Linux/Windows — a minimize/maximize/close button cluster (macOS
-//! keeps its native traffic-light buttons instead; see `main.rs`'s
-//! `TitlebarOptions`). The window itself requests client-side decorations in
-//! `main.rs`, which is what makes this row the *only* title bar the user
-//! sees.
+//! centered active-tab title (also the window's draggable region), and — on
+//! Linux/Windows — a minimize/maximize/close button cluster (macOS keeps its
+//! native traffic-light buttons instead; see `main.rs`'s `TitlebarOptions`).
+//! The window itself requests client-side decorations in `main.rs`, which is
+//! what makes this row the *only* title bar the user sees.
 //!
-//! Menu actions call back into the [`Workspace`] via a `WeakEntity`, so this
-//! module stays a thin presentational adapter (CLAUDE.md §1).
+//! No menu bar: File/Terminal's only real content was Settings and "新建本地
+//! 终端" — Settings now has its own icon button at the bottom of the left
+//! activity bar (`activity_bar.rs`'s `settings_button`), and "新建本地终端"
+//! has no dedicated entry point anymore (open a local session from the
+//! 会话 panel instead).
 
 use gpui::{
     App, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowButton,
-    WindowButtonLayout, div, prelude::FluentBuilder, px,
+    SharedString, StatefulInteractiveElement, Styled, Window, WindowButton, WindowButtonLayout,
+    div, prelude::FluentBuilder, px,
 };
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::menu::{DropdownMenu, PopupMenuItem};
-use gpui_component::{ActiveTheme, Sizable};
+use gpui_component::ActiveTheme;
 
 use crate::panels::icons::{AppIcon, icon};
-use crate::workspace::Workspace;
-
-/// The "新建本地终端" menu item — defined once and reused by the File and
-/// Terminal menus so the label + action can't drift apart.
-fn new_local_item(ws: WeakEntity<Workspace>) -> PopupMenuItem {
-    PopupMenuItem::new("新建本地终端").on_click(move |_ev, window, cx| {
-        let _ = ws.update(cx, |w, cx| w.open_local(window, cx));
-    })
-}
 
 /// Icon for the maximize/restore button: swaps to the "restore" glyph once
 /// the window is already maximized, so the button always reads as "the
@@ -169,15 +157,10 @@ mod tests {
 /// Build the header row. `active_title` is the focused terminal's title (or
 /// "Caracal" when nothing is focused).
 pub fn render_header(
-    workspace: WeakEntity<Workspace>,
     active_title: SharedString,
     window: &Window,
     cx: &App,
 ) -> impl IntoElement + use<> {
-    let ws_file = workspace.clone();
-    let ws_terminal = workspace.clone();
-    let ws_settings = workspace.clone();
-
     // macOS keeps its native traffic-light buttons (positioned via
     // `TitlebarOptions.traffic_light_position` in `main.rs`) instead of a
     // hand-drawn cluster — that's the platform convention, and gpui_macos
@@ -198,27 +181,6 @@ pub fn render_header(
         None => (None, None),
     };
 
-    let file_menu = Button::new("menu-file")
-        .ghost()
-        .xsmall()
-        .label("文件")
-        .dropdown_menu(move |menu, _window, _cx| {
-            menu.item(new_local_item(ws_file.clone())).item(
-                PopupMenuItem::new("设置...").on_click({
-                    let ws_settings = ws_settings.clone();
-                    move |_ev, window, cx| {
-                        let _ = ws_settings.update(cx, |w, cx| w.open_settings(window, cx));
-                    }
-                }),
-            )
-        });
-
-    let terminal_menu = Button::new("menu-terminal")
-        .ghost()
-        .xsmall()
-        .label("终端")
-        .dropdown_menu(move |menu, _window, _cx| menu.item(new_local_item(ws_terminal.clone())));
-
     div()
         .h(px(40.0))
         .flex()
@@ -234,29 +196,20 @@ pub fn render_header(
         // `traffic_light_position`), so the brand icon doesn't sit under them.
         .when(is_macos, |d| d.pl(px(78.0)))
         .children(left_controls)
-        // Brand + menu bar
+        // Brand mark (no menu — see the module doc comment)
         .child(
             div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
                 .flex_shrink_0()
-                .child(
-                    div()
-                        .text_color(cx.theme().foreground)
-                        .child(icon(AppIcon::Terminal)),
-                )
-                .child(file_menu)
-                .child(terminal_menu),
+                .text_color(cx.theme().foreground)
+                .child(icon(AppIcon::Terminal)),
         )
         // Centered active title — also the draggable region: this flex_1
         // area is mostly empty space around the centered text, so a
         // mouse-down anywhere in it reads as "drag the window" (or
         // "double-click to maximize"), matching Zed/VS Code convention. The
-        // brand+menu cluster above (and the window-controls cluster added
+        // brand mark above (and the window-controls cluster added
         // separately) are deliberately NOT covered by this handler, so their
-        // own clicks/dropdowns are unaffected.
+        // own clicks are unaffected.
         .child(
             div()
                 .id("header-drag-region")
