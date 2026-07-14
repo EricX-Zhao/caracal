@@ -1095,6 +1095,7 @@ dependencies = [
  "gpui_macros",
  "gpui_platform",
  "log",
+ "open",
  "portable-pty",
  "russh",
  "russh-sftp",

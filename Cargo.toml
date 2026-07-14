@@ -47,6 +47,11 @@ rust-i18n = "4"
 
 # Misc
 anyhow = "1"
+# Opening a downloaded/uploaded file (or its containing folder) with the OS
+# default handler, from the SFTP panel's transfer-list context menu. Already
+# a transitive dependency via gpui_linux, promoted to direct since we call
+# it ourselves now.
+open = "5"
 log = "0.4"
 # `log::error!`/`warn!` calls throughout the app were silently swallowed with no
 # logger backend installed — this wires them to stderr (`RUST_LOG=debug cargo

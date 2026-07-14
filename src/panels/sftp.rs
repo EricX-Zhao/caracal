@@ -27,7 +27,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 
 use gpui::{
     App, AppContext, AsyncApp, ClipboardItem, Context, CursorStyle, Entity, FocusHandle,
@@ -38,7 +38,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::menu::{PopupMenu, PopupMenuItem};
+use gpui_component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_component::notification::NotificationType;
 use gpui_component::table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState};
 use gpui_component::{ActiveTheme, Disableable, IconName, Sizable, WindowExt};
@@ -70,6 +70,13 @@ struct Transfer {
     status: TransferStatus,
     #[allow(dead_code)]
     started_at: Instant,
+    /// The local-disk path of this transfer (download destination or upload
+    /// source) — powers the completed-transfer context menu's "open
+    /// file"/"open folder"/"delete"/"properties" actions, all of which are
+    /// OS-level operations on the local copy regardless of transfer
+    /// direction. Empty until known: for uploads, the path isn't picked
+    /// until the async file-picker dialog resolves.
+    local_path: PathBuf,
 }
 
 impl Transfer {
@@ -550,6 +557,7 @@ impl SftpPanel {
             transferred: 0,
             status: TransferStatus::Queued,
             started_at: Instant::now(),
+            local_path: local.clone(),
         });
         cx.notify();
 
@@ -637,6 +645,7 @@ impl SftpPanel {
             transferred: 0,
             status: TransferStatus::Queued,
             started_at: Instant::now(),
+            local_path: PathBuf::new(),
         });
         cx.notify();
 
@@ -667,6 +676,7 @@ impl SftpPanel {
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "upload.bin".to_string());
+            let local_path = local.clone();
             let remote = remote_join(&path, &name);
             let hrx = session.sftp_upload(local, remote);
             let handle = match hrx.recv_async().await {
@@ -688,6 +698,7 @@ impl SftpPanel {
                     t.id = id;
                     t.name = name.clone();
                     t.status = TransferStatus::Active;
+                    t.local_path = local_path.clone();
                 }
                 cx.notify();
             })
@@ -933,6 +944,96 @@ impl SftpPanel {
 
     fn cancel_transfer(&self, id: u64) {
         self.session.sftp_cancel(id);
+    }
+
+    /// Opens a completed transfer's local file with the OS default handler.
+    fn open_transfer_file(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.transfers.iter().find(|t| t.id == id) else {
+            return;
+        };
+        if let Err(e) = open::that(&t.local_path) {
+            window.push_notification(
+                (NotificationType::Error, rust_i18n::t!("Sftp.open_local_failed", error = e.to_string())),
+                cx,
+            );
+        }
+    }
+
+    /// Opens the folder containing a completed transfer's local file.
+    fn open_transfer_folder(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.transfers.iter().find(|t| t.id == id) else {
+            return;
+        };
+        let target = t.local_path.parent().unwrap_or(&t.local_path);
+        if let Err(e) = open::that(target) {
+            window.push_notification(
+                (NotificationType::Error, rust_i18n::t!("Sftp.open_local_failed", error = e.to_string())),
+                cx,
+            );
+        }
+    }
+
+    /// Deletes a completed transfer's local file (after confirmation) and
+    /// drops its row from the transfer list.
+    fn delete_transfer_file(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.transfers.iter().find(|t| t.id == id) else {
+            return;
+        };
+        let local_path = t.local_path.clone();
+        let name = t.name.clone();
+        let weak_panel = cx.entity().downgrade();
+
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            let weak_panel = weak_panel.clone();
+            let local_path = local_path.clone();
+            alert
+                .title(rust_i18n::t!("Sftp.confirm_delete_title"))
+                .description(rust_i18n::t!(
+                    "Sftp.confirm_delete_body",
+                    name = name.clone(),
+                    folder_note = String::new()
+                ))
+                .confirm()
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    let _ = std::fs::remove_file(&local_path);
+                    let _ = weak_panel.update(cx, |this, cx| {
+                        this.transfers.retain(|t| t.id != id);
+                        cx.notify();
+                    });
+                    true
+                })
+        });
+    }
+
+    /// Shows a properties dialog for a completed transfer's local file.
+    fn show_transfer_properties(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(t) = self.transfers.iter().find(|t| t.id == id) else {
+            return;
+        };
+        let local_path = t.local_path.clone();
+        let name = t.name.clone();
+        let path_str = local_path.to_string_lossy().to_string();
+        let meta = std::fs::metadata(&local_path).ok();
+        let size = meta.as_ref().map(|m| human_size(m.len())).unwrap_or_else(|| "—".to_string());
+        let mtime = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| human_mtime(d.as_secs() as u32))
+            .unwrap_or_else(|| "—".to_string());
+
+        window.open_alert_dialog(cx, move |alert, _window, cx| {
+            let grid = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(properties_row(rust_i18n::t!("Sftp.col_name"), &name, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.path_label"), &path_str, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.col_size"), &size, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.col_mtime"), &mtime, cx));
+            alert.title(rust_i18n::t!("Sftp.properties")).description(grid)
+        });
     }
 
     async fn pump_events(
@@ -1558,6 +1659,7 @@ impl SftpPanel {
                 .child(rust_i18n::t!("Sftp.no_transfers"))
                 .into_any_element()
         } else {
+            let weak_panel = cx.entity().downgrade();
             let rows = self.transfers.iter().map(|t| {
                 let label = match t.direction {
                     TransferDirection::Download => "↓",
@@ -1587,8 +1689,9 @@ impl SftpPanel {
                     t.status,
                     TransferStatus::Queued | TransferStatus::Active
                 );
+                let is_done = matches!(t.status, TransferStatus::Done);
                 let transfer_id = t.id;
-                div()
+                let row = div()
                     .flex()
                     .flex_col()
                     .gap_0p5()
@@ -1651,7 +1754,55 @@ impl SftpPanel {
                                     .rounded_sm()
                                     .bg(bar_color),
                             ),
-                    )
+                    );
+
+                if is_done {
+                    let panel_open = weak_panel.clone();
+                    let panel_open_folder = weak_panel.clone();
+                    let panel_properties = weak_panel.clone();
+                    let panel_delete = weak_panel.clone();
+                    row.context_menu(move |menu, _window, _cx| {
+                        // `context_menu`'s builder is an `Fn` (invoked on every render of
+                        // the menu), so it must not move its captures — clone into locals
+                        // per invocation and let the `on_click` closures move those instead
+                        // (same reasoning as `delete_selected`'s `open_alert_dialog` builder).
+                        let panel_open = panel_open.clone();
+                        let panel_open_folder = panel_open_folder.clone();
+                        let panel_properties = panel_properties.clone();
+                        let panel_delete = panel_delete.clone();
+                        menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.open_file")).on_click(
+                            move |_ev, window, cx| {
+                                let _ = panel_open.update(cx, |panel, cx| {
+                                    panel.open_transfer_file(transfer_id, window, cx)
+                                });
+                            },
+                        ))
+                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.open_folder")).on_click(
+                            move |_ev, window, cx| {
+                                let _ = panel_open_folder.update(cx, |panel, cx| {
+                                    panel.open_transfer_folder(transfer_id, window, cx)
+                                });
+                            },
+                        ))
+                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.properties")).on_click(
+                            move |_ev, window, cx| {
+                                let _ = panel_properties.update(cx, |panel, cx| {
+                                    panel.show_transfer_properties(transfer_id, window, cx)
+                                });
+                            },
+                        ))
+                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.delete")).on_click(
+                            move |_ev, window, cx| {
+                                let _ = panel_delete.update(cx, |panel, cx| {
+                                    panel.delete_transfer_file(transfer_id, window, cx)
+                                });
+                            },
+                        ))
+                    })
+                    .into_any_element()
+                } else {
+                    row.into_any_element()
+                }
             });
             let list: gpui::Stateful<gpui::Div> = div()
                 .id("sftp-transfer-list")

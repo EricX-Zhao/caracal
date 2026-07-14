@@ -557,3 +557,12 @@ Sftp:
   download_to_prefix:
     zh-CN: "下载到:"
     en: "Download to:"
+  open_file:
+    zh-CN: "打开文件"
+    en: "Open File"
+  open_folder:
+    zh-CN: "打开所在文件夹"
+    en: "Open Containing Folder"
+  open_local_failed:
+    zh-CN: "打开失败: %{error}"
+    en: "Failed to open: %{error}"
