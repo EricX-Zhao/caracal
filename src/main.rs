@@ -36,6 +36,8 @@ use crate::assets::CaracalAssets;
 use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::Workspace;
 
+rust_i18n::i18n!("locales", fallback = "zh-CN");
+
 /// gpui-component's own bundled theme collection (Ayu, Catppuccin, Gruvbox,
 /// Tokyo Night, ...), embedded so the Settings → Appearance theme dropdown
 /// has more than just the built-in Default Light/Dark pair. Apache-2.0
@@ -124,6 +126,12 @@ fn main() {
         // registered) — see Settings → Appearance for the full theme list.
         let startup_settings = settings::load();
         apply_startup_theme(&startup_settings.appearance.theme_name, cx);
+        // The OS locale (`LANG`/etc.), not `i18n!()`'s `fallback` param, is
+        // what's active before this call — verified directly: with
+        // LANG=en_US.UTF-8 set, `t!(...)` returned English before any
+        // `set_locale()` call. So the persisted preference must be applied
+        // explicitly, same as the theme above.
+        rust_i18n::set_locale(&startup_settings.general.language);
 
         // gpui-component's `Theme::default()` sets `font_family` to
         // `.SystemUIFont` — a macOS-only sentinel (`root.rs` applies it to the

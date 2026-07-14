@@ -17,6 +17,7 @@ use gpui::{
     div, prelude::FluentBuilder, px,
 };
 use gpui_component::ActiveTheme;
+use gpui_component::tooltip::Tooltip;
 
 use crate::panels::icons::{AppIcon, icon};
 
@@ -199,9 +200,14 @@ pub fn render_header(
         // Brand mark (no menu — see the module doc comment)
         .child(
             div()
+                .id("header-brand")
                 .flex_shrink_0()
                 .text_color(cx.theme().foreground)
-                .child(icon(AppIcon::Terminal)),
+                .child(icon(AppIcon::Terminal))
+                .tooltip(|window, cx| {
+                    Tooltip::new(SharedString::from(rust_i18n::t!("Header.brand_tooltip")))
+                        .build(window, cx)
+                }),
         )
         // Centered active title — also the draggable region: this flex_1
         // area is mostly empty space around the centered text, so a

@@ -1098,6 +1098,7 @@ dependencies = [
  "portable-pty",
  "russh",
  "russh-sftp",
+ "rust-i18n",
  "serde",
  "serialport",
  "tokio",

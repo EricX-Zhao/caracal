@@ -12,9 +12,31 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AppSettings {
     #[serde(default)]
+    pub general: GeneralSettings,
+    #[serde(default)]
     pub appearance: AppearanceSettings,
     #[serde(default)]
     pub terminal: TerminalSettings,
+}
+
+/// General application settings, editable from Settings → General.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GeneralSettings {
+    /// A `rust_i18n` locale code: `"zh-CN"` or `"en"`.
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "zh-CN".to_string()
+}
+
+impl Default for GeneralSettings {
+    fn default() -> Self {
+        Self {
+            language: default_language(),
+        }
+    }
 }
 
 /// UI-level settings, editable from Settings → Appearance. Affects the
@@ -167,6 +189,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_general_settings_use_zh_cn() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.general.language, "zh-CN");
+    }
+
+    #[test]
+    fn round_trip_preserves_general_language() {
+        let settings = AppSettings {
+            general: GeneralSettings {
+                language: "en".to_string(),
+            },
+            ..AppSettings::default()
+        };
+        let text = toml::to_string_pretty(&settings).expect("serialize");
+        let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed.general.language, "en");
+    }
+
+    #[test]
+    fn old_settings_file_without_general_table_still_deserializes() {
+        // Simulates a settings.toml written before GeneralSettings existed.
+        let toml_text = r#"
+            [appearance]
+            theme_name = "Default Dark"
+
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert_eq!(settings.general.language, "zh-CN");
+    }
+
+    #[test]
     fn default_settings_have_expected_values() {
         let settings = AppSettings::default();
         assert_eq!(settings.terminal.font_family, "");
@@ -182,6 +239,9 @@ mod tests {
     #[test]
     fn round_trip_preserves_fields() {
         let settings = AppSettings {
+            general: GeneralSettings {
+                language: "en".to_string(),
+            },
             appearance: AppearanceSettings {
                 theme_name: "Ayu Light".to_string(),
                 font_family: "JetBrains Mono".to_string(),
@@ -209,6 +269,7 @@ mod tests {
         assert_eq!(parsed.appearance.theme_name, "Ayu Light");
         assert_eq!(parsed.appearance.font_family, "JetBrains Mono");
         assert_eq!(parsed.appearance.font_fallback, "Symbols Nerd Font");
+        assert_eq!(parsed.general.language, "en");
     }
 
     #[test]

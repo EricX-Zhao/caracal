@@ -45,6 +45,10 @@ toml = "0.8"
 # it ourselves now instead of a `$HOME`-env-var-only fallback that silently
 # resolved to the current directory on Windows (no `$HOME` there).
 dirs = "6"
+# UI localization (Settings -> General). Already a transitive dependency
+# via gpui-component (which uses its own, independent i18n!() call for its
+# own built-in strings) — this is our own, separate instance.
+rust-i18n = "4"
 
 # Misc
 anyhow = "1"

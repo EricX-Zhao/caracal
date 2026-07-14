@@ -115,11 +115,18 @@ Every replaced string follows one of two shapes:
 .child(SharedString::from(t!("Sessions.title")))
 ```
 
-(`t!(...)` already converts via a plain `.into()`; wrapping in
-`SharedString::from(...)` at call sites that need an explicit type — e.g.
-a `let` binding used more than once — keeps things unambiguous. Where a
-builder method accepts `impl Into<SharedString>` directly, passing
-`t!(...)` bare also works and is preferred for brevity.)
+(`t!(...)` converts via a plain `.into()` to `SharedString` — confirmed by
+the real `header.rs` conversion (Task 1 of the implementation plan). Where
+a builder method accepts `impl Into<SharedString>` directly (`.child(...)`,
+`Button::label(...)`), passing `t!(...)` bare works and is preferred for
+brevity. **Gotcha, also confirmed by that same conversion**:
+`gpui_component::tooltip::Tooltip::new(...)` takes `impl Into<Text>`, not
+`impl Into<SharedString>` — `Text` only implements `From<SharedString>`/
+`From<&str>`/`From<String>`, not `From<Cow<str>>`, so every
+`Tooltip::new(t!(...))` call needs an explicit
+`Tooltip::new(SharedString::from(t!(...)))` wrap or it fails to compile.
+Since `.tooltip(...)` calls are common throughout the remaining files
+(activity bar, sessions, SFTP, ...), expect this wrap at most of them.)
 
 **Interpolated text** — `t!()`'s own named-variable substitution replaces
 `format!()`:

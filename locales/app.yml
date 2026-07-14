@@ -1,0 +1,5 @@
+_version: 2
+Header:
+  brand_tooltip:
+    zh-CN: "终端"
+    en: "Terminal"
