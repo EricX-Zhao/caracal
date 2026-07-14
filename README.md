@@ -1,6 +1,3 @@
-<p align="center">
-  <img src="assets/icon.svg" width="128" height="128" alt="Caracal logo">
-</p>
 
 # Caracal
 
