@@ -192,9 +192,16 @@ pub fn render_header(
                 .child(terminal_menu)
                 .child(help_menu),
         )
-        // Centered active title
+        // Centered active title — also the draggable region: this flex_1
+        // area is mostly empty space around the centered text, so a
+        // mouse-down anywhere in it reads as "drag the window" (or
+        // "double-click to maximize"), matching Zed/VS Code convention. The
+        // brand+menu cluster above (and the window-controls cluster added
+        // separately) are deliberately NOT covered by this handler, so their
+        // own clicks/dropdowns are unaffected.
         .child(
             div()
+                .id("header-drag-region")
                 .flex()
                 .flex_1()
                 .min_w(px(0.0))
@@ -202,6 +209,7 @@ pub fn render_header(
                 .justify_center()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
+                .on_mouse_down(MouseButton::Left, drag_or_maximize)
                 .child(active_title),
         )
 }
