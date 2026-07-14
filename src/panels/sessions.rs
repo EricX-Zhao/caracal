@@ -245,6 +245,14 @@ pub struct SessionsPanel {
     /// the right, so a mouse-anchored tooltip could clip against the
     /// window edge depending on cursor position within the row).
     tooltip_target: Option<(usize, Bounds<Pixels>)>,
+    /// Locale `search_query`'s placeholder was last set for — that
+    /// `InputState` is created once here and lives for the app's whole
+    /// session (unlike `new_folder_name`, which gets a fresh `InputState`,
+    /// and thus a fresh placeholder, every time `open_folder_form` runs), so
+    /// a language switch needs `sync_search_placeholder_to_locale` to push
+    /// the new text in explicitly — nothing else re-reads it after
+    /// construction. `None` forces the first render to sync unconditionally.
+    search_placeholder_locale: Option<String>,
 }
 
 impl SessionsPanel {
@@ -277,7 +285,26 @@ impl SessionsPanel {
             new_connection_window: None,
             drag_reorder_target: None,
             tooltip_target: None,
+            search_placeholder_locale: None,
         }
+    }
+
+    /// Re-push `search_query`'s placeholder if the locale changed since it
+    /// was last set — see `search_placeholder_locale`'s doc comment for why
+    /// this can't just be set once at construction. Cheap to call
+    /// unconditionally every render: skips straight through once already in
+    /// sync, so it doesn't fight the user's own typing or spuriously
+    /// `cx.notify()` every frame.
+    fn sync_search_placeholder_to_locale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = rust_i18n::locale().to_string();
+        if self.search_placeholder_locale.as_deref() == Some(current.as_str()) {
+            return;
+        }
+        self.search_placeholder_locale = Some(current);
+        let placeholder = SharedString::from(rust_i18n::t!("Sessions.search_placeholder"));
+        self.search_query.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx);
+        });
     }
 
     /// Generate a unique ID for new groups/connections.
@@ -1486,7 +1513,8 @@ impl SessionsPanel {
 }
 
 impl Render for SessionsPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_search_placeholder_to_locale(window, cx);
         div()
             .track_focus(&self.focus_handle)
             .flex()
