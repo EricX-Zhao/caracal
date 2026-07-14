@@ -115,10 +115,10 @@ impl FileTableDelegate {
             all_entries: Vec::new(),
             entries: Vec::new(),
             columns: vec![
-                Column::new("name", "名称").width(px(150.)).sortable(),
-                Column::new("mtime", "修改时间").width(px(110.)),
-                Column::new("size", "大小").width(px(64.)).sortable().text_right(),
-                Column::new("perms", "权限").width(px(72.)),
+                Column::new("name", rust_i18n::t!("Sftp.col_name")).width(px(150.)).sortable(),
+                Column::new("mtime", rust_i18n::t!("Sftp.col_mtime")).width(px(110.)),
+                Column::new("size", rust_i18n::t!("Sftp.col_size")).width(px(64.)).sortable().text_right(),
+                Column::new("perms", rust_i18n::t!("Sftp.col_perms")).width(px(72.)),
             ],
             panel,
         }
@@ -172,7 +172,7 @@ impl TableDelegate for FileTableDelegate {
         let panel_copy = self.panel.clone();
         let panel_delete = self.panel.clone();
 
-        menu.item(PopupMenuItem::new("打开").on_click(move |_ev, window, cx| {
+        menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.open")).on_click(move |_ev, window, cx| {
             let _ = panel_open.update(cx, |panel, cx| {
                 if is_dir {
                     panel.enter_dir(&name_for_open, window, cx);
@@ -181,20 +181,20 @@ impl TableDelegate for FileTableDelegate {
                 }
             });
         }))
-        .item(PopupMenuItem::new("下载").on_click(move |_ev, window, cx| {
+        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.download")).on_click(move |_ev, window, cx| {
             let _ = panel_download.update(cx, |panel, cx| panel.download_selected(window, cx));
         }))
-        .item(PopupMenuItem::new("重命名").on_click(move |_ev, window, cx| {
+        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.rename")).on_click(move |_ev, window, cx| {
             let _ = panel_rename.update(cx, |panel, cx| panel.rename_entry(row_ix, window, cx));
         }))
-        .item(PopupMenuItem::new("属性").on_click(move |_ev, window, cx| {
+        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.properties")).on_click(move |_ev, window, cx| {
             let _ = panel_properties
                 .update(cx, |panel, cx| panel.show_properties(row_ix, window, cx));
         }))
-        .item(PopupMenuItem::new("复制路径").on_click(move |_ev, _window, cx| {
+        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.copy_path")).on_click(move |_ev, _window, cx| {
             let _ = panel_copy.update(cx, |panel, cx| panel.copy_entry_path(row_ix, cx));
         }))
-        .item(PopupMenuItem::new("删除").on_click(move |_ev, window, cx| {
+        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.delete")).on_click(move |_ev, window, cx| {
             let _ = panel_delete.update(cx, |panel, cx| panel.delete_selected(window, cx));
         }))
     }
@@ -578,7 +578,7 @@ impl SftpPanel {
             let state = self.table_state.read(cx);
             let Some(ix) = state.selected_row() else {
                 window.push_notification(
-                    (NotificationType::Warning, "请先选中一个文件再点下载"),
+                    (NotificationType::Warning, rust_i18n::t!("Sftp.select_file_to_download")),
                     cx,
                 );
                 return;
@@ -591,7 +591,7 @@ impl SftpPanel {
         };
         if is_dir {
             window.push_notification(
-                (NotificationType::Warning, "暂不支持下载文件夹"),
+                (NotificationType::Warning, rust_i18n::t!("Sftp.folder_download_unsupported")),
                 cx,
             );
             return;
@@ -739,7 +739,7 @@ impl SftpPanel {
         }
         if let PendingOpKind::Rename(_) = kind {
             if name.contains('/') {
-                self.status = "重命名失败: 名称不能包含 \"/\"".to_string();
+                self.status = rust_i18n::t!("Sftp.rename_failed_slash").to_string();
                 cx.notify();
                 return;
             }
@@ -803,14 +803,15 @@ impl SftpPanel {
                         }
                         Ok(Err(e)) => {
                             this.update(cx, |this, cx| {
-                                this.status = format!("重命名失败: {e}");
+                                this.status =
+                                    rust_i18n::t!("Sftp.rename_failed_error", error = e).to_string();
                                 cx.notify();
                             })
                             .ok();
                         }
                         Err(_) => {
                             this.update(cx, |this, cx| {
-                                this.status = "重命名失败: session closed".to_string();
+                                this.status = rust_i18n::t!("Sftp.rename_failed_session_closed").to_string();
                                 cx.notify();
                             })
                             .ok();
@@ -827,7 +828,7 @@ impl SftpPanel {
             let state = self.table_state.read(cx);
             let Some(ix) = state.selected_row() else {
                 window.push_notification(
-                    (NotificationType::Warning, "请先选中要删除的条目"),
+                    (NotificationType::Warning, rust_i18n::t!("Sftp.select_item_to_delete")),
                     cx,
                 );
                 return;
@@ -854,11 +855,17 @@ impl SftpPanel {
             let table_state = table_state.clone();
             let delete_name = delete_name.clone();
             let path = path.clone();
+            let folder_note = if is_dir {
+                rust_i18n::t!("Sftp.confirm_delete_folder_note").to_string()
+            } else {
+                String::new()
+            };
             alert
-                .title("确认删除")
-                .description(format!(
-                    "确定要删除「{name}」吗？{}此操作不可撤销。",
-                    if is_dir { "文件夹及其所有内容都会被删除，" } else { "" }
+                .title(rust_i18n::t!("Sftp.confirm_delete_title"))
+                .description(rust_i18n::t!(
+                    "Sftp.confirm_delete_body",
+                    name = name,
+                    folder_note = folder_note
                 ))
                 .confirm()
                 .on_ok(move |_, window, cx| {
@@ -870,7 +877,7 @@ impl SftpPanel {
                     let remote = remote_join(&path, &name);
                     cx.spawn(async move |cx| {
                         weak_panel.update(cx, |this, cx| {
-                            this.status = "删除中…".to_string();
+                            this.status = rust_i18n::t!("Sftp.deleting").to_string();
                             cx.notify();
                         }).ok();
                         let rx = session.sftp_remove(remote, is_dir);
@@ -886,13 +893,14 @@ impl SftpPanel {
                             }
                             Ok(Err(e)) => {
                                 weak_panel.update(cx, |this, cx| {
-                                    this.status = format!("删除失败: {e}");
+                                    this.status =
+                                        rust_i18n::t!("Sftp.delete_failed_error", error = e).to_string();
                                     cx.notify();
                                 }).ok();
                             }
                             Err(_) => {
                                 weak_panel.update(cx, |this, cx| {
-                                    this.status = "删除失败: session closed".to_string();
+                                    this.status = rust_i18n::t!("Sftp.delete_failed_session_closed").to_string();
                                     cx.notify();
                                 }).ok();
                             }
@@ -979,7 +987,7 @@ impl SftpPanel {
                 let _ = this.update(cx, |this, cx| match guess {
                     Some(path) => this.navigate_to(path, window, cx),
                     None => {
-                        this.status = "无法从终端获取当前目录".to_string();
+                        this.status = rust_i18n::t!("Sftp.cwd_sync_failed").to_string();
                         cx.notify();
                     }
                 });
@@ -1002,7 +1010,11 @@ impl SftpPanel {
             return;
         };
         let path = remote_join(&self.path, &entry.name);
-        let kind = if entry.is_dir { "文件夹" } else { "文件" }.to_string();
+        let kind = if entry.is_dir {
+            rust_i18n::t!("Sftp.kind_folder").to_string()
+        } else {
+            rust_i18n::t!("Sftp.kind_file").to_string()
+        };
         let size = if entry.is_dir { "—".to_string() } else { human_size(entry.size) };
         let mtime = human_mtime(entry.mtime);
         let perms = human_perms(entry.perms);
@@ -1013,13 +1025,13 @@ impl SftpPanel {
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(properties_row("名称", &name, cx))
-                .child(properties_row("路径", &path, cx))
-                .child(properties_row("类型", &kind, cx))
-                .child(properties_row("大小", &size, cx))
-                .child(properties_row("修改时间", &mtime, cx))
-                .child(properties_row("权限", &perms, cx));
-            alert.title("属性").description(grid)
+                .child(properties_row(rust_i18n::t!("Sftp.col_name"), &name, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.path_label"), &path, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.type_label"), &kind, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.col_size"), &size, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.col_mtime"), &mtime, cx))
+                .child(properties_row(rust_i18n::t!("Sftp.col_perms"), &perms, cx));
+            alert.title(rust_i18n::t!("Sftp.properties")).description(grid)
         });
     }
 }
@@ -1038,7 +1050,7 @@ impl Panel for SftpPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(format!("SFTP: {}", self.label))
+        rust_i18n::t!("Sftp.panel_title", label = self.label.clone())
     }
 }
 
@@ -1084,7 +1096,7 @@ impl Render for SftpPlaceholder {
             .size_full()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child("连接会话以浏览文件")
+            .child(rust_i18n::t!("Sftp.connect_session_to_browse"))
     }
 }
 
@@ -1209,7 +1221,7 @@ impl SftpPanel {
             .bg(cx.theme().muted)
             .text_sm()
             .text_color(cx.theme().foreground)
-            .child("文件浏览器")
+            .child(rust_i18n::t!("Sftp.file_browser_title"))
     }
 
     fn render_pending_op_row(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1217,8 +1229,8 @@ impl SftpPanel {
             return div().into_any_element();
         };
         let label = match kind {
-            PendingOpKind::NewFile => "新建文件:".to_string(),
-            PendingOpKind::NewFolder => "新建文件夹:".to_string(),
+            PendingOpKind::NewFile => rust_i18n::t!("Sftp.new_file_prefix").to_string(),
+            PendingOpKind::NewFolder => rust_i18n::t!("Sftp.new_folder_prefix").to_string(),
             PendingOpKind::Rename(ix) => {
                 let old_name = self
                     .table_state
@@ -1228,7 +1240,7 @@ impl SftpPanel {
                     .get(*ix)
                     .map(|e| e.name.clone())
                     .unwrap_or_default();
-                format!("重命名「{old_name}」为:")
+                rust_i18n::t!("Sftp.rename_prefix", old_name = old_name).to_string()
             }
         };
         div()
@@ -1269,7 +1281,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::NewFile))
-                    .tooltip("新建文件")
+                    .tooltip(rust_i18n::t!("Sftp.new_file_tooltip"))
                     .on_click(cx.listener(|this, _, window, cx| this.new_file(window, cx))),
             )
             .child(
@@ -1277,7 +1289,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::NewFolder))
-                    .tooltip("新建文件夹")
+                    .tooltip(rust_i18n::t!("Sftp.new_folder_tooltip"))
                     .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
             )
             .child(
@@ -1285,7 +1297,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::Upload))
-                    .tooltip("上传")
+                    .tooltip(rust_i18n::t!("Sftp.upload_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             )
             .child(
@@ -1293,7 +1305,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::Download))
-                    .tooltip("下载")
+                    .tooltip(rust_i18n::t!("Sftp.download"))
                     .disabled(!has_selection)
                     .on_click(cx.listener(|this, _, window, cx| this.download_selected(window, cx))),
             )
@@ -1305,7 +1317,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::Delete))
-                    .tooltip("删除")
+                    .tooltip(rust_i18n::t!("Sftp.delete"))
                     .disabled(!has_selection)
                     .on_click(cx.listener(|this, _, window, cx| this.delete_selected(window, cx))),
             )
@@ -1314,7 +1326,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::Up))
-                    .tooltip("向上一级")
+                    .tooltip(rust_i18n::t!("Sftp.go_up_tooltip"))
                     .on_click(cx.listener(|this, _, window, cx| this.go_up(window, cx))),
             )
             .child(
@@ -1322,7 +1334,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::Refresh))
-                    .tooltip("刷新")
+                    .tooltip(rust_i18n::t!("Sftp.refresh_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
             )
             .child(div().flex_1())
@@ -1331,7 +1343,11 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(if self.show_hidden { IconName::EyeOff } else { IconName::Eye })
-                    .tooltip(if self.show_hidden { "隐藏点文件" } else { "显示隐藏文件" })
+                    .tooltip(if self.show_hidden {
+                        rust_i18n::t!("Sftp.hide_dotfiles_tooltip")
+                    } else {
+                        rust_i18n::t!("Sftp.show_hidden_files_tooltip")
+                    })
                     .on_click(cx.listener(|this, _, _w, cx| this.toggle_hidden_files(cx))),
             )
     }
@@ -1357,7 +1373,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(IconName::Copy)
-                    .tooltip("复制路径")
+                    .tooltip(rust_i18n::t!("Sftp.copy_path"))
                     .on_click(cx.listener(|this, _, _w, cx| this.copy_path(cx))),
             )
             .child({
@@ -1370,11 +1386,11 @@ impl SftpPanel {
                             .xsmall()
                             .ghost()
                             .icon(IconName::Undo2)
-                            .tooltip("最近访问"),
+                            .tooltip(rust_i18n::t!("Sftp.recent_paths_tooltip")),
                     )
                     .dropdown_menu(move |menu, _window, _cx| {
                         if history.is_empty() {
-                            return menu.label("暂无历史记录");
+                            return menu.label(rust_i18n::t!("Sftp.no_history"));
                         }
                         let mut menu = menu;
                         for path in history.iter().rev().take(5) {
@@ -1397,7 +1413,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(IconName::ArrowRight)
-                    .tooltip("发送路径到终端")
+                    .tooltip(rust_i18n::t!("Sftp.send_path_to_terminal_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| this.send_path_to_terminal(cx))),
             )
             .child(
@@ -1405,7 +1421,7 @@ impl SftpPanel {
                     .xsmall()
                     .ghost()
                     .icon(IconName::ArrowLeft)
-                    .tooltip("从终端同步目录")
+                    .tooltip(rust_i18n::t!("Sftp.sync_cwd_from_terminal_tooltip"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.sync_cwd_from_terminal(window, cx)
                     })),
@@ -1477,7 +1493,7 @@ impl SftpPanel {
             let total_bytes: u64 = entries.iter().filter(|e| !e.is_dir).map(|e| e.size).sum();
             (count, total_bytes)
         };
-        let summary = format!("共 {count} 项 | {}", human_size(total_bytes));
+        let summary = rust_i18n::t!("Sftp.status_row", count = count, size = human_size(total_bytes));
         div()
             .flex()
             .flex_row()
@@ -1506,7 +1522,7 @@ impl SftpPanel {
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
             .text_color(cx.theme().foreground)
-            .child("文件传输")
+            .child(rust_i18n::t!("Sftp.file_transfers_header"))
     }
 
     fn render_transfer_body(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -1520,7 +1536,7 @@ impl SftpPanel {
                 .py_4()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("无传输记录")
+                .child(rust_i18n::t!("Sftp.no_transfers"))
                 .into_any_element()
         } else {
             let rows = self.transfers.iter().map(|t| {
@@ -1529,15 +1545,17 @@ impl SftpPanel {
                     TransferDirection::Upload => "↑",
                 };
                 let status_text = match &t.status {
-                    TransferStatus::Queued => "排队中".to_string(),
+                    TransferStatus::Queued => rust_i18n::t!("Sftp.transfer_queued").to_string(),
                     TransferStatus::Active => format!(
                         "{} / {}",
                         human_size(t.transferred),
                         human_size(t.total)
                     ),
-                    TransferStatus::Done => format!("完成 {}", human_size(t.transferred)),
-                    TransferStatus::Failed(e) => format!("失败: {e}"),
-                    TransferStatus::Cancelled => "已取消".to_string(),
+                    TransferStatus::Done => {
+                        rust_i18n::t!("Sftp.transfer_done", size = human_size(t.transferred)).to_string()
+                    }
+                    TransferStatus::Failed(e) => rust_i18n::t!("Sftp.transfer_failed", error = e).to_string(),
+                    TransferStatus::Cancelled => rust_i18n::t!("Sftp.transfer_cancelled").to_string(),
                 };
                 let progress = t.progress();
                 let bar_color = match t.status {
@@ -1592,7 +1610,7 @@ impl SftpPanel {
                                         .ghost()
                                         .xsmall()
                                         .icon(IconName::Delete)
-                                        .tooltip("取消传输")
+                                        .tooltip(rust_i18n::t!("Sftp.cancel_transfer_tooltip"))
                                         .on_click(cx.listener(
                                             move |this, _, _w, _cx| {
                                                 this.cancel_transfer(transfer_id);
@@ -1646,7 +1664,7 @@ impl SftpPanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("下载到:"),
+                    .child(rust_i18n::t!("Sftp.download_to_prefix")),
             )
             .child(
                 div()
@@ -1726,7 +1744,7 @@ fn human_perms(perms: u32) -> String {
 }
 
 /// One label/value row in the properties dialog's key/value grid.
-fn properties_row(label: &str, value: &str, cx: &App) -> impl IntoElement {
+fn properties_row(label: impl Into<SharedString>, value: &str, cx: &App) -> impl IntoElement {
     div()
         .flex()
         .flex_row()
@@ -1735,7 +1753,7 @@ fn properties_row(label: &str, value: &str, cx: &App) -> impl IntoElement {
             div()
                 .min_w(px(64.0))
                 .text_color(cx.theme().muted_foreground)
-                .child(SharedString::from(label.to_string())),
+                .child(label.into()),
         )
         .child(div().child(SharedString::from(value.to_string())))
 }

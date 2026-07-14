@@ -397,3 +397,163 @@ NewConnectionWindow:
   save:
     zh-CN: "保存"
     en: "Save"
+Sftp:
+  no_transfers:
+    zh-CN: "无传输记录"
+    en: "No transfers"
+  col_name:
+    zh-CN: "名称"
+    en: "Name"
+  col_mtime:
+    zh-CN: "修改时间"
+    en: "Modified"
+  col_size:
+    zh-CN: "大小"
+    en: "Size"
+  col_perms:
+    zh-CN: "权限"
+    en: "Permissions"
+  open:
+    zh-CN: "打开"
+    en: "Open"
+  download:
+    zh-CN: "下载"
+    en: "Download"
+  rename:
+    zh-CN: "重命名"
+    en: "Rename"
+  properties:
+    zh-CN: "属性"
+    en: "Properties"
+  copy_path:
+    zh-CN: "复制路径"
+    en: "Copy Path"
+  delete:
+    zh-CN: "删除"
+    en: "Delete"
+  select_file_to_download:
+    zh-CN: "请先选中一个文件再点下载"
+    en: "Select a file first, then click Download"
+  folder_download_unsupported:
+    zh-CN: "暂不支持下载文件夹"
+    en: "Downloading folders isn't supported yet"
+  rename_failed_slash:
+    zh-CN: "重命名失败: 名称不能包含 \"/\""
+    en: "Rename failed: name cannot contain \"/\""
+  rename_failed_error:
+    zh-CN: "重命名失败: %{error}"
+    en: "Rename failed: %{error}"
+  rename_failed_session_closed:
+    zh-CN: "重命名失败: session closed"
+    en: "Rename failed: session closed"
+  select_item_to_delete:
+    zh-CN: "请先选中要删除的条目"
+    en: "Select an item to delete first"
+  confirm_delete_title:
+    zh-CN: "确认删除"
+    en: "Confirm Delete"
+  confirm_delete_folder_note:
+    zh-CN: "文件夹及其所有内容都会被删除，"
+    en: "The folder and everything in it will be deleted. "
+  confirm_delete_body:
+    zh-CN: "确定要删除「%{name}」吗？%{folder_note}此操作不可撤销。"
+    en: "Delete \"%{name}\"? %{folder_note}This cannot be undone."
+  deleting:
+    zh-CN: "删除中…"
+    en: "Deleting…"
+  delete_failed_error:
+    zh-CN: "删除失败: %{error}"
+    en: "Delete failed: %{error}"
+  delete_failed_session_closed:
+    zh-CN: "删除失败: session closed"
+    en: "Delete failed: session closed"
+  cwd_sync_failed:
+    zh-CN: "无法从终端获取当前目录"
+    en: "Couldn't get the current directory from the terminal"
+  kind_folder:
+    zh-CN: "文件夹"
+    en: "Folder"
+  kind_file:
+    zh-CN: "文件"
+    en: "File"
+  path_label:
+    zh-CN: "路径"
+    en: "Path"
+  type_label:
+    zh-CN: "类型"
+    en: "Type"
+  panel_title:
+    zh-CN: "SFTP: %{label}"
+    en: "SFTP: %{label}"
+  connect_session_to_browse:
+    zh-CN: "连接会话以浏览文件"
+    en: "Connect a session to browse files"
+  file_browser_title:
+    zh-CN: "文件浏览器"
+    en: "File Browser"
+  new_file_prefix:
+    zh-CN: "新建文件:"
+    en: "New file:"
+  new_folder_prefix:
+    zh-CN: "新建文件夹:"
+    en: "New folder:"
+  rename_prefix:
+    zh-CN: "重命名「%{old_name}」为:"
+    en: "Rename \"%{old_name}\" to:"
+  new_file_tooltip:
+    zh-CN: "新建文件"
+    en: "New File"
+  new_folder_tooltip:
+    zh-CN: "新建文件夹"
+    en: "New Folder"
+  upload_tooltip:
+    zh-CN: "上传"
+    en: "Upload"
+  go_up_tooltip:
+    zh-CN: "向上一级"
+    en: "Go Up"
+  refresh_tooltip:
+    zh-CN: "刷新"
+    en: "Refresh"
+  hide_dotfiles_tooltip:
+    zh-CN: "隐藏点文件"
+    en: "Hide Dotfiles"
+  show_hidden_files_tooltip:
+    zh-CN: "显示隐藏文件"
+    en: "Show Hidden Files"
+  recent_paths_tooltip:
+    zh-CN: "最近访问"
+    en: "Recent Paths"
+  no_history:
+    zh-CN: "暂无历史记录"
+    en: "No history yet"
+  send_path_to_terminal_tooltip:
+    zh-CN: "发送路径到终端"
+    en: "Send Path to Terminal"
+  sync_cwd_from_terminal_tooltip:
+    zh-CN: "从终端同步目录"
+    en: "Sync Directory from Terminal"
+  status_row:
+    zh-CN: "共 %{count} 项 | %{size}"
+    en: "%{count} item(s) | %{size}"
+  file_transfers_header:
+    zh-CN: "文件传输"
+    en: "File Transfers"
+  transfer_queued:
+    zh-CN: "排队中"
+    en: "Queued"
+  transfer_done:
+    zh-CN: "完成 %{size}"
+    en: "Done %{size}"
+  transfer_failed:
+    zh-CN: "失败: %{error}"
+    en: "Failed: %{error}"
+  transfer_cancelled:
+    zh-CN: "已取消"
+    en: "Cancelled"
+  cancel_transfer_tooltip:
+    zh-CN: "取消传输"
+    en: "Cancel Transfer"
+  download_to_prefix:
+    zh-CN: "下载到:"
+    en: "Download to:"
