@@ -22,9 +22,12 @@ pub struct AppSettings {
 /// see [`TerminalSettings`] for the terminal's own font.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppearanceSettings {
-    /// `"dark"` | `"light"`.
-    #[serde(default = "default_theme_mode")]
-    pub theme_mode: String,
+    /// Exact theme name from `gpui_component::ThemeRegistry` (e.g. `"Default
+    /// Dark"`, `"Ayu Light"`, `"Catppuccin Mocha"`) — not just a light/dark
+    /// mode, since the theme picker (Settings → Appearance) lets the user
+    /// choose any bundled theme, light or dark.
+    #[serde(default = "default_theme_name")]
+    pub theme_name: String,
     /// Primary application-chrome font. Empty string = detect a system UI
     /// font at startup/apply time (`Workspace::system_ui_font_family`) — see
     /// the design spec for why chrome text needs its own resolution
@@ -98,14 +101,14 @@ fn default_appearance_font_fallback() -> String {
     "Sarasa Mono SC".to_string()
 }
 
-fn default_theme_mode() -> String {
-    "dark".to_string()
+fn default_theme_name() -> String {
+    "Default Dark".to_string()
 }
 
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
-            theme_mode: default_theme_mode(),
+            theme_name: default_theme_name(),
             font_family: String::new(),
             font_fallback: default_appearance_font_fallback(),
         }
@@ -171,7 +174,7 @@ mod tests {
         assert_eq!(settings.terminal.scrollback_lines, 10_000);
         assert_eq!(settings.terminal.font_fallback1, "Symbols Nerd Font");
         assert_eq!(settings.terminal.font_fallback2, "Sarasa Mono SC");
-        assert_eq!(settings.appearance.theme_mode, "dark");
+        assert_eq!(settings.appearance.theme_name, "Default Dark");
         assert_eq!(settings.appearance.font_family, "");
         assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
     }
@@ -180,7 +183,7 @@ mod tests {
     fn round_trip_preserves_fields() {
         let settings = AppSettings {
             appearance: AppearanceSettings {
-                theme_mode: "light".to_string(),
+                theme_name: "Ayu Light".to_string(),
                 font_family: "JetBrains Mono".to_string(),
                 font_fallback: "Symbols Nerd Font".to_string(),
             },
@@ -203,7 +206,7 @@ mod tests {
         assert_eq!(parsed.terminal.scrollback_lines, 20_000);
         assert_eq!(parsed.terminal.font_fallback1, "JetBrains Mono");
         assert_eq!(parsed.terminal.font_fallback2, "Symbols Nerd Font");
-        assert_eq!(parsed.appearance.theme_mode, "light");
+        assert_eq!(parsed.appearance.theme_name, "Ayu Light");
         assert_eq!(parsed.appearance.font_family, "JetBrains Mono");
         assert_eq!(parsed.appearance.font_fallback, "Symbols Nerd Font");
     }
@@ -219,7 +222,7 @@ mod tests {
         assert_eq!(settings.terminal.font_family, "");
         assert_eq!(settings.terminal.font_size, 14.0);
         assert_eq!(settings.terminal.scrollback_lines, 10_000);
-        assert_eq!(settings.appearance.theme_mode, "dark");
+        assert_eq!(settings.appearance.theme_name, "Default Dark");
         assert_eq!(settings.appearance.font_family, "");
         assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
     }
@@ -237,6 +240,9 @@ mod tests {
         // simply dropped (not migrated) — this only proves the file doesn't
         // fail to parse and the new [terminal] section falls back to
         // defaults, matching `AppSettings`'s top-level `#[serde(default)]`.
+        // `theme_mode` (this file predates the `theme_name` rename) is an
+        // unknown field to the current struct — serde ignores it rather than
+        // erroring, and `theme_name` falls back to its own default.
         let toml_text = r#"
             [appearance]
             font_family = "Consolas"
@@ -245,7 +251,7 @@ mod tests {
         "#;
         let settings: AppSettings =
             toml::from_str(toml_text).expect("old-format settings must still parse");
-        assert_eq!(settings.appearance.theme_mode, "light");
+        assert_eq!(settings.appearance.theme_name, "Default Dark");
         assert_eq!(settings.terminal.font_family, "");
         assert_eq!(settings.terminal.font_size, 14.0);
     }
@@ -287,7 +293,7 @@ mod tests {
         // appearance's font fields existed.
         let toml_text = r#"
             [appearance]
-            theme_mode = "light"
+            theme_name = "Ayu Light"
 
             [terminal]
             font_family = "Consolas"

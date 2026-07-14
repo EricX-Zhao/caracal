@@ -1,6 +1,8 @@
 //! Top header bar — an in-app title bar (~40px) with a small brand mark, a
-//! menu bar (File / View / Terminal / Help) built from gpui-component dropdown
-//! menus, a centered active-tab title (also the window's draggable region),
+//! menu bar (File / Terminal / Help — no View menu: theme selection now
+//! lives entirely in Settings → Appearance, see `settings_window.rs`) built
+//! from gpui-component dropdown menus, a centered active-tab title (also the
+//! window's draggable region),
 //! and — on Linux/Windows — a minimize/maximize/close button cluster (macOS
 //! keeps its native traffic-light buttons instead; see `main.rs`'s
 //! `TitlebarOptions`). The window itself requests client-side decorations in
@@ -211,20 +213,6 @@ pub fn render_header(
             )
         });
 
-    let view_menu = Button::new("menu-view")
-        .ghost()
-        .xsmall()
-        .label("视图")
-        .dropdown_menu(move |menu, _window, _cx| {
-            menu.item(
-                // Shares `crate::toggle_theme` with Ctrl+K (bound in
-                // `main.rs`) so both paths persist to `settings.toml` and
-                // always agree with what Settings → Appearance shows.
-                PopupMenuItem::new("切换主题")
-                    .on_click(move |_ev, _window, cx| crate::toggle_theme(cx)),
-            )
-        });
-
     let terminal_menu = Button::new("menu-terminal")
         .ghost()
         .xsmall()
@@ -271,7 +259,6 @@ pub fn render_header(
                         .child(icon(AppIcon::Terminal)),
                 )
                 .child(file_menu)
-                .child(view_menu)
                 .child(terminal_menu)
                 .child(help_menu),
         )

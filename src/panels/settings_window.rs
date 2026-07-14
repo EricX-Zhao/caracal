@@ -50,7 +50,7 @@ use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme, Sizable, Theme, ThemeMode};
+use gpui_component::{ActiveTheme, Sizable, Theme, ThemeMode, ThemeRegistry};
 
 use crate::settings::{self, AppSettings};
 use crate::terminal::view::{CJK_FALLBACK, DEFAULT_FONT_FAMILY, SYMBOL_FALLBACK};
@@ -193,14 +193,17 @@ impl SettingsWindow {
             return false;
         }
 
-        let mode = if self.draft.appearance.theme_mode == "light" {
-            ThemeMode::Light
-        } else {
-            ThemeMode::Dark
-        };
-        Theme::change(mode, None, cx);
-        // See `crate::toggle_theme`: `Theme::change` only refreshes the window
-        // it's passed (none, here), so force every open window to repaint or
+        // Look up the exact theme by name (not just a light/dark mode) — see
+        // `theme_dropdown`. Falls back to the built-in Default Dark theme if
+        // the name isn't registered (shouldn't normally happen: the dropdown
+        // only ever offers names straight from `ThemeRegistry`).
+        let theme_name = SharedString::from(self.draft.appearance.theme_name.clone());
+        match ThemeRegistry::global(cx).themes().get(&theme_name).cloned() {
+            Some(theme) => Theme::global_mut(cx).apply_config(&theme),
+            None => Theme::change(ThemeMode::Dark, None, cx),
+        }
+        // `Theme::change`/`apply_config` only refresh the window they're
+        // given (none, here), so force every open window to repaint or
         // panels that don't redraw for other reasons keep showing stale colors.
         cx.refresh_windows();
 
@@ -241,8 +244,8 @@ impl SettingsWindow {
         }
     }
 
-    fn set_theme_mode(&mut self, mode: &str, cx: &mut Context<Self>) {
-        self.draft.appearance.theme_mode = mode.to_string();
+    fn set_theme_name(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.draft.appearance.theme_name = name.to_string();
         cx.notify();
     }
 
@@ -355,30 +358,42 @@ impl SettingsWindow {
             }))
     }
 
-    /// One theme-mode pill (shared visual idiom with
-    /// `sessions.rs`'s connection-type pills).
-    fn theme_pill(&self, mode: &'static str, label: &'static str, cx: &Context<Self>) -> impl IntoElement {
-        let active = self.draft.appearance.theme_mode == mode;
-        div()
-            .id(SharedString::from(format!("settings-theme-{mode}")))
-            .px_2()
-            .py_0p5()
-            .rounded_sm()
-            .bg(if active {
-                cx.theme().primary
-            } else {
-                cx.theme().accent
+    /// Theme dropdown: lists every theme in `ThemeRegistry` (the built-in
+    /// Default Light/Dark pair plus the bundled gpui-component theme
+    /// collection — see `main.rs`'s `BUNDLED_THEMES`); selecting one applies
+    /// it immediately by exact name, not just a light/dark mode.
+    fn theme_dropdown(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.draft.appearance.theme_name.clone();
+        let weak = cx.entity().downgrade();
+        let names: Vec<SharedString> = ThemeRegistry::global(cx)
+            .sorted_themes()
+            .into_iter()
+            .map(|theme| theme.name.clone())
+            .collect();
+
+        DropdownButton::new("settings-theme-picker")
+            .xsmall()
+            .button(
+                Button::new("settings-theme-picker-btn")
+                    .xsmall()
+                    .label(current),
+            )
+            .dropdown_menu(move |menu, _window, _cx| {
+                let mut menu = menu;
+                for name in &names {
+                    let name = name.clone();
+                    let weak = weak.clone();
+                    menu = menu.item(PopupMenuItem::new(name.clone()).on_click(
+                        move |_ev, _window, cx| {
+                            let name = name.clone();
+                            let _ = weak.update(cx, |this, cx| {
+                                this.set_theme_name(&name, cx);
+                            });
+                        },
+                    ));
+                }
+                menu
             })
-            .text_color(if active {
-                cx.theme().primary_foreground
-            } else {
-                cx.theme().foreground
-            })
-            .hover(|s| s.bg(cx.theme().accent))
-            .child(label)
-            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                this.set_theme_mode(mode, cx);
-            }))
     }
 
     fn render_placeholder_tab(&self, title: &str, cx: &Context<Self>) -> impl IntoElement {
@@ -414,14 +429,7 @@ impl SettingsWindow {
                             .text_color(cx.theme().muted_foreground)
                             .child("主题"),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(self.theme_pill("dark", "深色", cx))
-                            .child(self.theme_pill("light", "浅色", cx)),
-                    ),
+                    .child(self.theme_dropdown(cx)),
             )
             .child(self.font_picker("首选字体", FontSlot::AppearancePrimary, cx))
             .child(self.font_picker("备选字体", FontSlot::AppearanceFallback, cx))

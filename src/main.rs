@@ -25,10 +25,10 @@ mod workspace;
 use std::borrow::Cow;
 
 use gpui::{
-    App, AppContext, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowDecorations,
-    WindowOptions, actions, point, px, size,
+    App, AppContext, Bounds, KeyBinding, SharedString, TitlebarOptions, WindowBounds,
+    WindowDecorations, WindowOptions, point, px, size,
 };
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::{Root, Theme, ThemeMode, ThemeRegistry};
 use gpui_platform::application;
 
 use crate::assets::CaracalAssets;
@@ -36,30 +36,53 @@ use crate::assets::CaracalAssets;
 use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::Workspace;
 
-actions!(caracal, [ToggleTheme]);
+/// gpui-component's own bundled theme collection (Ayu, Catppuccin, Gruvbox,
+/// Tokyo Night, ...), embedded so the Settings → Appearance theme dropdown
+/// has more than just the built-in Default Light/Dark pair. Apache-2.0
+/// (same as the `gpui-component` dependency itself), copied verbatim from
+/// its `themes/` directory — see `assets/themes/` for the individual files.
+const BUNDLED_THEMES: &[&str] = &[
+    include_str!("../assets/themes/adventure.json"),
+    include_str!("../assets/themes/alduin.json"),
+    include_str!("../assets/themes/asciinema.json"),
+    include_str!("../assets/themes/aurora.json"),
+    include_str!("../assets/themes/ayu.json"),
+    include_str!("../assets/themes/catppuccin.json"),
+    include_str!("../assets/themes/everforest.json"),
+    include_str!("../assets/themes/fahrenheit.json"),
+    include_str!("../assets/themes/flexoki.json"),
+    include_str!("../assets/themes/gruvbox.json"),
+    include_str!("../assets/themes/harper.json"),
+    include_str!("../assets/themes/hybrid.json"),
+    include_str!("../assets/themes/jellybeans.json"),
+    include_str!("../assets/themes/kibble.json"),
+    include_str!("../assets/themes/macos-classic.json"),
+    include_str!("../assets/themes/matrix.json"),
+    include_str!("../assets/themes/mellifluous.json"),
+    include_str!("../assets/themes/molokai.json"),
+    include_str!("../assets/themes/solarized.json"),
+    include_str!("../assets/themes/spaceduck.json"),
+    include_str!("../assets/themes/tokyonight.json"),
+    include_str!("../assets/themes/twilight.json"),
+];
 
-/// Flip the theme and persist the choice to `settings.toml`, so Ctrl+K (bound
-/// below) and the View menu's "切换主题" item (`panels::header`) always agree
-/// with each other and with what Settings → Appearance shows.
-pub(crate) fn toggle_theme(cx: &mut App) {
-    let next = if Theme::global(cx).mode.is_dark() {
-        ThemeMode::Light
-    } else {
-        ThemeMode::Dark
-    };
-    Theme::change(next, None, cx);
-    // `Theme::change` only calls `window.refresh()` for the window it's given
-    // (none, here — this fires from a global action with no window in scope),
-    // so without this, changed colors sit in the global `Theme` but never get
-    // repainted: docked panels that don't already redraw for unrelated reasons
-    // (cursor blink, hover, etc.) stay on the old theme until something else
-    // forces a frame.
-    cx.refresh_windows();
+fn load_bundled_themes(cx: &mut App) {
+    for content in BUNDLED_THEMES {
+        if let Err(e) = ThemeRegistry::global_mut(cx).load_themes_from_str(content) {
+            log::warn!("failed to load a bundled theme: {e}");
+        }
+    }
+}
 
-    let mut settings = settings::load();
-    settings.appearance.theme_mode = if next.is_dark() { "dark" } else { "light" }.to_string();
-    if let Err(e) = settings::save(&settings) {
-        log::error!("failed to persist theme toggle: {e}");
+/// Apply the persisted theme by exact name (e.g. "Ayu Dark", not just a
+/// light/dark mode) — falls back to the built-in Default Dark theme if the
+/// saved name isn't registered (e.g. `settings.toml` predates this feature,
+/// or names a theme this build no longer bundles).
+fn apply_startup_theme(theme_name: &str, cx: &mut App) {
+    let theme_name = SharedString::from(theme_name.to_string());
+    match ThemeRegistry::global(cx).themes().get(&theme_name).cloned() {
+        Some(theme) => Theme::global_mut(cx).apply_config(&theme),
+        None => Theme::change(ThemeMode::Dark, None, cx),
     }
 }
 
@@ -94,17 +117,13 @@ fn main() {
     application().with_assets(CaracalAssets).run(|cx: &mut App| {
         // Must run before using any gpui-component feature (theme/overlay/etc.).
         gpui_component::init(cx);
+        load_bundled_themes(cx);
 
-        // Apply the persisted theme (defaults to dark if no settings.toml
-        // exists yet, or its theme_mode isn't "light") — uses the built-in
-        // dark/light themes from gpui-component (One Dark / One Light).
+        // Apply the persisted theme by name (defaults to Default Dark if no
+        // settings.toml exists yet, or it names a theme that isn't
+        // registered) — see Settings → Appearance for the full theme list.
         let startup_settings = settings::load();
-        let startup_theme = if startup_settings.appearance.theme_mode == "light" {
-            ThemeMode::Light
-        } else {
-            ThemeMode::Dark
-        };
-        Theme::change(startup_theme, None, cx);
+        apply_startup_theme(&startup_settings.appearance.theme_name, cx);
 
         // gpui-component's `Theme::default()` sets `font_family` to
         // `.SystemUIFont` — a macOS-only sentinel (`root.rs` applies it to the
@@ -116,15 +135,6 @@ fn main() {
         // covers both Latin and CJK glyphs, so the whole app chrome — not
         // just the terminal content — renders from a font we actually ship.
         Theme::global_mut(cx).font_family = "Sarasa Mono SC".into();
-
-        // Allow toggling between light/dark with Ctrl+K.
-        cx.bind_keys([KeyBinding::new(
-            "ctrl-k",
-            ToggleTheme,
-            Some("caracal"),
-        )]);
-
-        cx.on_action(|_action: &ToggleTheme, cx| toggle_theme(cx));
 
         // Reclaim keys that gpui-component's Root context binds (tab → focus nav,
         // ctrl-c → Copy): bind them in the deeper "Terminal" context so the
