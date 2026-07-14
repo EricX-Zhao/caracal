@@ -1,15 +1,19 @@
 //! Top header bar — an in-app title bar (~40px) with a small brand mark, a
 //! menu bar (File / View / Terminal / Help) built from gpui-component dropdown
-//! menus, and a centered active-tab title. The OS window decorations are kept
-//! for now; a frameless window + custom min/max/close controls (gpui-component
-//! `TitleBar`) are a follow-up phase.
+//! menus, a centered active-tab title (also the window's draggable region),
+//! and — on Linux/Windows — a minimize/maximize/close button cluster (macOS
+//! keeps its native traffic-light buttons instead; see `main.rs`'s
+//! `TitlebarOptions`). The window itself requests client-side decorations in
+//! `main.rs`, which is what makes this row the *only* title bar the user
+//! sees.
 //!
 //! Menu actions call back into the [`Workspace`] via a `WeakEntity`, so this
 //! module stays a thin presentational adapter (CLAUDE.md §1).
 
 use gpui::{
     App, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    SharedString, Styled, WeakEntity, Window, WindowButton, WindowButtonLayout, div, px,
+    SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window, WindowButton,
+    WindowButtonLayout, div, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
@@ -73,6 +77,59 @@ fn drag_or_maximize(ev: &MouseDownEvent, window: &mut Window, _cx: &mut App) {
     }
 }
 
+/// One minimize/maximize/close button. macOS never renders this (native
+/// traffic-light buttons replace it — see `render_header`'s `is_macos`
+/// branch), so this only needs to look right for Linux/Windows conventions.
+fn window_control_button(button: WindowButton, is_maximized: bool, cx: &App) -> impl IntoElement {
+    let (icon_name, is_close) = match button {
+        WindowButton::Minimize => (AppIcon::WindowMinimize, false),
+        WindowButton::Maximize => (maximize_icon(is_maximized), false),
+        WindowButton::Close => (AppIcon::WindowClose, true),
+    };
+
+    div()
+        .id(button.id())
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(46.0))
+        .h_full()
+        .text_color(cx.theme().muted_foreground)
+        .when(is_close, |d| {
+            d.hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
+        })
+        .when(!is_close, |d| {
+            d.hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
+        })
+        .child(icon(icon_name))
+        .on_click(move |_ev, window, _cx| match button {
+            WindowButton::Minimize => window.minimize_window(),
+            WindowButton::Maximize => window.zoom_window(),
+            WindowButton::Close => window.remove_window(),
+        })
+}
+
+/// Renders one side (`layout.left` or `layout.right`) of the button layout —
+/// most desktops only populate one side, but this handles both since
+/// `cx.button_layout()` can report either.
+fn window_control_side(
+    slots: [Option<WindowButton>; gpui::MAX_BUTTONS_PER_SIDE],
+    is_maximized: bool,
+    cx: &App,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .h_full()
+        .children(
+            slots
+                .into_iter()
+                .flatten()
+                .map(|button| window_control_button(button, is_maximized, cx)),
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,11 +169,32 @@ mod tests {
 pub fn render_header(
     workspace: WeakEntity<Workspace>,
     active_title: SharedString,
+    window: &Window,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let ws_file = workspace.clone();
     let ws_terminal = workspace.clone();
     let ws_settings = workspace.clone();
+
+    // macOS keeps its native traffic-light buttons (positioned via
+    // `TitlebarOptions.traffic_light_position` in `main.rs`) instead of a
+    // hand-drawn cluster — that's the platform convention, and gpui_macos
+    // already implements the OS-level plumbing for it.
+    let is_macos = cfg!(target_os = "macos");
+    let window_controls = if is_macos {
+        None
+    } else {
+        let layout = or_default_layout(cx.button_layout());
+        let is_maximized = window.is_maximized();
+        Some((
+            window_control_side(layout.left, is_maximized, cx).into_any_element(),
+            window_control_side(layout.right, is_maximized, cx).into_any_element(),
+        ))
+    };
+    let (left_controls, right_controls) = match window_controls {
+        Some((l, r)) => (Some(l), Some(r)),
+        None => (None, None),
+    };
 
     let file_menu = Button::new("menu-file")
         .ghost()
@@ -174,6 +252,11 @@ pub fn render_header(
         .bg(cx.theme().muted)
         .border_b_1()
         .border_color(cx.theme().border)
+        // Reserve space for macOS's native traffic-light buttons (rendered
+        // outside this element tree entirely — see `main.rs`'s
+        // `traffic_light_position`), so the brand icon doesn't sit under them.
+        .when(is_macos, |d| d.pl(px(78.0)))
+        .children(left_controls)
         // Brand + menu bar
         .child(
             div()
@@ -212,4 +295,5 @@ pub fn render_header(
                 .on_mouse_down(MouseButton::Left, drag_or_maximize)
                 .child(active_title),
         )
+        .children(right_controls)
 }

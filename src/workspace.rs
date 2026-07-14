@@ -1231,7 +1231,7 @@ impl Render for Workspace {
     /// (effectively the whole app UI) via GPUI's normal style cascade — a
     /// descendant's explicit font setting wins over an ancestor's.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let header = render_header(cx.entity().downgrade(), self.active_title.clone(), cx);
+        let header = render_header(cx.entity().downgrade(), self.active_title.clone(), window, cx);
         let left_bar = self.render_activity_bar(Side::Left, cx);
         let right_bar = self.render_activity_bar(Side::Right, cx);
         let body = self.render_body(cx);
