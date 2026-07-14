@@ -2,8 +2,7 @@
 //! right-dock "会话" panel. Plain Rust — **no `gpui_component`** here
 //! (CLAUDE.md §1 boundary); the panel calls [`load`]/[`save`].
 //!
-//! Stored at `$XDG_CONFIG_HOME/caracal/connections.toml` (else
-//! `~/.config/caracal/connections.toml`).
+//! Stored at `~/.caracal/connections.toml` (see `paths::app_dir`).
 //!
 //! ⚠️ SECURITY / TODO: `password` and `private_key_passphrase` are both
 //! persisted in **plaintext**, matching the current Phase-4 plaintext-secret
@@ -292,15 +291,9 @@ pub struct AppConfig {
     pub groups: Vec<SavedConnectionGroup>,
 }
 
-/// `~/.config/caracal/connections.toml`.
+/// `~/.caracal/connections.toml`.
 pub fn config_path() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".config")
-        });
-    base.join("caracal").join("connections.toml")
+    crate::paths::app_dir().join("connections.toml")
 }
 
 /// Load the config. Missing file → default (empty). A parse error is logged and

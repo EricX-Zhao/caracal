@@ -2,8 +2,7 @@
 //! terminal from the bottom quick-commands drawer. Plain Rust — no
 //! `gpui_component` here (CLAUDE.md §1 boundary).
 //!
-//! Stored at `$XDG_CONFIG_HOME/caracal/quick_commands.toml` (else
-//! `~/.config/caracal/quick_commands.toml`).
+//! Stored at `~/.caracal/quick_commands.toml` (see `paths::app_dir`).
 //!
 //! ⚠️ SECURITY: `command` is persisted in **plaintext**, same caveat as
 //! `config.rs`'s `SavedConnection::password` — a user-saved command that
@@ -47,15 +46,9 @@ pub struct QuickCommandsFile {
     pub commands: Vec<QuickCommand>,
 }
 
-/// `~/.config/caracal/quick_commands.toml`.
+/// `~/.caracal/quick_commands.toml`.
 pub fn quick_commands_path() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".config")
-        });
-    base.join("caracal").join("quick_commands.toml")
+    crate::paths::app_dir().join("quick_commands.toml")
 }
 
 /// Load quick commands. Missing file → empty. A parse error is logged and

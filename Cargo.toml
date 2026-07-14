@@ -35,10 +35,16 @@ russh-sftp = "2.3"
 flume = "0.12.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "io-util", "fs"] }
 
-# Saved-connections persistence (~/.config/caracal/connections.toml). Pure Rust,
-# lives in `config.rs` — no gpui_component (CLAUDE.md §1 boundary).
+# Saved-connections/settings/quick-commands persistence (~/.caracal/*.toml,
+# same folder on Windows and Linux — see `paths.rs`). Pure Rust, no
+# gpui_component (CLAUDE.md §1 boundary).
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Cross-platform home-directory resolution (`paths::app_dir`) — already a
+# transitive dependency via other crates, promoted to direct since we call
+# it ourselves now instead of a `$HOME`-env-var-only fallback that silently
+# resolved to the current directory on Windows (no `$HOME` there).
+dirs = "6"
 
 # Misc
 anyhow = "1"

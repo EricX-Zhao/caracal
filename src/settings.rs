@@ -2,8 +2,7 @@
 //! separate from `config.rs`'s connections/groups. Plain Rust — no
 //! `gpui_component` here (CLAUDE.md §1 boundary).
 //!
-//! Stored at `$XDG_CONFIG_HOME/caracal/settings.toml` (else
-//! `~/.config/caracal/settings.toml`).
+//! Stored at `~/.caracal/settings.toml` (see `paths::app_dir`).
 
 use std::path::PathBuf;
 
@@ -127,15 +126,9 @@ impl Default for TerminalSettings {
     }
 }
 
-/// `~/.config/caracal/settings.toml`.
+/// `~/.caracal/settings.toml`.
 pub fn settings_path() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".config")
-        });
-    base.join("caracal").join("settings.toml")
+    crate::paths::app_dir().join("settings.toml")
 }
 
 /// Load settings. Missing file → default. A parse error is logged and also

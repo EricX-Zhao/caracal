@@ -16,6 +16,7 @@
 mod assets;
 mod config;
 mod panels;
+mod paths;
 mod quick_commands;
 mod settings;
 mod terminal;
