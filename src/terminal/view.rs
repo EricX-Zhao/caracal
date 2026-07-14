@@ -151,8 +151,13 @@ enum ConnBanner {
 /// without a `Window`/`Context`.
 fn conn_banner_text(host_label: &str, banner: &ConnBanner) -> String {
     match banner {
-        ConnBanner::Connecting => format!("正在连接 {host_label}…"),
-        ConnBanner::Failed(reason) => format!("{host_label} {reason}，按 Enter 重连"),
+        ConnBanner::Connecting => {
+            rust_i18n::t!("Terminal.connecting", host = host_label).to_string()
+        }
+        ConnBanner::Failed(reason) => {
+            rust_i18n::t!("Terminal.disconnected_press_enter", host = host_label, reason = reason)
+                .to_string()
+        }
     }
 }
 
@@ -533,7 +538,7 @@ impl TerminalView {
         if !self.remote_reconnect || matches!(self.banner, Some(ConnBanner::Failed(_))) {
             return;
         }
-        self.banner = Some(ConnBanner::Failed("连接已断开".to_string()));
+        self.banner = Some(ConnBanner::Failed(rust_i18n::t!("Terminal.disconnected").to_string()));
         cx.notify();
     }
 
@@ -1103,20 +1108,30 @@ mod tests {
 
     #[test]
     fn conn_banner_text_connecting() {
+        // Locale is process-global state (shared across all tests running in
+        // this binary) — pin it explicitly rather than assuming whatever an
+        // earlier test left active.
+        rust_i18n::set_locale("zh-CN");
         assert_eq!(
             conn_banner_text("root@example.com", &ConnBanner::Connecting),
-            "正在连接 root@example.com…"
+            rust_i18n::t!("Terminal.connecting", host = "root@example.com").to_string()
         );
     }
 
     #[test]
     fn conn_banner_text_failed_includes_reason() {
+        rust_i18n::set_locale("zh-CN");
         assert_eq!(
             conn_banner_text(
                 "root@example.com",
                 &ConnBanner::Failed("连接失败: Connection refused".to_string())
             ),
-            "root@example.com 连接失败: Connection refused，按 Enter 重连"
+            rust_i18n::t!(
+                "Terminal.disconnected_press_enter",
+                host = "root@example.com",
+                reason = "连接失败: Connection refused"
+            )
+            .to_string()
         );
     }
 }

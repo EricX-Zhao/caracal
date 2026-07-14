@@ -133,3 +133,13 @@ Monitor:
   no_ssh_host:
     zh-CN: "未连接 SSH 主机"
     en: "No SSH host connected"
+Terminal:
+  connecting:
+    zh-CN: "正在连接 %{host}…"
+    en: "Connecting to %{host}…"
+  disconnected_press_enter:
+    zh-CN: "%{host} %{reason}，按 Enter 重连"
+    en: "%{host} %{reason} — press Enter to reconnect"
+  disconnected:
+    zh-CN: "连接已断开"
+    en: "Disconnected"
