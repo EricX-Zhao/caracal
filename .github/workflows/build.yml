@@ -17,7 +17,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Pinned to 22.04 (not ubuntu-latest, currently 24.04/glibc 2.39):
+          # the built binary dynamically links whatever glibc symbol
+          # versions are present on the build host, so building on a newer
+          # Ubuntu than the target machine fails at launch with "GLIBC_2.38
+          # not found" (or similar) — building on an older LTS keeps the
+          # binary's minimum glibc requirement low enough to run on most
+          # currently-used distros (22.04 ships glibc 2.35).
+          - os: ubuntu-22.04
             binary_name: caracal
             asset_name: caracal-linux-x86_64
           - os: windows-latest
