@@ -6,20 +6,30 @@
 
 use gpui::{
     App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, Styled, Window, div,
+    Styled, Window, div,
 };
 use gpui_component::ActiveTheme;
 
+use crate::panels::activity_bar::PanelId;
+
 pub struct StubPanel {
     focus_handle: FocusHandle,
-    title: SharedString,
+    panel_id: PanelId,
 }
 
 impl StubPanel {
-    pub fn new(title: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+    /// Takes the `PanelId` rather than a pre-resolved label string —
+    /// `PanelId::label()` calls `t!(...)` internally, and that must be
+    /// re-evaluated fresh on every render (not baked in once here at
+    /// construction), or a language switch later would never update this
+    /// panel's title: this `StubPanel` entity is created once at
+    /// `Workspace::new` and lives for the app's whole session, so any
+    /// string resolved once here and stored would be frozen at whatever
+    /// language was active at startup.
+    pub fn new(panel_id: PanelId, cx: &mut Context<Self>) -> Self {
         Self {
             focus_handle: cx.focus_handle(),
-            title: title.into(),
+            panel_id,
         }
     }
 }
@@ -45,7 +55,7 @@ impl Render for StubPanel {
             .child(
                 div()
                     .text_color(cx.theme().foreground)
-                    .child(self.title.clone()),
+                    .child(self.panel_id.label()),
             )
             .child(rust_i18n::t!("Stub.not_implemented"))
     }
