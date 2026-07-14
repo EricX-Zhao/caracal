@@ -194,3 +194,67 @@ Terminal:
   disconnected:
     zh-CN: "连接已断开"
     en: "Disconnected"
+Sessions:
+  title:
+    zh-CN: "会话"
+    en: "Sessions"
+  search_placeholder:
+    zh-CN: "搜索连接..."
+    en: "Search connections..."
+  folder_name_placeholder:
+    zh-CN: "文件夹名称"
+    en: "Folder name"
+  new_folder:
+    zh-CN: "新建文件夹"
+    en: "New Folder"
+  new_connection:
+    zh-CN: "新建连接"
+    en: "New Connection"
+  new_subfolder:
+    zh-CN: "新建子文件夹"
+    en: "New Subfolder"
+  rename_folder:
+    zh-CN: "重命名文件夹"
+    en: "Rename Folder"
+  delete_folder:
+    zh-CN: "删除文件夹"
+    en: "Delete Folder"
+  export_config:
+    zh-CN: "导出配置"
+    en: "Export Config"
+  import_config:
+    zh-CN: "导入配置"
+    en: "Import Config"
+  confirm_delete_title:
+    zh-CN: "确认删除"
+    en: "Confirm Delete"
+  confirm_delete_connection_body:
+    zh-CN: "确定要删除连接「%{name}」吗？此操作不可撤销。"
+    en: "Delete connection \"%{name}\"? This cannot be undone."
+  confirm_delete_folder_body:
+    zh-CN: "确定要删除文件夹「%{name}」吗？其中的连接会被移到未分组。"
+    en: "Delete folder \"%{name}\"? Its connections will become ungrouped."
+  open:
+    zh-CN: "打开"
+    en: "Open"
+  edit:
+    zh-CN: "编辑"
+    en: "Edit"
+  duplicate:
+    zh-CN: "复制"
+    en: "Duplicate"
+  delete:
+    zh-CN: "删除"
+    en: "Delete"
+  create:
+    zh-CN: "创建"
+    en: "Create"
+  save:
+    zh-CN: "保存"
+    en: "Save"
+  cancel:
+    zh-CN: "取消"
+    en: "Cancel"
+  empty_state:
+    zh-CN: "暂无会话,点 + 新增"
+    en: "No sessions yet — click + to add one"

@@ -254,8 +254,12 @@ impl SessionsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search_query = cx.new(|cx| InputState::new(window, cx).placeholder("搜索连接..."));
-        let new_folder_name = cx.new(|cx| InputState::new(window, cx).placeholder("文件夹名称"));
+        let search_query = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(rust_i18n::t!("Sessions.search_placeholder"))
+        });
+        let new_folder_name = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(rust_i18n::t!("Sessions.folder_name_placeholder"))
+        });
 
         // Auto-expand all groups by default
         let expanded_groups: HashSet<String> = groups.iter().map(|g| g.id.clone()).collect();
@@ -307,7 +311,7 @@ impl SessionsPanel {
     ) {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("文件夹名称")
+                .placeholder(rust_i18n::t!("Sessions.folder_name_placeholder"))
                 .default_value(initial_name)
                 .submit_on_enter(true)
         });
@@ -446,8 +450,8 @@ impl SessionsPanel {
             let weak_panel = weak_panel.clone();
             let name = name.clone();
             alert
-                .title("确认删除")
-                .description(format!("确定要删除连接「{name}」吗？此操作不可撤销。"))
+                .title(rust_i18n::t!("Sessions.confirm_delete_title"))
+                .description(rust_i18n::t!("Sessions.confirm_delete_connection_body", name = name))
                 .confirm()
                 .on_ok(move |_, window, cx| {
                     window.close_dialog(cx);
@@ -483,10 +487,8 @@ impl SessionsPanel {
             let name = name.clone();
             let group_id = group_id.clone();
             alert
-                .title("确认删除")
-                .description(format!(
-                    "确定要删除文件夹「{name}」吗？其中的连接会被移到未分组。"
-                ))
+                .title(rust_i18n::t!("Sessions.confirm_delete_title"))
+                .description(rust_i18n::t!("Sessions.confirm_delete_folder_body", name = name))
                 .confirm()
                 .on_ok(move |_, window, cx| {
                     window.close_dialog(cx);
@@ -907,7 +909,7 @@ impl Panel for SessionsPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("会话")
+        rust_i18n::t!("Sessions.title")
     }
 }
 
@@ -927,7 +929,7 @@ impl SessionsPanel {
                     .text_sm()
                     .font_semibold()
                     .text_color(cx.theme().foreground)
-                    .child("会话"),
+                    .child(rust_i18n::t!("Sessions.title")),
             )
             .child(
                 div()
@@ -1008,7 +1010,7 @@ impl SessionsPanel {
                             .text_xs()
                             .hover(|s| s.bg(cx.theme().accent))
                             .child(icon(AppIcon::NewFolder).text_color(cx.theme().muted_foreground))
-                            .child("新建文件夹")
+                            .child(rust_i18n::t!("Sessions.new_folder"))
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.toggle_folder_form(window, cx)
                             })),
@@ -1026,7 +1028,7 @@ impl SessionsPanel {
                             .text_xs()
                             .hover(|s| s.bg(cx.theme().accent))
                             .child(icon(AppIcon::Plus).text_color(cx.theme().muted_foreground))
-                            .child("新建连接")
+                            .child(rust_i18n::t!("Sessions.new_connection"))
                             .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
                                 this.open_new_connection_window(None, None, window, cx)
                             })),
@@ -1040,14 +1042,14 @@ impl SessionsPanel {
                             .dropdown_menu(move |menu, _window, _cx| {
                                 let weak_export = weak.clone();
                                 let weak_import = weak.clone();
-                                menu.item(PopupMenuItem::new("导出配置").on_click(
+                                menu.item(PopupMenuItem::new(rust_i18n::t!("Sessions.export_config")).on_click(
                                     move |_ev, window, cx| {
                                         let _ = weak_export.update(cx, |this, cx| {
                                             this.export_connections(window, cx);
                                         });
                                     },
                                 ))
-                                .item(PopupMenuItem::new("导入配置").on_click(
+                                .item(PopupMenuItem::new(rust_i18n::t!("Sessions.import_config")).on_click(
                                     move |_ev, window, cx| {
                                         let _ = weak_import.update(cx, |this, cx| {
                                             this.import_connections(window, cx);
@@ -1105,8 +1107,8 @@ impl SessionsPanel {
             .flex_1()
             .min_h(px(40.0))
             .context_menu(|menu, _window, _cx| {
-                menu.menu("新建连接", Box::new(NewRootConnection))
-                    .menu("新建文件夹", Box::new(NewRootFolder))
+                menu.menu(rust_i18n::t!("Sessions.new_connection"), Box::new(NewRootConnection))
+                    .menu(rust_i18n::t!("Sessions.new_folder"), Box::new(NewRootFolder))
             })
     }
 
@@ -1179,26 +1181,26 @@ impl SessionsPanel {
                     }))
                     .context_menu(move |menu, _window, _cx| {
                         menu.menu(
-                            "新建连接",
+                            rust_i18n::t!("Sessions.new_connection"),
                             Box::new(NewConnectionInGroup {
                                 group_id: menu_group_id.clone(),
                             }),
                         )
                         .menu(
-                            "新建子文件夹",
+                            rust_i18n::t!("Sessions.new_subfolder"),
                             Box::new(NewSubfolder {
                                 parent_id: menu_group_id.clone(),
                             }),
                         )
                         .separator()
                         .menu(
-                            "重命名文件夹",
+                            rust_i18n::t!("Sessions.rename_folder"),
                             Box::new(RenameGroup {
                                 group_id: menu_group_id.clone(),
                             }),
                         )
                         .menu(
-                            "删除文件夹",
+                            rust_i18n::t!("Sessions.delete_folder"),
                             Box::new(DeleteGroup {
                                 group_id: menu_group_id.clone(),
                             }),
@@ -1412,19 +1414,19 @@ impl SessionsPanel {
                 this.reorder_connection(drag.ix, ix, insert_before, cx);
             }))
             .context_menu(move |menu, _window, _cx| {
-                menu.menu("打开", Box::new(OpenConnection { ix }))
-                    .menu("编辑", Box::new(EditConnection { ix }))
-                    .menu("复制", Box::new(DuplicateConnection { ix }))
+                menu.menu(rust_i18n::t!("Sessions.open"), Box::new(OpenConnection { ix }))
+                    .menu(rust_i18n::t!("Sessions.edit"), Box::new(EditConnection { ix }))
+                    .menu(rust_i18n::t!("Sessions.duplicate"), Box::new(DuplicateConnection { ix }))
                     .separator()
-                    .menu("删除", Box::new(DeleteConnection { ix }))
+                    .menu(rust_i18n::t!("Sessions.delete"), Box::new(DeleteConnection { ix }))
             })
     }
 
     /// Render the new-folder / rename-folder form.
     fn render_folder_form(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let save_label = match self.folder_form_target.as_ref()? {
-            FolderFormTarget::New(_) => "创建",
-            FolderFormTarget::Rename(_) => "保存",
+            FolderFormTarget::New(_) => rust_i18n::t!("Sessions.create"),
+            FolderFormTarget::Rename(_) => rust_i18n::t!("Sessions.save"),
         };
         Some(
             div()
@@ -1444,7 +1446,7 @@ impl SessionsPanel {
                         .py_0p5()
                         .rounded_sm()
                         .hover(|s| s.bg(cx.theme().accent))
-                        .child("取消")
+                        .child(rust_i18n::t!("Sessions.cancel"))
                         .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
                             this.folder_form_target = None;
                             cx.notify();
@@ -1475,7 +1477,7 @@ impl SessionsPanel {
                     .py_2()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child("暂无会话,点 + 新增"),
+                    .child(rust_i18n::t!("Sessions.empty_state")),
             )
         } else {
             None
