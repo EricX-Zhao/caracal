@@ -148,8 +148,27 @@ impl TableDelegate for FileTableDelegate {
         self.entries.len()
     }
 
+    /// Re-translates `name` fresh on every call rather than trusting
+    /// whatever was baked into `self.columns` at construction time —
+    /// `FileTableDelegate` (and its `SftpPanel`/`TableState`) live for as
+    /// long as the SFTP tab stays open, easily longer than one language
+    /// switch, and gpui-component's own `render_th` already calls this on
+    /// every header repaint, so this needs no extra sync/observer plumbing
+    /// the way `SessionsPanel`'s search placeholder did. `width`/`sortable`/
+    /// etc. still come from `self.columns[col_ix]` — that's real persisted
+    /// state (user-resized widths, see `SftpPanel`'s `ColumnWidthsChanged`
+    /// handling), not translated text, so it must NOT be rebuilt from
+    /// scratch here.
     fn column(&self, col_ix: usize, _: &App) -> Column {
-        self.columns[col_ix].clone()
+        let mut col = self.columns[col_ix].clone();
+        col.name = match col.key.as_ref() {
+            "name" => rust_i18n::t!("Sftp.col_name").into(),
+            "mtime" => rust_i18n::t!("Sftp.col_mtime").into(),
+            "size" => rust_i18n::t!("Sftp.col_size").into(),
+            "perms" => rust_i18n::t!("Sftp.col_perms").into(),
+            _ => col.name,
+        };
+        col
     }
 
     fn context_menu(
