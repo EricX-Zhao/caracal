@@ -78,3 +78,58 @@ QuickCommands:
   add_button:
     zh-CN: "+ 添加"
     en: "+ Add"
+Monitor:
+  title:
+    zh-CN: "资源监控: %{label}"
+    en: "Resource Monitor: %{label}"
+  refresh_tooltip:
+    zh-CN: "刷新"
+    en: "Refresh"
+  disabled_message:
+    zh-CN: "资源监控已在设置中禁用，启用后需重新连接此主机才会生效"
+    en: "Resource monitoring is disabled in Settings — enable it, then reconnect this host for it to take effect"
+  open_settings:
+    zh-CN: "打开设置"
+    en: "Open Settings"
+  poll_failed:
+    zh-CN: "连续 3 次轮询失败: %{msg}"
+    en: "3 consecutive polls failed: %{msg}"
+  loading:
+    zh-CN: "加载中…"
+    en: "Loading…"
+  warming_up:
+    zh-CN: "预热中…"
+    en: "Warming up…"
+  host_label:
+    zh-CN: "主机: %{hostname}"
+    en: "Host: %{hostname}"
+  os_label:
+    zh-CN: "系统: %{os}"
+    en: "OS: %{os}"
+  uptime_label:
+    zh-CN: "运行时间: %{uptime}"
+    en: "Uptime: %{uptime}"
+  cpu_cores_load:
+    zh-CN: "%{cores} 核心 · 负载 %{load}"
+    en: "%{cores} cores · load %{load}"
+  memory_label:
+    zh-CN: "内存"
+    en: "Memory"
+  memory_available_cached:
+    zh-CN: "可用 %{available} · 缓存 %{cached}"
+    en: "Available %{available} · Cached %{cached}"
+  network_label:
+    zh-CN: "网络"
+    en: "Network"
+  disk_label:
+    zh-CN: "磁盘"
+    en: "Disk"
+  disk_used_available:
+    zh-CN: "已用 %{used} · 可用 %{available}"
+    en: "Used %{used} · Available %{available}"
+  placeholder_title:
+    zh-CN: "资源监控"
+    en: "Resource Monitor"
+  no_ssh_host:
+    zh-CN: "未连接 SSH 主机"
+    en: "No SSH host connected"

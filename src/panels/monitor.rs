@@ -466,14 +466,14 @@ impl MonitorPanel {
             .child(
                 div()
                     .text_sm()
-                    .child(SharedString::from(format!("资源监控: {}", self.label))),
+                    .child(rust_i18n::t!("Monitor.title", label = self.label.clone())),
             )
             .child(
                 Button::new("monitor-refresh")
                     .xsmall()
                     .ghost()
                     .icon(icon(AppIcon::Refresh))
-                    .tooltip("刷新")
+                    .tooltip(rust_i18n::t!("Monitor.refresh_tooltip"))
                     .loading(self.polling)
                     .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
             )
@@ -493,13 +493,13 @@ impl MonitorPanel {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("资源监控已在设置中禁用，启用后需重新连接此主机才会生效"),
+                        .child(rust_i18n::t!("Monitor.disabled_message")),
                 )
                 .child(
                     Button::new("monitor-open-settings")
                         .xsmall()
                         .ghost()
-                        .label("打开设置")
+                        .label(rust_i18n::t!("Monitor.open_settings"))
                         .on_click(move |_ev, window, cx| {
                             let _ = workspace.update(cx, |ws, cx| ws.open_settings(window, cx));
                         }),
@@ -519,7 +519,7 @@ impl MonitorPanel {
                     div()
                         .text_xs()
                         .text_color(cx.theme().danger)
-                        .child(SharedString::from(format!("连续 3 次轮询失败: {msg}"))),
+                        .child(rust_i18n::t!("Monitor.poll_failed", msg = msg)),
                 )
                 .into_any_element();
         }
@@ -531,7 +531,7 @@ impl MonitorPanel {
                 .justify_center()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child("加载中…")
+                .child(rust_i18n::t!("Monitor.loading"))
                 .into_any_element();
         };
 
@@ -554,16 +554,19 @@ impl MonitorPanel {
             .flex_col()
             .gap_0p5()
             .text_xs()
-            .child(SharedString::from(format!("主机: {}", stats.hostname)))
-            .child(SharedString::from(format!("系统: {}", stats.os)))
-            .child(SharedString::from(format!("运行时间: {}", format_uptime(stats.uptime_secs))))
+            .child(rust_i18n::t!("Monitor.host_label", hostname = stats.hostname.clone()))
+            .child(rust_i18n::t!("Monitor.os_label", os = stats.os.clone()))
+            .child(rust_i18n::t!(
+                "Monitor.uptime_label",
+                uptime = format_uptime(stats.uptime_secs)
+            ))
             .text_color(cx.theme().muted_foreground)
     }
 
     fn render_cpu_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
         let (bar, label) = match stats.cpu_percent {
             Some(pct) => (usage_bar(pct, cx), format!("{pct:.1}%")),
-            None => (usage_bar(0.0, cx), "预热中…".to_string()),
+            None => (usage_bar(0.0, cx), rust_i18n::t!("Monitor.warming_up").to_string()),
         };
         div()
             .flex()
@@ -583,10 +586,11 @@ impl MonitorPanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(format!(
-                        "{} 核心 · 负载 {:.2} {:.2} {:.2}",
-                        stats.core_count, stats.load1, stats.load5, stats.load15
-                    ))),
+                    .child(rust_i18n::t!(
+                        "Monitor.cpu_cores_load",
+                        cores = stats.core_count,
+                        load = format!("{:.2} {:.2} {:.2}", stats.load1, stats.load5, stats.load15)
+                    )),
             )
     }
 
@@ -606,7 +610,7 @@ impl MonitorPanel {
                     .flex_row()
                     .justify_between()
                     .text_xs()
-                    .child("内存")
+                    .child(rust_i18n::t!("Monitor.memory_label"))
                     .child(SharedString::from(format!(
                         "{} / {}",
                         human_bytes(stats.mem_used),
@@ -618,23 +622,27 @@ impl MonitorPanel {
                 div()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(SharedString::from(format!(
-                        "可用 {} · 缓存 {}",
-                        human_bytes(stats.mem_available),
-                        human_bytes(stats.mem_cached)
-                    ))),
+                    .child(rust_i18n::t!(
+                        "Monitor.memory_available_cached",
+                        available = human_bytes(stats.mem_available),
+                        cached = human_bytes(stats.mem_cached)
+                    )),
             )
     }
 
     fn render_network_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
         let mut section = div().flex().flex_col().gap_0p5().text_xs();
-        section = section.child(div().text_color(cx.theme().muted_foreground).child("网络"));
+        section = section.child(
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .child(rust_i18n::t!("Monitor.network_label")),
+        );
         for nic in &stats.net {
             let rates = match (nic.rx_rate, nic.tx_rate) {
                 (Some(rx), Some(tx)) => {
                     format!("↓{}/s ↑{}/s", human_bytes(rx as u64), human_bytes(tx as u64))
                 }
-                _ => "预热中…".to_string(),
+                _ => rust_i18n::t!("Monitor.warming_up").to_string(),
             };
             section = section.child(
                 div()
@@ -650,7 +658,11 @@ impl MonitorPanel {
 
     fn render_disk_section(&self, stats: &SystemStats, cx: &Context<Self>) -> impl IntoElement {
         let mut section = div().flex().flex_col().gap_1().text_xs();
-        section = section.child(div().text_color(cx.theme().muted_foreground).child("磁盘"));
+        section = section.child(
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .child(rust_i18n::t!("Monitor.disk_label")),
+        );
         for disk in &stats.disks {
             let pct = if disk.total == 0 {
                 0.0
@@ -674,11 +686,11 @@ impl MonitorPanel {
                     .child(
                         div()
                             .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(format!(
-                                "已用 {} · 可用 {}",
-                                human_bytes(disk.used),
-                                human_bytes(disk.available)
-                            ))),
+                            .child(rust_i18n::t!(
+                                "Monitor.disk_used_available",
+                                used = human_bytes(disk.used),
+                                available = human_bytes(disk.available)
+                            )),
                     ),
             );
         }
@@ -756,7 +768,7 @@ impl Panel for MonitorPanel {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(format!("资源监控: {}", self.label))
+        rust_i18n::t!("Monitor.title", label = self.label.clone())
     }
 }
 
@@ -799,7 +811,7 @@ impl Panel for MonitorPlaceholder {
     }
 
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("资源监控")
+        rust_i18n::t!("Monitor.placeholder_title")
     }
 }
 
@@ -812,7 +824,7 @@ impl Render for MonitorPlaceholder {
             .justify_center()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .child("未连接 SSH 主机")
+            .child(rust_i18n::t!("Monitor.no_ssh_host"))
     }
 }
 
