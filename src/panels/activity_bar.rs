@@ -71,14 +71,14 @@ impl PanelId {
     }
 
     /// Short label used for tooltip + stub-panel title.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            PanelId::Sftp => "文件浏览器",
-            PanelId::Network => "网络",
-            PanelId::Security => "安全 / 认证",
-            PanelId::Sessions => "会话",
-            PanelId::History => "命令历史",
-            PanelId::Monitor => "资源监控",
+            PanelId::Sftp => rust_i18n::t!("ActivityBar.file_explorer").into(),
+            PanelId::Network => rust_i18n::t!("ActivityBar.network").into(),
+            PanelId::Security => rust_i18n::t!("ActivityBar.security").into(),
+            PanelId::Sessions => rust_i18n::t!("ActivityBar.sessions").into(),
+            PanelId::History => rust_i18n::t!("ActivityBar.command_history").into(),
+            PanelId::Monitor => rust_i18n::t!("ActivityBar.resource_monitor").into(),
         }
     }
 }
@@ -128,7 +128,7 @@ pub fn activity_button(pid: PanelId, active: bool, side: Side, cx: &App) -> Stat
             )
         })
         .child(icon(pid.app_icon()).large())
-        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
 }
 
 /// The quick-commands drawer toggle, pinned to the bottom of the right
@@ -167,7 +167,10 @@ pub fn quick_commands_button(active: bool, cx: &App) -> Stateful<Div> {
             )
         })
         .child(icon(AppIcon::QuickCmd).large())
-        .tooltip(move |window, cx| Tooltip::new("快捷命令").build(window, cx))
+        .tooltip(move |window, cx| {
+            Tooltip::new(SharedString::from(rust_i18n::t!("ActivityBar.quick_commands_tooltip")))
+                .build(window, cx)
+        })
 }
 
 /// The Settings shortcut, pinned to the bottom of the left activity bar
@@ -186,5 +189,8 @@ pub fn settings_button(cx: &App) -> Stateful<Div> {
         .text_color(cx.theme().muted_foreground)
         .hover(|s| s.bg(cx.theme().accent).text_color(cx.theme().foreground))
         .child(icon(AppIcon::Settings).large())
-        .tooltip(move |window, cx| Tooltip::new("设置").build(window, cx))
+        .tooltip(move |window, cx| {
+            Tooltip::new(SharedString::from(rust_i18n::t!("ActivityBar.settings_tooltip")))
+                .build(window, cx)
+        })
 }

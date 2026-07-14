@@ -474,7 +474,10 @@ impl Workspace {
                 Err(e) => {
                     log::error!("SSH connect to {key} failed: {e}");
                     let _ = term_for_connect.update(cx, |view, cx| {
-                        view.mark_connect_failed(format!("连接失败: {e}"), cx);
+                        view.mark_connect_failed(
+                            rust_i18n::t!("Workspace.connect_failed", error = e).to_string(),
+                            cx,
+                        );
                     });
                 }
             }
@@ -546,7 +549,10 @@ impl Workspace {
                 Err(e) => {
                     log::error!("SSH reconnect to {} failed: {e}", config.key());
                     let _ = terminal.update(cx, |view, cx| {
-                        view.mark_connect_failed(format!("连接失败: {e}"), cx);
+                        view.mark_connect_failed(
+                            rust_i18n::t!("Workspace.connect_failed", error = e).to_string(),
+                            cx,
+                        );
                     });
                 }
             }

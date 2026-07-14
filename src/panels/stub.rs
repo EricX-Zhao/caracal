@@ -47,6 +47,6 @@ impl Render for StubPanel {
                     .text_color(cx.theme().foreground)
                     .child(self.title.clone()),
             )
-            .child("此面板尚未实现")
+            .child(rust_i18n::t!("Stub.not_implemented"))
     }
 }

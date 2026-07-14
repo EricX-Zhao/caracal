@@ -14,3 +14,36 @@ Settings:
     language_en:
       zh-CN: "English"
       en: "English"
+ActivityBar:
+  file_explorer:
+    zh-CN: "文件浏览器"
+    en: "File Explorer"
+  network:
+    zh-CN: "网络"
+    en: "Network"
+  security:
+    zh-CN: "安全 / 认证"
+    en: "Security / Auth"
+  sessions:
+    zh-CN: "会话"
+    en: "Sessions"
+  command_history:
+    zh-CN: "命令历史"
+    en: "Command History"
+  resource_monitor:
+    zh-CN: "资源监控"
+    en: "Resource Monitor"
+  quick_commands_tooltip:
+    zh-CN: "快捷命令"
+    en: "Quick Commands"
+  settings_tooltip:
+    zh-CN: "设置"
+    en: "Settings"
+Workspace:
+  connect_failed:
+    zh-CN: "连接失败: %{error}"
+    en: "Connection failed: %{error}"
+Stub:
+  not_implemented:
+    zh-CN: "此面板尚未实现"
+    en: "This panel isn't implemented yet"
