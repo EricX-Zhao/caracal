@@ -497,6 +497,23 @@ async fn command_loop(handle: Handle<ClientHandler>, cmd_rx: flume::Receiver<Ses
     let sftp_slot: Arc<tokio::sync::Mutex<Option<Arc<SftpSession>>>> =
         Arc::new(tokio::sync::Mutex::new(None));
 
+    // Periodic keepalive so a long-idle connection (e.g. the shell tab
+    // sitting in an interactive nested `ssh` session on the remote, with
+    // no SFTP/exec traffic of our own for a while) is less likely to hit
+    // a server-side idle timeout on this connection. Runs until the
+    // connection itself is gone (`send_keepalive` starts failing).
+    {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                if handle.send_keepalive(false).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     while let Ok(cmd) = cmd_rx.recv_async().await {
         match cmd {
             SessionCmd::OpenShell {
@@ -701,7 +718,10 @@ async fn service_sftp(
             let result = sftp_read_dir(&sftp, &path).await;
             match &result {
                 Ok(entries) => log::info!("sftp: read_dir {path:?} -> {} entries", entries.len()),
-                Err(e) => log::error!("sftp: read_dir {path:?} failed: {e:#}"),
+                Err(e) => {
+                    log::error!("sftp: read_dir {path:?} failed: {e:#}");
+                    invalidate_sftp_if_dead(sftp_slot, e).await;
+                }
             }
             let _ = reply.send(result);
         }
@@ -725,7 +745,9 @@ async fn service_sftp(
                 }
                 Err(e) => {
                     log::error!("sftp: realpath {path:?} failed: {e:#}");
-                    let _ = reply.send(Err(anyhow!("realpath {path:?}: {e}")));
+                    let err = anyhow!("realpath {path:?}: {e}");
+                    invalidate_sftp_if_dead(sftp_slot, &err).await;
+                    let _ = reply.send(Err(err));
                 }
             }
         }
@@ -789,6 +811,7 @@ async fn service_sftp(
                         let _ = events_tx.send(TransferEvent::Cancelled { transferred });
                     }
                     Err(e) => {
+                        invalidate_sftp_if_dead(&sftp_slot, &e).await;
                         let _ = events_tx.send(TransferEvent::Failed {
                             error: format!("{e:#}"),
                         });
@@ -843,6 +866,7 @@ async fn service_sftp(
                         let _ = events_tx.send(TransferEvent::Cancelled { transferred });
                     }
                     Err(e) => {
+                        invalidate_sftp_if_dead(&sftp_slot, &e).await;
                         let _ = events_tx.send(TransferEvent::Failed {
                             error: format!("{e:#}"),
                         });
@@ -866,6 +890,7 @@ async fn service_sftp(
                 .map_err(|e| anyhow!("mkdir {path:?}: {e}"));
             if let Err(ref e) = result {
                 log::error!("sftp: mkdir {path:?} failed: {e:#}");
+                invalidate_sftp_if_dead(sftp_slot, e).await;
             }
             let _ = reply.send(result);
         }
@@ -889,6 +914,7 @@ async fn service_sftp(
             };
             if let Err(ref e) = result {
                 log::error!("sftp: create_file {path:?} failed: {e:#}");
+                invalidate_sftp_if_dead(sftp_slot, e).await;
             }
             let _ = reply.send(result);
         }
@@ -904,6 +930,7 @@ async fn service_sftp(
             let result = sftp_remove(&sftp, &path, recursive).await;
             if let Err(ref e) = result {
                 log::error!("sftp: remove {path:?} failed: {e:#}");
+                invalidate_sftp_if_dead(sftp_slot, e).await;
             }
             let _ = reply.send(result);
         }
@@ -922,9 +949,40 @@ async fn service_sftp(
                 .map_err(|e| anyhow!("rename {old:?} -> {new:?}: {e}"));
             if let Err(ref e) = result {
                 log::error!("sftp: rename {old:?} -> {new:?} failed: {e:#}");
+                invalidate_sftp_if_dead(sftp_slot, e).await;
             }
             let _ = reply.send(result);
         }
+    }
+}
+
+/// A dead SFTP subsystem channel (server closed it, network blip, etc.)
+/// bubbles up as this specific text — either directly from `russh_sftp`
+/// (its background pump task ending, `rawsession.rs`'s "session closed"
+/// check) or as an EOF on the underlying stream. `sftp_slot` otherwise
+/// caches the `SftpSession` forever once opened (see `command_loop`'s
+/// `SessionCmd::Sftp` handler), so without this check every request after
+/// the channel dies fails identically, forever — this was the actual bug
+/// reported 2026-07-15 (SFTP and monitor "died" together after the user
+/// ran `ssh` to a second host from inside an already-open shell tab).
+fn is_sftp_session_dead(e: &anyhow::Error) -> bool {
+    let text = e.to_string();
+    text.contains("session closed") || text.contains("Unexpected EOF")
+}
+
+/// Clears the cached SFTP session so the *next* request reopens a fresh
+/// subsystem channel (`command_loop`'s existing "if guard.is_none()"
+/// bootstrap path already does this) instead of reusing a dead one and
+/// failing the same way forever. The request that triggered this still
+/// fails this one time — there's nothing to retroactively recover — but
+/// every subsequent request self-heals.
+async fn invalidate_sftp_if_dead(
+    sftp_slot: &Arc<tokio::sync::Mutex<Option<Arc<SftpSession>>>>,
+    e: &anyhow::Error,
+) {
+    if is_sftp_session_dead(e) {
+        log::warn!("sftp: session appears dead ({e:#}), will reopen on next request");
+        *sftp_slot.lock().await = None;
     }
 }
 
@@ -1149,4 +1207,30 @@ async fn sftp_upload_streaming(
         .map_err(|e| anyhow!("close {remote:?}: {e}"))?;
     let _ = events.send(TransferEvent::Progress { transferred });
     Ok(StreamingOutcome::Completed(transferred))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_a_dead_sftp_session_by_its_error_text() {
+        assert!(is_sftp_session_dead(&anyhow!("session closed")));
+        // As actually wrapped by call sites like `anyhow!("realpath {path:?}: {e}")`.
+        assert!(is_sftp_session_dead(&anyhow!(
+            "realpath \"/home\": Unexpected behavior: session closed"
+        )));
+        assert!(is_sftp_session_dead(&anyhow!("Unexpected EOF on stream")));
+    }
+
+    #[test]
+    fn does_not_misclassify_unrelated_sftp_errors_as_a_dead_session() {
+        assert!(!is_sftp_session_dead(&anyhow!("sftp session not initialized")));
+        assert!(!is_sftp_session_dead(&anyhow!(
+            "mkdir \"/nope\": No such file or directory"
+        )));
+        assert!(!is_sftp_session_dead(&anyhow!(
+            "remove \"/etc/passwd\": Permission denied"
+        )));
+    }
 }
