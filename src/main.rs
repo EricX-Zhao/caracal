@@ -15,6 +15,7 @@
 
 mod assets;
 mod config;
+mod crypto;
 mod panels;
 mod paths;
 mod quick_commands;

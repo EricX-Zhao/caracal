@@ -40,6 +40,11 @@ toml = "0.8"
 # it ourselves now instead of a `$HOME`-env-var-only fallback that silently
 # resolved to the current directory on Windows (no `$HOME` there).
 dirs = "6"
+# Encrypted connection-vault crypto (see docs/superpowers/specs/2026-07-15-encrypted-credential-storage-design.md).
+aes-gcm = "0.10"
+argon2 = "0.5"
+zeroize = "1"
+base64 = "0.22"
 # UI localization (Settings -> General). Already a transitive dependency
 # via gpui-component (which uses its own, independent i18n!() call for its
 # own built-in strings) — this is our own, separate instance.
