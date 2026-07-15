@@ -1067,12 +1067,26 @@ impl NewConnectionWindow {
                     .child(Input::new(&self.new_saved_password_name))
                     .child(Input::new(&self.new_saved_password_value).mask_toggle())
                     .child(
-                        Button::new("confirm-add-saved-password")
-                            .xsmall()
-                            .label(rust_i18n::t!("SecurityAuth.add_password_button"))
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                this.confirm_add_new_saved_password(cx);
-                            })),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("confirm-add-saved-password")
+                                    .xsmall()
+                                    .label(rust_i18n::t!("SecurityAuth.add_password_button"))
+                                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                        this.confirm_add_new_saved_password(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("cancel-add-saved-password")
+                                    .xsmall()
+                                    .label(rust_i18n::t!("NewConnectionWindow.cancel"))
+                                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                        this.cancel_add_new_saved_password(window, cx);
+                                    })),
+                            ),
                     )
                     .into_any_element()
             } else {
@@ -1110,6 +1124,13 @@ impl NewConnectionWindow {
         let _ = self.panel.update(cx, |panel, _cx| panel.persist_for_security_auth());
         self.saved_passwords.push(entry);
         self.selected_password_id = Some(id);
+        self.adding_new_saved_password = false;
+        cx.notify();
+    }
+
+    fn cancel_add_new_saved_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_saved_password_name.update(cx, |s, cx| s.set_value("", window, cx));
+        self.new_saved_password_value.update(cx, |s, cx| s.set_value("", window, cx));
         self.adding_new_saved_password = false;
         cx.notify();
     }

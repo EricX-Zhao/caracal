@@ -705,5 +705,5 @@ SecurityAuth:
     zh-CN: "已保存"
     en: "Saved"
   add_new_saved_password_row:
-    zh-CN: "+ 添加已保存密码..."
-    en: "+ Add saved password..."
+    zh-CN: "+ 添加密码..."
+    en: "+ Add password..."
