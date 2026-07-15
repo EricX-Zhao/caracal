@@ -45,6 +45,11 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 zeroize = "1"
 base64 = "0.22"
+# OS keyring for the opt-in "remember on this device" convenience unlock
+# (see the design spec's "Convenience unlock" decision). Feature flags match
+# nyaterm's (reference implementation): native Keychain/Credential Manager
+# on macOS/Windows, D-Bus Secret Service (sync client) on Linux.
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 # UI localization (Settings -> General). Already a transitive dependency
 # via gpui-component (which uses its own, independent i18n!() call for its
 # own built-in strings) — this is our own, separate instance.
