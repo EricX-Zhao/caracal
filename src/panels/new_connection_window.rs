@@ -245,6 +245,13 @@ impl NewConnectionWindow {
                     } else {
                         None
                     },
+                    // Encryption isn't wired in yet (see the
+                    // encrypted-credential-storage plan's Task 4) — these
+                    // stay empty/absent until then, matching today's
+                    // pre-migration behavior.
+                    encrypted_password: String::new(),
+                    encrypted_key_passphrase: None,
+                    private_key_id: None,
                 }
             }
             ConnectionType::Local => {
@@ -272,6 +279,9 @@ impl NewConnectionWindow {
                     auth_method: "password".to_string(),
                     private_key_path: None,
                     private_key_passphrase: None,
+                    encrypted_password: String::new(),
+                    encrypted_key_passphrase: None,
+                    private_key_id: None,
                 }
             }
             ConnectionType::Telnet => {
@@ -301,6 +311,9 @@ impl NewConnectionWindow {
                     auth_method: "password".to_string(),
                     private_key_path: None,
                     private_key_passphrase: None,
+                    encrypted_password: String::new(),
+                    encrypted_key_passphrase: None,
+                    private_key_id: None,
                 }
             }
             ConnectionType::Serial => {
@@ -332,6 +345,9 @@ impl NewConnectionWindow {
                     auth_method: "password".to_string(),
                     private_key_path: None,
                     private_key_passphrase: None,
+                    encrypted_password: String::new(),
+                    encrypted_key_passphrase: None,
+                    private_key_id: None,
                 }
             }
         };

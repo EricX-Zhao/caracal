@@ -109,6 +109,24 @@ pub struct SavedConnection {
     /// meaningful when `auth_method == "key"`.
     #[serde(default)]
     pub private_key_passphrase: Option<String>,
+    /// `base64(nonce || ciphertext)` encryption of `password`, via
+    /// `crypto::MasterKey::encrypt_str`. Additive alongside `password` for
+    /// now (see `vault::migrate`) — Task 4 of the encrypted-credential-
+    /// storage plan removes `password` once every connection has been
+    /// migrated and every call site reads this field instead.
+    #[serde(default)]
+    pub encrypted_password: String,
+    /// `base64(nonce || ciphertext)` encryption of `private_key_passphrase`.
+    /// Additive alongside it for now — same migration note as
+    /// `encrypted_password`.
+    #[serde(default)]
+    pub encrypted_key_passphrase: Option<String>,
+    /// References an `AppConfig.ssh_keys` entry by id. Additive alongside
+    /// `private_key_path` for now — `vault::migrate` populates this from
+    /// the plaintext path; Task 4 removes `private_key_path` once
+    /// `to_ssh_config` reads this instead.
+    #[serde(default)]
+    pub private_key_id: Option<String>,
     /// Manual ordering within a `group_id` scope (including `None`, the
     /// ungrouped section, which is its own scope). Lower sorts first.
     /// `SortMode::Default` reads this; drag-reorder writes it. New
@@ -403,6 +421,9 @@ mod tests {
             auth_method: "password".to_string(),
             private_key_path: None,
             private_key_passphrase: None,
+            encrypted_password: String::new(),
+            encrypted_key_passphrase: None,
+            private_key_id: None,
             sort_order: 0,
         }
     }
