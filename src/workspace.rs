@@ -50,6 +50,7 @@ use crate::panels::settings_window::SettingsWindow;
 use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
 use crate::panels::monitor::{MonitorPanel, MonitorPlaceholder};
+use crate::panels::security_auth::SecurityAuthPanel;
 use crate::panels::stub::StubPanel;
 use crate::panels::terminal::{TerminalPanel, TerminalPanelEvent};
 use crate::settings;
@@ -256,6 +257,8 @@ pub struct Workspace {
     /// it so vault-related code can read its `ssh_keys()` — `AnyView` is
     /// type-erased and can't be read back.
     saved_sessions: Entity<SessionsPanel>,
+    /// The left-bar 安全认证 panel (manages saved SSH keys/passwords).
+    security_auth_panel: AnyView,
     /// Placeholder panels for the not-yet-implemented nyaterm categories.
     stub_panels: HashMap<PanelId, AnyView>,
     /// One SFTP browser per host key (created on first use, reused after).
@@ -418,12 +421,15 @@ impl Workspace {
         let sftp_placeholder: AnyView = cx.new(|cx| SftpPlaceholder::new(cx)).into();
         let monitor_placeholder: AnyView = cx.new(MonitorPlaceholder::new).into();
 
-        // One stub panel per not-yet-implemented category.
+        // One stub panel per not-yet-implemented category. Security has a
+        // real panel now (see `resolve`'s dedicated match arm below).
         let mut stub_panels: HashMap<PanelId, AnyView> = HashMap::new();
-        for pid in [PanelId::Network, PanelId::Security, PanelId::History] {
+        for pid in [PanelId::Network, PanelId::History] {
             let view: AnyView = cx.new(|cx| StubPanel::new(pid, cx)).into();
             stub_panels.insert(pid, view);
         }
+        let security_auth_panel: AnyView =
+            cx.new(|cx| SecurityAuthPanel::new(saved.downgrade(), cx)).into();
 
         let body_resize = cx.new(|_| ResizableState::default());
 
@@ -444,6 +450,7 @@ impl Workspace {
             show_quick_commands: false,
             quick_commands_panel,
             saved_sessions: saved.clone(),
+            security_auth_panel,
             sessions_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
@@ -1166,6 +1173,7 @@ impl Workspace {
                     .unwrap_or_else(|| self.monitor_placeholder.clone()),
             ),
             PanelId::Sessions => Some(self.sessions_panel.clone()),
+            PanelId::Security => Some(self.security_auth_panel.clone()),
             other => self.stub_panels.get(&other).cloned(),
         }
     }

@@ -80,8 +80,8 @@ ActivityBar:
     zh-CN: "网络"
     en: "Network"
   security:
-    zh-CN: "安全 / 认证"
-    en: "Security / Auth"
+    zh-CN: "安全认证"
+    en: "Security & Auth"
   sessions:
     zh-CN: "会话"
     en: "Sessions"
@@ -640,3 +640,55 @@ Vault:
   import_password_body:
     zh-CN: "该文件使用自己的主密码加密，与当前密码库无关。"
     en: "This file is encrypted with its own master password, independent of the current vault."
+SecurityAuth:
+  tab_keys:
+    zh-CN: "密钥"
+    en: "Keys"
+  tab_passwords:
+    zh-CN: "密码"
+    en: "Passwords"
+  add_key_button:
+    zh-CN: "添加密钥"
+    en: "Add key"
+  add_key_title:
+    zh-CN: "添加 SSH 密钥"
+    en: "Add SSH key"
+  key_name_placeholder:
+    zh-CN: "名称"
+    en: "Name"
+  no_file_picked:
+    zh-CN: "尚未选择文件"
+    en: "No file picked yet"
+  rename_button:
+    zh-CN: "重命名"
+    en: "Rename"
+  rename_key_title:
+    zh-CN: "重命名密钥"
+    en: "Rename key"
+  delete_key_title:
+    zh-CN: "删除密钥？"
+    en: "Delete key?"
+  delete_password_title:
+    zh-CN: "删除密码？"
+    en: "Delete password?"
+  delete_confirm_body:
+    zh-CN: "此操作不可撤销。"
+    en: "This cannot be undone."
+  delete_confirm_body_in_use:
+    zh-CN: "有 %{count} 个连接正在使用它——删除后这些连接将无法使用，直到重新选择。是否继续删除？"
+    en: "Used by %{count} connection(s) — deleting leaves them unable to connect until you pick a different one. Delete anyway?"
+  add_password_button:
+    zh-CN: "添加密码"
+    en: "Add password"
+  add_password_title:
+    zh-CN: "添加已保存密码"
+    en: "Add saved password"
+  edit_button:
+    zh-CN: "编辑"
+    en: "Edit"
+  edit_password_title:
+    zh-CN: "编辑已保存密码"
+    en: "Edit saved password"
+  password_name_placeholder:
+    zh-CN: "名称"
+    en: "Name"
