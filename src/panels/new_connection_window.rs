@@ -10,7 +10,7 @@
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, InteractiveElement, IntoElement,
     ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, WeakEntity,
-    Window, div,
+    Window, div, prelude::FluentBuilder,
 };
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
@@ -53,7 +53,15 @@ pub struct NewConnectionWindow {
     user: Entity<InputState>,
     password: Entity<InputState>,
     auth_method: String,
-    private_key_path: Entity<InputState>,
+    /// `Some(id)` when an existing shared key was picked; `None` with
+    /// `pending_new_key` set when the user is importing a new one.
+    selected_key_id: Option<String>,
+    /// Set by "Import key file..."; consumed by `resolve_key_id` (called
+    /// from `save()`), which turns it into a new `SshKeyEntry` encrypted
+    /// under the current vault key. `(name, content, source_path)`.
+    pending_new_key: Option<(String, Vec<u8>, String)>,
+    /// Snapshot of the vault's shared keys, for the picker list.
+    ssh_keys: Vec<crate::config::SshKeyEntry>,
     private_key_passphrase: Entity<InputState>,
     shell_path: Entity<InputState>,
     working_dir: Entity<InputState>,
@@ -77,6 +85,7 @@ impl NewConnectionWindow {
         existing: Option<(usize, SavedConnection)>,
         group_id: Option<String>,
         new_sort_order: i32,
+        ssh_keys: Vec<crate::config::SshKeyEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -87,6 +96,22 @@ impl NewConnectionWindow {
         let text = |field: fn(&SavedConnection) -> &str| -> String {
             conn.as_ref().map(field).unwrap_or_default().to_string()
         };
+
+        // Decrypt for pre-fill when editing an existing connection — the
+        // vault is always unlocked by the time this window can open (see
+        // `workspace.rs`'s startup dialogs), so a `None` global or a
+        // decrypt failure (corrupted field) just falls back to blank
+        // rather than blocking the edit form from opening.
+        let vault = cx.try_global::<crate::workspace::VaultKey>();
+        let decrypted_password = conn
+            .as_ref()
+            .and_then(|c| vault.and_then(|v| v.0.decrypt_str(&c.encrypted_password).ok()))
+            .unwrap_or_default();
+        let decrypted_key_passphrase = conn.as_ref().and_then(|c| {
+            c.encrypted_key_passphrase
+                .as_ref()
+                .and_then(|ct| vault.and_then(|v| v.0.decrypt_str(ct).ok()))
+        });
 
         Self {
             panel,
@@ -123,30 +148,20 @@ impl NewConnectionWindow {
                 InputState::new(window, cx)
                     .masked(true)
                     .placeholder(rust_i18n::t!("NewConnectionWindow.password_placeholder"))
-                    .default_value(text(|c| &c.password))
+                    .default_value(decrypted_password)
             }),
             auth_method: conn
                 .as_ref()
                 .map(|c| c.auth_method.clone())
                 .unwrap_or_else(|| "password".to_string()),
-            private_key_path: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(rust_i18n::t!("NewConnectionWindow.private_key_path_placeholder"))
-                    .default_value(
-                        conn.as_ref()
-                            .and_then(|c| c.private_key_path.clone())
-                            .unwrap_or_default(),
-                    )
-            }),
+            selected_key_id: conn.as_ref().and_then(|c| c.private_key_id.clone()),
+            pending_new_key: None,
+            ssh_keys,
             private_key_passphrase: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
                     .placeholder(rust_i18n::t!("NewConnectionWindow.private_key_passphrase_placeholder"))
-                    .default_value(
-                        conn.as_ref()
-                            .and_then(|c| c.private_key_passphrase.clone())
-                            .unwrap_or_default(),
-                    )
+                    .default_value(decrypted_key_passphrase.unwrap_or_default())
             }),
             shell_path: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -204,22 +219,46 @@ impl NewConnectionWindow {
                 if host.is_empty() {
                     return;
                 }
+                // Only persist whichever credential the selected auth
+                // method actually uses — otherwise a password typed before
+                // switching to key auth would linger even though it's
+                // never used to connect (mirrors why `duplicate()` clears
+                // `encrypted_key_passphrase` when copying a connection).
+                // Computed as locals before the struct literal below since
+                // `resolve_key_id` needs `&mut self` (it may register a
+                // newly-imported key with the panel), which can't overlap
+                // with the `&self.field.read(cx)` borrows used for the
+                // other fields in the same literal.
+                let plaintext_password = if self.auth_method == "key" {
+                    String::new()
+                } else {
+                    self.password.read(cx).value().to_string()
+                };
+                let key_passphrase = if self.auth_method == "key" {
+                    let p = self.private_key_passphrase.read(cx).value().to_string();
+                    if p.is_empty() { None } else { Some(p) }
+                } else {
+                    None
+                };
+                let key_id = if self.auth_method == "key" { self.resolve_key_id(cx) } else { None };
+                let vault = cx.try_global::<crate::workspace::VaultKey>();
+                // `vault` is always `Some` in practice — the vault is
+                // unlocked before any window that can reach `save()` opens
+                // (see `workspace.rs`'s startup dialogs). Falling back to
+                // an empty ciphertext rather than panicking keeps this
+                // defensive instead of crashing on an unreachable state.
+                let encrypted_password = vault
+                    .map(|v| v.0.encrypt_str(&plaintext_password))
+                    .unwrap_or_default();
+                let encrypted_key_passphrase =
+                    key_passphrase.and_then(|p| vault.map(|v| v.0.encrypt_str(&p)));
+
                 SavedConnection {
                     name,
                     host,
                     port: self.port.read(cx).value().trim().parse().unwrap_or(22),
                     user: self.user.read(cx).value().trim().to_string(),
-                    // Only persist whichever credential the selected auth
-                    // method actually uses — otherwise a password typed
-                    // before switching to key auth would linger in
-                    // plaintext on disk even though it's never used to
-                    // connect (mirrors why `duplicate()` clears
-                    // `private_key_passphrase` when copying a connection).
-                    password: if self.auth_method == "key" {
-                        String::new()
-                    } else {
-                        self.password.read(cx).value().to_string()
-                    },
+                    password: String::new(),
                     group_id,
                     conn_type: self.conn_type.clone(),
                     icon,
@@ -234,24 +273,11 @@ impl NewConnectionWindow {
                     flow_control: None,
                     description: None,
                     auth_method: self.auth_method.clone(),
-                    private_key_path: if self.auth_method == "key" {
-                        Some(self.private_key_path.read(cx).value().trim().to_string())
-                    } else {
-                        None
-                    },
-                    private_key_passphrase: if self.auth_method == "key" {
-                        let p = self.private_key_passphrase.read(cx).value().to_string();
-                        if p.is_empty() { None } else { Some(p) }
-                    } else {
-                        None
-                    },
-                    // Encryption isn't wired in yet (see the
-                    // encrypted-credential-storage plan's Task 4) — these
-                    // stay empty/absent until then, matching today's
-                    // pre-migration behavior.
-                    encrypted_password: String::new(),
-                    encrypted_key_passphrase: None,
-                    private_key_id: None,
+                    private_key_path: None,
+                    private_key_passphrase: None,
+                    encrypted_password,
+                    encrypted_key_passphrase,
+                    private_key_id: key_id,
                 }
             }
             ConnectionType::Local => {
@@ -356,6 +382,27 @@ impl NewConnectionWindow {
             panel.upsert_connection(conn, edit_ix, cx);
         });
         window.remove_window();
+    }
+
+    /// If a new key file was picked (`pending_new_key`), encrypts and
+    /// returns its new id, telling `SessionsPanel` to add the entry.
+    /// Otherwise returns whatever existing key was selected.
+    fn resolve_key_id(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        if let Some((name, content, source_path)) = self.pending_new_key.take() {
+            let vault = cx.try_global::<crate::workspace::VaultKey>()?;
+            let entry = crate::config::SshKeyEntry {
+                id: crate::config::generate_id(),
+                name,
+                source_path: Some(source_path),
+                encrypted_content: vault.0.encrypt_bytes(&content),
+            };
+            let id = entry.id.clone();
+            let _ = self.panel.update(cx, |panel, _cx| panel.add_ssh_key(entry));
+            self.selected_key_id = Some(id.clone());
+            Some(id)
+        } else {
+            self.selected_key_id.clone()
+        }
     }
 
     fn field(
@@ -717,48 +764,76 @@ impl NewConnectionWindow {
                             .child(
                                 div()
                                     .flex()
-                                    .flex_row()
-                                    .gap_2()
-                                    .items_center()
-                                    .child(div().flex_1().child(Input::new(&self.private_key_path)))
-                                    .child(
+                                    .flex_col()
+                                    .gap_1()
+                                    .children(self.ssh_keys.clone().into_iter().map(|k| {
+                                        let selected = self.selected_key_id.as_deref() == Some(k.id.as_str());
+                                        let row_id = SharedString::from(format!("ssh-key-{}", k.id));
+                                        let key_id = k.id.clone();
                                         div()
-                                            .id("browse-private-key")
+                                            .id(row_id)
                                             .px_2()
                                             .py_0p5()
                                             .rounded_sm()
-                                            .bg(cx.theme().accent)
-                                            .child(rust_i18n::t!("NewConnectionWindow.browse_button"))
-                                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                                let path_input = this.private_key_path.clone();
+                                            .when(selected, |el| el.bg(cx.theme().accent))
+                                            .when(!selected, |el| el.bg(cx.theme().secondary))
+                                            .child(k.name.clone())
+                                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                                                this.selected_key_id = Some(key_id.clone());
+                                                this.pending_new_key = None;
+                                                cx.notify();
+                                            }))
+                                    }))
+                                    .when_some(self.pending_new_key.clone(), |el, (name, _, _)| {
+                                        el.child(
+                                            div()
+                                                .id("pending-new-ssh-key")
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(cx.theme().accent)
+                                                .child(name),
+                                        )
+                                    })
+                                    .child(
+                                        div()
+                                            .id("import-new-ssh-key")
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded_sm()
+                                            .bg(cx.theme().secondary)
+                                            .child(rust_i18n::t!("NewConnectionWindow.import_key_button"))
+                                            .on_click(cx.listener(|_this, _ev: &ClickEvent, window, cx| {
                                                 let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
                                                     files: true,
                                                     directories: false,
                                                     multiple: false,
                                                     prompt: None,
                                                 });
-                                                // `set_value` needs a live `&mut Window`, which a
-                                                // plain `cx.spawn` async closure doesn't have
-                                                // (only `AsyncApp`) — `cx.spawn_in(window, ...)`
-                                                // gives an `AsyncWindowContext` instead, whose
-                                                // `.update(|window, cx| ...)` hands back a real
-                                                // `&mut Window` (confirmed against
-                                                // `~/.cargo/git/checkouts/zed-a70e2ad075855582/1d217ee/crates/gpui/src/app/context.rs:676`
-                                                // and `.../app/async_context.rs:299`).
-                                                cx.spawn_in(window, async move |_this, cx| {
+                                                // See the (removed) "browse private key path"
+                                                // button this replaced for why `cx.spawn_in` +
+                                                // `cx.update(|window, cx| ...)` is needed here
+                                                // rather than a plain `cx.spawn`.
+                                                cx.spawn_in(window, async move |this, cx| {
                                                     let Ok(Ok(Some(paths))) = rx.await else {
                                                         return;
                                                     };
                                                     let Some(path) = paths.into_iter().next() else {
                                                         return;
                                                     };
-                                                    let _ = cx.update(|window, cx| {
-                                                        path_input.update(cx, |s, cx| {
-                                                            s.set_value(
-                                                                path.to_string_lossy().to_string(),
-                                                                window,
-                                                                cx,
-                                                            );
+                                                    let Ok(content) = std::fs::read(&path) else {
+                                                        return;
+                                                    };
+                                                    let name = path
+                                                        .file_name()
+                                                        .map(|n| n.to_string_lossy().to_string())
+                                                        .unwrap_or_else(|| "key".to_string());
+                                                    let source_path = path.to_string_lossy().to_string();
+                                                    let _ = cx.update(|_window, cx| {
+                                                        let _ = this.update(cx, |this, cx| {
+                                                            this.selected_key_id = None;
+                                                            this.pending_new_key = Some((name, content, source_path));
+                                                            cx.notify();
                                                         });
                                                     });
                                                 })

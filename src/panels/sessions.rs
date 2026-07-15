@@ -158,7 +158,7 @@ pub enum SessionsEvent {
     /// `user@host` if unset), used by `Workspace::open_ssh` to build the tab
     /// title (`"{name}:{n}"`, deduplicated across concurrently-open tabs for
     /// the same host).
-    Open(SshConfig, String),
+    Open(SavedConnection, String),
     /// Open an SFTP browser (routed to the bottom "SFTP" dock).
     #[allow(dead_code)]
     OpenSftp(SshConfig),
@@ -176,7 +176,7 @@ pub enum SessionsEvent {
 /// action so the two call sites can't drift.
 fn open_event(conn: &SavedConnection) -> SessionsEvent {
     match conn.conn_type {
-        ConnectionType::Ssh => SessionsEvent::Open(conn.to_ssh_config(), conn.display_name()),
+        ConnectionType::Ssh => SessionsEvent::Open(conn.clone(), conn.display_name()),
         ConnectionType::Local => SessionsEvent::OpenLocal(
             conn.shell_path.clone().unwrap_or_default(),
             conn.working_dir.clone().unwrap_or_default(),
@@ -218,6 +218,8 @@ pub struct SessionsPanel {
     focus_handle: FocusHandle,
     connections: Vec<SavedConnection>,
     groups: Vec<SavedConnectionGroup>,
+    vault: Option<crate::config::VaultMeta>,
+    ssh_keys: Vec<crate::config::SshKeyEntry>,
     // UI state
     search_query: Entity<InputState>,
     sort_mode: SortMode,
@@ -258,6 +260,8 @@ impl SessionsPanel {
     pub fn new(
         connections: Vec<SavedConnection>,
         groups: Vec<SavedConnectionGroup>,
+        vault: Option<crate::config::VaultMeta>,
+        ssh_keys: Vec<crate::config::SshKeyEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -275,6 +279,8 @@ impl SessionsPanel {
             focus_handle: cx.focus_handle(),
             connections,
             groups,
+            vault,
+            ssh_keys,
             search_query,
             sort_mode: SortMode::Default,
             expanded_groups,
@@ -421,6 +427,7 @@ impl SessionsPanel {
             .filter(|c| c.group_id == group_id)
             .count() as i32;
         let panel = cx.entity().downgrade();
+        let ssh_keys = self.ssh_keys.clone();
         let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(560.0)), cx);
         let result = cx.open_window(
             gpui::WindowOptions {
@@ -435,6 +442,7 @@ impl SessionsPanel {
                         existing,
                         group_id.clone(),
                         new_sort_order,
+                        ssh_keys.clone(),
                         window,
                         cx,
                     )
@@ -535,8 +543,11 @@ impl SessionsPanel {
             // password-clearing behavior, extended to the newer key-auth
             // fields so a duplicated connection never silently carries a
             // copy of a decryption passphrase).
-            new_conn.password = String::new();
-            new_conn.private_key_passphrase = None;
+            if let Some(vault) = cx.try_global::<crate::workspace::VaultKey>() {
+                new_conn.encrypted_password = vault.0.encrypt_str("");
+            }
+            new_conn.encrypted_key_passphrase = None;
+            new_conn.private_key_id = None;
             new_conn.sort_order = self
                 .connections
                 .iter()
@@ -835,16 +846,27 @@ impl SessionsPanel {
     /// from the on-disk config before re-saving avoids silently wiping out
     /// vault data with every save in the meantime.
     fn persist(&self) {
-        let existing = config::load();
         let cfg = AppConfig {
             connections: self.connections.clone(),
             groups: self.groups.clone(),
-            vault: existing.vault,
-            ssh_keys: existing.ssh_keys,
+            vault: self.vault.clone(),
+            ssh_keys: self.ssh_keys.clone(),
         };
         if let Err(e) = config::save(&cfg) {
             log::error!("failed to save connections: {e}");
         }
+    }
+
+    pub(crate) fn ssh_keys(&self) -> &[crate::config::SshKeyEntry] {
+        &self.ssh_keys
+    }
+
+    /// Adds a newly-imported SSH key to the vault's shared key store.
+    /// Persistence happens on the next `upsert_connection`/`persist()` call
+    /// (the connection referencing this key is always saved in the same
+    /// user action), not immediately here, to avoid a double-write.
+    pub(crate) fn add_ssh_key(&mut self, entry: crate::config::SshKeyEntry) {
+        self.ssh_keys.push(entry);
     }
 
     /// Write the entire current connections + groups list to a

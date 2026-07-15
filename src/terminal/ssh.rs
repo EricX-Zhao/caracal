@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use anyhow::{Result, anyhow};
 use russh::client::{self, Handle, Msg};
 use russh::keys::ssh_key::PublicKey;
-use russh::keys::{PrivateKeyWithHashAlg, load_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key};
 use russh::{Channel, ChannelMsg, Disconnect};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -28,11 +28,14 @@ use crate::terminal::backend::PtyBackend;
 #[derive(Clone, Debug)]
 pub enum SshAuth {
     Password(String),
-    /// `path` is the private key file on disk; `passphrase` decrypts it if
-    /// it's passphrase-protected — `russh::keys::load_secret_key` handles
-    /// both encrypted and plain keys through the same call.
-    PrivateKey {
-        path: String,
+    /// `content` is the private key's raw file bytes (decrypted from the
+    /// vault by the caller — see `config::SavedConnection::to_ssh_config`);
+    /// `passphrase` decrypts it if it's passphrase-protected.
+    /// `russh::keys::decode_secret_key` handles both encrypted and plain
+    /// keys through the same call, parsing from an in-memory string instead
+    /// of a file path (the vault stores key *content*, not a path).
+    PrivateKeyContent {
+        content: Vec<u8>,
         passphrase: Option<String>,
     },
 }
@@ -467,9 +470,11 @@ async fn connect_and_auth(config: SshConfig) -> Result<Handle<ClientHandler>> {
 
     let auth_result = match auth {
         SshAuth::Password(password) => session.authenticate_password(user, password).await?,
-        SshAuth::PrivateKey { path, passphrase } => {
-            let key = load_secret_key(&path, passphrase.as_deref())
-                .map_err(|e| anyhow!("failed to load private key {path}: {e}"))?;
+        SshAuth::PrivateKeyContent { content, passphrase } => {
+            let key_str = String::from_utf8(content)
+                .map_err(|e| anyhow!("private key content is not valid UTF-8: {e}"))?;
+            let key = decode_secret_key(&key_str, passphrase.as_deref())
+                .map_err(|e| anyhow!("failed to parse private key: {e}"))?;
             let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
             session.authenticate_publickey(user, key).await?
         }

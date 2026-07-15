@@ -59,8 +59,6 @@ pub struct SavedConnection {
     #[serde(default = "default_port")]
     pub port: u16,
     pub user: String,
-    #[serde(default)]
-    pub password: String,
     /// Group this connection belongs to. `None` means ungrouped (root level).
     #[serde(default)]
     pub group_id: Option<String>,
@@ -101,30 +99,35 @@ pub struct SavedConnection {
     /// saved before this field existed.
     #[serde(default = "default_auth_method")]
     pub auth_method: String,
-    /// Path to a private key file. Only meaningful when `auth_method ==
-    /// "key"`.
+    /// Plaintext password, read from an old (pre-encryption) TOML file.
+    /// **Migration-source only**: `vault::migrate` reads this once to
+    /// populate `encrypted_password` and immediately clears it; no other
+    /// code may write a real value here. Kept on the struct (rather than
+    /// removed) specifically so `config::load()` doesn't silently discard
+    /// an existing user's plaintext password before migration ever sees
+    /// it — TOML deserialization drops unknown keys, so removing this
+    /// field would make old-format files lose their passwords on upgrade.
+    #[serde(default)]
+    pub password: String,
+    /// Plaintext private-key path, same migration-source-only contract as
+    /// `password`.
     #[serde(default)]
     pub private_key_path: Option<String>,
-    /// Optional passphrase to decrypt an encrypted private key. Only
-    /// meaningful when `auth_method == "key"`.
+    /// Plaintext private-key passphrase, same migration-source-only
+    /// contract as `password`.
     #[serde(default)]
     pub private_key_passphrase: Option<String>,
-    /// `base64(nonce || ciphertext)` encryption of `password`, via
-    /// `crypto::MasterKey::encrypt_str`. Additive alongside `password` for
-    /// now (see `vault::migrate`) — Task 4 of the encrypted-credential-
-    /// storage plan removes `password` once every connection has been
-    /// migrated and every call site reads this field instead.
+    /// `base64(nonce || ciphertext)` encryption of the password, via
+    /// `crypto::MasterKey::encrypt_str`.
     #[serde(default)]
     pub encrypted_password: String,
-    /// `base64(nonce || ciphertext)` encryption of `private_key_passphrase`.
-    /// Additive alongside it for now — same migration note as
-    /// `encrypted_password`.
+    /// `base64(nonce || ciphertext)` encryption of the private key's
+    /// decrypting passphrase, if any. Only meaningful when `auth_method ==
+    /// "key"`.
     #[serde(default)]
     pub encrypted_key_passphrase: Option<String>,
-    /// References an `AppConfig.ssh_keys` entry by id. Additive alongside
-    /// `private_key_path` for now — `vault::migrate` populates this from
-    /// the plaintext path; Task 4 removes `private_key_path` once
-    /// `to_ssh_config` reads this instead.
+    /// References an `AppConfig.ssh_keys` entry by id. Only meaningful when
+    /// `auth_method == "key"`.
     #[serde(default)]
     pub private_key_id: Option<String>,
     /// Manual ordering within a `group_id` scope (including `None`, the
@@ -147,21 +150,41 @@ fn default_port() -> u16 {
 
 impl SavedConnection {
     /// The connection parameters used to actually dial (see `workspace.rs`).
-    pub fn to_ssh_config(&self) -> SshConfig {
+    /// Requires the unlocked vault's master key to decrypt the stored
+    /// secret; fails if this connection's key-file reference is dangling
+    /// (deleted key, hand-edited file) or a field's ciphertext doesn't
+    /// decrypt under `master_key`.
+    pub fn to_ssh_config(
+        &self,
+        ssh_keys: &[SshKeyEntry],
+        master_key: &crate::crypto::MasterKey,
+    ) -> anyhow::Result<SshConfig> {
         let auth = if self.auth_method == "key" {
-            SshAuth::PrivateKey {
-                path: self.private_key_path.clone().unwrap_or_default(),
-                passphrase: self.private_key_passphrase.clone(),
-            }
+            let key_id = self
+                .private_key_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("connection uses key auth but has no key selected"))?;
+            let entry = ssh_keys
+                .iter()
+                .find(|k| k.id == key_id)
+                .ok_or_else(|| anyhow::anyhow!("the SSH key this connection uses was not found"))?;
+            let content = master_key.decrypt_bytes(&entry.encrypted_content)?;
+            let passphrase = self
+                .encrypted_key_passphrase
+                .as_deref()
+                .map(|ct| master_key.decrypt_str(ct))
+                .transpose()?;
+            SshAuth::PrivateKeyContent { content, passphrase }
         } else {
-            SshAuth::Password(self.password.clone())
+            let password = master_key.decrypt_str(&self.encrypted_password)?;
+            SshAuth::Password(password)
         };
-        SshConfig {
+        Ok(SshConfig {
             host: self.host.clone(),
             port: self.port,
             user: self.user.clone(),
             auth,
-        }
+        })
     }
 
     /// Telnet connection parameters. No credentials: telnet login happens
@@ -405,7 +428,6 @@ mod tests {
             host: "example.com".to_string(),
             port: 23,
             user: String::new(),
-            password: String::new(),
             group_id: None,
             conn_type,
             icon: None,
@@ -419,6 +441,7 @@ mod tests {
             flow_control: None,
             description: None,
             auth_method: "password".to_string(),
+            password: String::new(),
             private_key_path: None,
             private_key_passphrase: None,
             encrypted_password: String::new(),
@@ -508,42 +531,43 @@ mod tests {
 
     #[test]
     fn to_ssh_config_uses_password_auth_by_default() {
+        let master = crate::crypto::MasterKey::generate();
         let mut conn = base_connection(ConnectionType::Ssh);
-        conn.password = "hunter2".to_string();
-        let cfg = conn.to_ssh_config();
+        conn.encrypted_password = master.encrypt_str("hunter2");
+        let cfg = conn.to_ssh_config(&[], &master).unwrap();
         assert!(matches!(cfg.auth, crate::terminal::ssh::SshAuth::Password(p) if p == "hunter2"));
     }
 
     #[test]
     fn to_ssh_config_uses_private_key_auth_when_selected() {
+        let master = crate::crypto::MasterKey::generate();
+        let ssh_keys = vec![SshKeyEntry {
+            id: "key-1".to_string(),
+            name: "id_ed25519".to_string(),
+            source_path: None,
+            encrypted_content: master.encrypt_bytes(b"key-bytes"),
+        }];
         let mut conn = base_connection(ConnectionType::Ssh);
         conn.auth_method = "key".to_string();
-        conn.private_key_path = Some("/home/user/.ssh/id_ed25519".to_string());
-        conn.private_key_passphrase = Some("secret".to_string());
-        let cfg = conn.to_ssh_config();
+        conn.private_key_id = Some("key-1".to_string());
+        conn.encrypted_key_passphrase = Some(master.encrypt_str("secret"));
+        let cfg = conn.to_ssh_config(&ssh_keys, &master).unwrap();
         match cfg.auth {
-            crate::terminal::ssh::SshAuth::PrivateKey { path, passphrase } => {
-                assert_eq!(path, "/home/user/.ssh/id_ed25519");
+            crate::terminal::ssh::SshAuth::PrivateKeyContent { content, passphrase } => {
+                assert_eq!(content, b"key-bytes");
                 assert_eq!(passphrase.as_deref(), Some("secret"));
             }
-            _ => panic!("expected PrivateKey auth"),
+            _ => panic!("expected PrivateKeyContent auth"),
         }
     }
 
     #[test]
-    fn old_connection_without_auth_fields_still_deserializes_as_password() {
-        // Simulates a connections.toml written before this change.
-        let toml_text = r#"
-            [[connections]]
-            host = "old.example.com"
-            user = "root"
-            password = "hunter2"
-            conn_type = "ssh"
-        "#;
-        let cfg: AppConfig =
-            toml::from_str(toml_text).expect("old-format connection must still parse");
-        assert_eq!(cfg.connections[0].auth_method, "password");
-        assert_eq!(cfg.connections[0].private_key_path, None);
+    fn to_ssh_config_errors_when_referenced_key_is_missing() {
+        let master = crate::crypto::MasterKey::generate();
+        let mut conn = base_connection(ConnectionType::Ssh);
+        conn.auth_method = "key".to_string();
+        conn.private_key_id = Some("does-not-exist".to_string());
+        assert!(conn.to_ssh_config(&[], &master).is_err());
     }
 
     #[test]

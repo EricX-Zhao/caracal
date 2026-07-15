@@ -316,9 +316,6 @@ NewConnectionWindow:
   password_placeholder:
     zh-CN: "密码"
     en: "Password"
-  private_key_path_placeholder:
-    zh-CN: "私钥文件路径"
-    en: "Private key file path"
   private_key_passphrase_placeholder:
     zh-CN: "密码短语(可选)"
     en: "Passphrase (optional)"
@@ -388,9 +385,9 @@ NewConnectionWindow:
   private_key_file_label:
     zh-CN: "私钥文件"
     en: "Private Key File"
-  browse_button:
-    zh-CN: "浏览..."
-    en: "Browse..."
+  import_key_button:
+    zh-CN: "导入密钥文件..."
+    en: "Import key file..."
   type_local:
     zh-CN: "本地终端"
     en: "Local Terminal"
@@ -572,3 +569,34 @@ Sftp:
   open_local_failed:
     zh-CN: "打开失败: %{error}"
     en: "Failed to open: %{error}"
+Vault:
+  setup_title:
+    zh-CN: "设置主密码"
+    en: "Set a master password"
+  setup_body:
+    zh-CN: "此密码用于加密已保存的连接密码和密钥。请妥善保管——一旦忘记将无法恢复。"
+    en: "This password encrypts your saved connection passwords and keys. Keep it safe — it cannot be recovered if forgotten."
+  password_placeholder:
+    zh-CN: "主密码"
+    en: "Master password"
+  confirm_password_placeholder:
+    zh-CN: "确认主密码"
+    en: "Confirm master password"
+  unlock_title:
+    zh-CN: "解锁"
+    en: "Unlock"
+  error_empty:
+    zh-CN: "密码不能为空"
+    en: "Password cannot be empty"
+  error_mismatch:
+    zh-CN: "两次输入的密码不一致"
+    en: "Passwords do not match"
+  error_wrong_password:
+    zh-CN: "密码错误，请重试"
+    en: "Wrong password, please try again"
+  locked_error:
+    zh-CN: "未解锁，无法连接"
+    en: "Vault is locked, cannot connect"
+  decrypt_failed_error:
+    zh-CN: "解密连接信息失败：%{error}"
+    en: "Failed to decrypt connection: %{error}"

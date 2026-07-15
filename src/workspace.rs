@@ -33,8 +33,10 @@ use gpui::{
     prelude::FluentBuilder, px, size,
 };
 use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelStyle};
+use gpui_component::input::{Input, InputState};
+use gpui_component::notification::NotificationType;
 use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
-use gpui_component::{ActiveTheme, Root};
+use gpui_component::{ActiveTheme, Root, WindowExt, v_flex};
 
 use crate::config;
 use crate::panels::activity_bar::{
@@ -54,6 +56,134 @@ use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::telnet::TelnetConfig;
 use crate::terminal::view::{TerminalView, TerminalViewEvent};
+use crate::vault;
+
+/// The unlocked vault's master key, available anywhere via
+/// `cx.global::<VaultKey>()` / `cx.try_global::<VaultKey>()` once unlock
+/// succeeds — set once at startup (see `Workspace::new`), never re-locked
+/// during the session. Mirrors the `Theme::global_mut(cx)` idiom
+/// gpui-component itself uses for app-wide state.
+pub struct VaultKey(pub crate::crypto::MasterKey);
+impl gpui::Global for VaultKey {}
+
+/// First launch after upgrade (or a fresh install): no `[vault]` section
+/// yet in `connections.toml`. Blocks the app behind a "set a master
+/// password" dialog — mandatory, not opt-in (see the design spec's
+/// "Adoption" decision) — then migrates existing plaintext secrets and
+/// unlocks. A mismatched/empty password keeps the dialog open with an
+/// inline error instead of closing it.
+fn show_setup_master_password_dialog(window: &mut Window, cx: &mut Context<Workspace>) {
+    let pw_input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .masked(true)
+            .placeholder(rust_i18n::t!("Vault.password_placeholder"))
+    });
+    let confirm_input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .masked(true)
+            .placeholder(rust_i18n::t!("Vault.confirm_password_placeholder"))
+    });
+    let error: Entity<SharedString> = cx.new(|_cx| SharedString::default());
+
+    window.open_alert_dialog(cx, move |alert, _window, cx| {
+        let pw_input = pw_input.clone();
+        let confirm_input = confirm_input.clone();
+        let error = error.clone();
+        let body = v_flex()
+            .gap_2()
+            .child(div().child(rust_i18n::t!("Vault.setup_body")))
+            .child(Input::new(&pw_input))
+            .child(Input::new(&confirm_input))
+            .when(!error.read(cx).is_empty(), |el| {
+                el.child(div().text_color(gpui::red()).child(error.read(cx).clone()))
+            });
+        alert
+            .title(rust_i18n::t!("Vault.setup_title"))
+            .description(body)
+            .confirm()
+            .on_ok(move |_, window, cx| {
+                let password = pw_input.read(cx).value().to_string();
+                let confirm = confirm_input.read(cx).value().to_string();
+                if password.is_empty() {
+                    error.update(cx, |e, cx| {
+                        *e = rust_i18n::t!("Vault.error_empty").into();
+                        cx.notify();
+                    });
+                    return false;
+                }
+                if password != confirm {
+                    error.update(cx, |e, cx| {
+                        *e = rust_i18n::t!("Vault.error_mismatch").into();
+                        cx.notify();
+                    });
+                    return false;
+                }
+                let mut cfg = config::load();
+                match vault::migrate(&mut cfg, &password) {
+                    Ok(master) => {
+                        if let Err(e) = config::save(&cfg) {
+                            log::error!("failed to save migrated vault: {e}");
+                        }
+                        cx.set_global(VaultKey(master));
+                        window.close_dialog(cx);
+                        true
+                    }
+                    Err(e) => {
+                        log::error!("vault migration failed: {e}");
+                        error.update(cx, |msg, cx| {
+                            *msg = e.to_string().into();
+                            cx.notify();
+                        });
+                        false
+                    }
+                }
+            })
+    });
+}
+
+/// Every normal startup after the vault has been set up: blocks the app
+/// behind a password prompt until it unlocks. A wrong password keeps the
+/// dialog open with an inline error instead of closing it — there is no
+/// lockout/rate-limiting (local-only attack surface; Argon2id already
+/// makes brute force expensive).
+fn show_unlock_dialog(window: &mut Window, cx: &mut Context<Workspace>) {
+    let pw_input = cx.new(|cx| {
+        InputState::new(window, cx)
+            .masked(true)
+            .placeholder(rust_i18n::t!("Vault.password_placeholder"))
+    });
+    let error: Entity<SharedString> = cx.new(|_cx| SharedString::default());
+
+    window.open_alert_dialog(cx, move |alert, _window, cx| {
+        let pw_input = pw_input.clone();
+        let error = error.clone();
+        let body = v_flex().gap_2().child(Input::new(&pw_input)).when(!error.read(cx).is_empty(), |el| {
+            el.child(div().text_color(gpui::red()).child(error.read(cx).clone()))
+        });
+        alert
+            .title(rust_i18n::t!("Vault.unlock_title"))
+            .description(body)
+            .confirm()
+            .on_ok(move |_, window, cx| {
+                let password = pw_input.read(cx).value().to_string();
+                let cfg = config::load();
+                match vault::unlock(&cfg, &password) {
+                    Ok(master) => {
+                        cx.set_global(VaultKey(master));
+                        window.close_dialog(cx);
+                        true
+                    }
+                    Err(_) => {
+                        error.update(cx, |msg, cx| {
+                            *msg = rust_i18n::t!("Vault.error_wrong_password").into();
+                            cx.notify();
+                        });
+                        false
+                    }
+                }
+            })
+    });
+}
 
 pub struct Workspace {
     /// Hosts the CENTER terminal tabs only (no side docks anymore).
@@ -96,6 +226,10 @@ pub struct Workspace {
     // --- panel registry -----------------------------------------------------
     /// The right-dock "会话" list (real panel).
     sessions_panel: AnyView,
+    /// Typed handle to the same entity as `sessions_panel`, kept alongside
+    /// it so vault-related code can read its `ssh_keys()` — `AnyView` is
+    /// type-erased and can't be read back.
+    saved_sessions: Entity<SessionsPanel>,
     /// Placeholder panels for the not-yet-implemented nyaterm categories.
     stub_panels: HashMap<PanelId, AnyView>,
     /// One SFTP browser per host key (created on first use, reused after).
@@ -178,13 +312,47 @@ impl Workspace {
         // The persisted "会话" list. Clicking a row opens the SSH terminal
         // or its SFTP browser.
         let cfg = config::load();
+        let needs_vault_setup = cfg.vault.is_none();
+        // Dialogs require the window's root view to already be a
+        // `gpui_component::Root` (`Root::update` panics otherwise) — that
+        // only becomes true once `main.rs`'s `cx.open_window` closure
+        // returns and wraps this `Workspace` in `Root::new`, which hasn't
+        // happened yet at this point inside `Workspace::new` itself.
+        // `defer_in` runs after the current construction/effect cycle
+        // finishes, by which point the window root is set.
+        cx.defer_in(window, move |_this, window, cx| {
+            if needs_vault_setup {
+                show_setup_master_password_dialog(window, cx);
+            } else {
+                show_unlock_dialog(window, cx);
+            }
+        });
         let saved = cx.new(|cx| {
-            SessionsPanel::new(cfg.connections, cfg.groups, window, cx)
+            SessionsPanel::new(cfg.connections, cfg.groups, cfg.vault, cfg.ssh_keys, window, cx)
         });
         let saved_sub =
             cx.subscribe_in(&saved, window, |this, _panel, event, window, cx| match event {
-                SessionsEvent::Open(config, name) => {
-                    this.open_ssh(config.clone(), name.clone(), window, cx)
+                SessionsEvent::Open(conn, name) => {
+                    let Some(vault) = cx.try_global::<VaultKey>() else {
+                        window.push_notification(
+                            (NotificationType::Error, rust_i18n::t!("Vault.locked_error")),
+                            cx,
+                        );
+                        return;
+                    };
+                    let ssh_keys = this.ssh_keys_snapshot(cx);
+                    match conn.to_ssh_config(&ssh_keys, &vault.0) {
+                        Ok(ssh_config) => this.open_ssh(ssh_config, name.clone(), window, cx),
+                        Err(e) => {
+                            window.push_notification(
+                                (
+                                    NotificationType::Error,
+                                    rust_i18n::t!("Vault.decrypt_failed_error", error = e.to_string()),
+                                ),
+                                cx,
+                            );
+                        }
+                    }
                 }
                 SessionsEvent::OpenSftp(config) => {
                     this.show_sftp(config.clone(), window, cx)
@@ -228,6 +396,7 @@ impl Workspace {
             appearance_font_fallback,
             show_quick_commands: false,
             quick_commands_panel,
+            saved_sessions: saved.clone(),
             sessions_panel: saved.into(),
             stub_panels,
             sftp_panels: HashMap::new(),
@@ -339,6 +508,12 @@ impl Workspace {
                 self.ssh_tab_numbers.remove(key);
             }
         }
+    }
+
+    /// Snapshot of the vault's shared SSH keys, for decrypting a
+    /// connection's key-file auth at connect time (see `SessionsEvent::Open`).
+    fn ssh_keys_snapshot(&self, cx: &App) -> Vec<crate::config::SshKeyEntry> {
+        self.saved_sessions.read(cx).ssh_keys().to_vec()
     }
 
     /// Open an SSH shell terminal (reusing the host's shared connection) as a
