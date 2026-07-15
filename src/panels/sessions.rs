@@ -448,6 +448,7 @@ impl SessionsPanel {
                         group_id.clone(),
                         new_sort_order,
                         ssh_keys.clone(),
+                        saved_passwords.clone(),
                         window,
                         cx,
                     )

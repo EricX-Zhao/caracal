@@ -39,6 +39,18 @@ const ICON_OPTIONS: &[(Option<&str>, &str, AppIcon)] = &[
     (Some("serial"), "NewConnectionWindow.icon_serial", AppIcon::SerialPort),
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PasswordTab {
+    Direct,
+    Saved,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyTab {
+    ImportNew,
+    Saved,
+}
+
 pub struct NewConnectionWindow {
     panel: WeakEntity<SessionsPanel>,
     /// `Some(ix)` when editing an existing connection in place; `None` when
@@ -62,6 +74,27 @@ pub struct NewConnectionWindow {
     pending_new_key: Option<(String, Vec<u8>, String)>,
     /// Snapshot of the vault's shared keys, for the picker list.
     ssh_keys: Vec<crate::config::SshKeyEntry>,
+    /// Which sub-tab the Password field is on. `Direct` is always the
+    /// default/starting tab, including when editing a connection with
+    /// `password_id: Some` and that entry has since been deleted —
+    /// `to_ssh_config` handles the dangling case at connect time; here it
+    /// just means the picker opens with nothing pre-selected.
+    password_tab: PasswordTab,
+    /// `Some(id)` when an existing saved password is selected on the
+    /// Saved tab.
+    selected_password_id: Option<String>,
+    /// Snapshot of the vault's shared saved passwords, for the picker list.
+    saved_passwords: Vec<crate::config::SavedPasswordEntry>,
+    /// `true` while the inline "add a new saved password" mini-form is
+    /// expanded within the Saved tab.
+    adding_new_saved_password: bool,
+    new_saved_password_name: Entity<InputState>,
+    new_saved_password_value: Entity<InputState>,
+    /// Which sub-tab the Key field is on — a pure UI reshuffle of the
+    /// existing picker (key auth is always reference-based; this just
+    /// splits "import a new one" from "pick an existing one" into two
+    /// tabs instead of showing both stacked).
+    key_tab: KeyTab,
     private_key_passphrase: Entity<InputState>,
     shell_path: Entity<InputState>,
     working_dir: Entity<InputState>,
@@ -80,12 +113,14 @@ pub struct NewConnectionWindow {
 }
 
 impl NewConnectionWindow {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         panel: WeakEntity<SessionsPanel>,
         existing: Option<(usize, SavedConnection)>,
         group_id: Option<String>,
         new_sort_order: i32,
         ssh_keys: Vec<crate::config::SshKeyEntry>,
+        saved_passwords: Vec<crate::config::SavedPasswordEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -112,6 +147,17 @@ impl NewConnectionWindow {
                 .as_ref()
                 .and_then(|ct| vault.and_then(|v| v.0.decrypt_str(ct).ok()))
         });
+        let password_tab = if conn.as_ref().and_then(|c| c.password_id.clone()).is_some() {
+            PasswordTab::Saved
+        } else {
+            PasswordTab::Direct
+        };
+        let selected_password_id = conn.as_ref().and_then(|c| c.password_id.clone());
+        let key_tab = if conn.as_ref().map(|c| c.auth_method.clone()).as_deref() == Some("key") {
+            KeyTab::Saved
+        } else {
+            KeyTab::ImportNew
+        };
 
         Self {
             panel,
@@ -157,6 +203,19 @@ impl NewConnectionWindow {
             selected_key_id: conn.as_ref().and_then(|c| c.private_key_id.clone()),
             pending_new_key: None,
             ssh_keys,
+            password_tab,
+            selected_password_id,
+            saved_passwords,
+            adding_new_saved_password: false,
+            new_saved_password_name: cx.new(|cx| {
+                InputState::new(window, cx).placeholder(rust_i18n::t!("SecurityAuth.password_name_placeholder"))
+            }),
+            new_saved_password_value: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder(rust_i18n::t!("NewConnectionWindow.password_placeholder"))
+            }),
+            key_tab,
             private_key_passphrase: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
@@ -229,7 +288,12 @@ impl NewConnectionWindow {
                 // newly-imported key with the panel), which can't overlap
                 // with the `&self.field.read(cx)` borrows used for the
                 // other fields in the same literal.
-                let plaintext_password = if self.auth_method == "key" {
+                let password_id = if self.auth_method == "password" && self.password_tab == PasswordTab::Saved {
+                    self.selected_password_id.clone()
+                } else {
+                    None
+                };
+                let plaintext_password = if self.auth_method == "key" || password_id.is_some() {
                     String::new()
                 } else {
                     self.password.read(cx).value().to_string()
@@ -278,7 +342,7 @@ impl NewConnectionWindow {
                     encrypted_password,
                     encrypted_key_passphrase,
                     private_key_id: key_id,
-                    password_id: None,
+                    password_id,
                 }
             }
             ConnectionType::Local => {
@@ -768,83 +832,38 @@ impl NewConnectionWindow {
                             .child(
                                 div()
                                     .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .children(self.ssh_keys.clone().into_iter().map(|k| {
-                                        let selected = self.selected_key_id.as_deref() == Some(k.id.as_str());
-                                        let row_id = SharedString::from(format!("ssh-key-{}", k.id));
-                                        let key_id = k.id.clone();
-                                        div()
-                                            .id(row_id)
-                                            .px_2()
-                                            .py_0p5()
-                                            .rounded_sm()
-                                            .when(selected, |el| el.bg(cx.theme().accent))
-                                            .when(!selected, |el| el.bg(cx.theme().secondary))
-                                            .child(k.name.clone())
-                                            .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                                this.selected_key_id = Some(key_id.clone());
-                                                this.pending_new_key = None;
-                                                cx.notify();
-                                            }))
-                                    }))
-                                    .when_some(self.pending_new_key.clone(), |el, (name, _, _)| {
-                                        el.child(
-                                            div()
-                                                .id("pending-new-ssh-key")
-                                                .px_2()
-                                                .py_0p5()
-                                                .rounded_sm()
-                                                .bg(cx.theme().accent)
-                                                .child(name),
-                                        )
-                                    })
+                                    .flex_row()
+                                    .gap_2()
                                     .child(
-                                        div()
-                                            .id("import-new-ssh-key")
-                                            .px_2()
-                                            .py_0p5()
-                                            .rounded_sm()
-                                            .bg(cx.theme().secondary)
-                                            .child(rust_i18n::t!("NewConnectionWindow.import_key_button"))
-                                            .on_click(cx.listener(|_this, _ev: &ClickEvent, window, cx| {
-                                                let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
-                                                    files: true,
-                                                    directories: false,
-                                                    multiple: false,
-                                                    prompt: None,
-                                                });
-                                                // See the (removed) "browse private key path"
-                                                // button this replaced for why `cx.spawn_in` +
-                                                // `cx.update(|window, cx| ...)` is needed here
-                                                // rather than a plain `cx.spawn`.
-                                                cx.spawn_in(window, async move |this, cx| {
-                                                    let Ok(Ok(Some(paths))) = rx.await else {
-                                                        return;
-                                                    };
-                                                    let Some(path) = paths.into_iter().next() else {
-                                                        return;
-                                                    };
-                                                    let Ok(content) = std::fs::read(&path) else {
-                                                        return;
-                                                    };
-                                                    let name = path
-                                                        .file_name()
-                                                        .map(|n| n.to_string_lossy().to_string())
-                                                        .unwrap_or_else(|| "key".to_string());
-                                                    let source_path = path.to_string_lossy().to_string();
-                                                    let _ = cx.update(|_window, cx| {
-                                                        let _ = this.update(cx, |this, cx| {
-                                                            this.selected_key_id = None;
-                                                            this.pending_new_key = Some((name, content, source_path));
-                                                            cx.notify();
-                                                        });
-                                                    });
-                                                })
-                                                .detach();
-                                            })),
+                                        Self::pill(
+                                            "key-tab-import",
+                                            rust_i18n::t!("SecurityAuth.tab_import_new_key"),
+                                            self.key_tab == KeyTab::ImportNew,
+                                            cx,
+                                        )
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                            this.key_tab = KeyTab::ImportNew;
+                                            cx.notify();
+                                        })),
+                                    )
+                                    .child(
+                                        Self::pill(
+                                            "key-tab-saved",
+                                            rust_i18n::t!("SecurityAuth.tab_saved_key"),
+                                            self.key_tab == KeyTab::Saved,
+                                            cx,
+                                        )
+                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                                            this.key_tab = KeyTab::Saved;
+                                            cx.notify();
+                                        })),
                                     ),
-                            ),
+                            )
+                            .child(if self.key_tab == KeyTab::Saved {
+                                self.render_saved_key_picker(cx).into_any_element()
+                            } else {
+                                self.render_import_new_key(cx).into_any_element()
+                            }),
                     )
                     .child(self.field(
                         rust_i18n::t!("NewConnectionWindow.private_key_passphrase_placeholder"),
@@ -853,13 +872,231 @@ impl NewConnectionWindow {
                     ))
                     .into_any_element()
             } else {
-                self.field(
-                    rust_i18n::t!("NewConnectionWindow.password_placeholder"),
-                    &self.password.clone(),
-                    cx,
-                )
-                .into_any_element()
+                self.render_password_tabs(cx).into_any_element()
             })
+    }
+
+    /// The Key field's "Saved" tab: pick from the vault's shared keys.
+    /// Extracted verbatim from the pre-tab layout, no logic change.
+    fn render_saved_key_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .children(self.ssh_keys.clone().into_iter().map(|k| {
+                let selected = self.selected_key_id.as_deref() == Some(k.id.as_str());
+                let row_id = SharedString::from(format!("ssh-key-{}", k.id));
+                let key_id = k.id.clone();
+                div()
+                    .id(row_id)
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .when(selected, |el| el.bg(cx.theme().accent))
+                    .when(!selected, |el| el.bg(cx.theme().secondary))
+                    .child(k.name.clone())
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.selected_key_id = Some(key_id.clone());
+                        this.pending_new_key = None;
+                        cx.notify();
+                    }))
+            }))
+    }
+
+    /// The Key field's "Import new" tab: file-picker button + a pending
+    /// (not-yet-saved) indicator. Extracted verbatim from the pre-tab
+    /// layout, no logic change.
+    fn render_import_new_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .when_some(self.pending_new_key.clone(), |el, (name, _, _)| {
+                el.child(
+                    div()
+                        .id("pending-new-ssh-key")
+                        .px_2()
+                        .py_0p5()
+                        .rounded_sm()
+                        .bg(cx.theme().accent)
+                        .child(name),
+                )
+            })
+            .child(
+                div()
+                    .id("import-new-ssh-key")
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .bg(cx.theme().secondary)
+                    .child(rust_i18n::t!("NewConnectionWindow.import_key_button"))
+                    .on_click(cx.listener(|_this, _ev: &ClickEvent, window, cx| {
+                        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+                            files: true,
+                            directories: false,
+                            multiple: false,
+                            prompt: None,
+                        });
+                        // See the (removed) "browse private key path"
+                        // button this replaced for why `cx.spawn_in` +
+                        // `cx.update(|window, cx| ...)` is needed here
+                        // rather than a plain `cx.spawn`.
+                        cx.spawn_in(window, async move |this, cx| {
+                            let Ok(Ok(Some(paths))) = rx.await else {
+                                return;
+                            };
+                            let Some(path) = paths.into_iter().next() else {
+                                return;
+                            };
+                            let Ok(content) = std::fs::read(&path) else {
+                                return;
+                            };
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "key".to_string());
+                            let source_path = path.to_string_lossy().to_string();
+                            let _ = cx.update(|_window, cx| {
+                                let _ = this.update(cx, |this, cx| {
+                                    this.selected_key_id = None;
+                                    this.pending_new_key = Some((name, content, source_path));
+                                    cx.notify();
+                                });
+                            });
+                        })
+                        .detach();
+                    })),
+            )
+    }
+
+    fn render_password_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_saved = self.password_tab == PasswordTab::Saved;
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Self::pill(
+                            "password-tab-direct",
+                            rust_i18n::t!("SecurityAuth.tab_direct_password"),
+                            !is_saved,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.password_tab = PasswordTab::Direct;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        Self::pill(
+                            "password-tab-saved",
+                            rust_i18n::t!("SecurityAuth.tab_saved_password"),
+                            is_saved,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
+                            this.password_tab = PasswordTab::Saved;
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(if is_saved {
+                self.render_saved_password_picker(cx).into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(self.field_label(rust_i18n::t!("NewConnectionWindow.password_placeholder"), cx))
+                    .child(Input::new(&self.password).mask_toggle())
+                    .into_any_element()
+            })
+    }
+
+    fn render_saved_password_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut list = div().flex().flex_col().gap_1();
+        for entry in self.saved_passwords.clone() {
+            let selected = self.selected_password_id.as_deref() == Some(entry.id.as_str());
+            let row_id = SharedString::from(format!("saved-password-{}", entry.id));
+            let entry_id = entry.id.clone();
+            list = list.child(
+                div()
+                    .id(row_id)
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .when(selected, |el| el.bg(cx.theme().accent))
+                    .when(!selected, |el| el.bg(cx.theme().secondary))
+                    .child(entry.name.clone())
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        this.selected_password_id = Some(entry_id.clone());
+                        cx.notify();
+                    })),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(list)
+            .child(if self.adding_new_saved_password {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(Input::new(&self.new_saved_password_name))
+                    .child(Input::new(&self.new_saved_password_value).mask_toggle())
+                    .child(
+                        Button::new("confirm-add-saved-password")
+                            .xsmall()
+                            .label(rust_i18n::t!("SecurityAuth.add_password_button"))
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                                this.confirm_add_new_saved_password(cx);
+                            })),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .id("add-new-saved-password-row")
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .bg(cx.theme().secondary)
+                    .child(rust_i18n::t!("SecurityAuth.add_new_saved_password_row"))
+                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
+                        this.adding_new_saved_password = true;
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+    }
+
+    fn confirm_add_new_saved_password(&mut self, cx: &mut Context<Self>) {
+        let name = self.new_saved_password_name.read(cx).value().trim().to_string();
+        let value = self.new_saved_password_value.read(cx).value().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let Some(vault) = cx.try_global::<crate::workspace::VaultKey>() else {
+            return;
+        };
+        let entry = crate::config::SavedPasswordEntry {
+            id: crate::config::generate_id(),
+            name,
+            encrypted_password: vault.0.encrypt_str(&value),
+        };
+        let id = entry.id.clone();
+        let _ = self.panel.update(cx, |panel, _cx| panel.add_saved_password(entry.clone()));
+        let _ = self.panel.update(cx, |panel, _cx| panel.persist_for_security_auth());
+        self.saved_passwords.push(entry);
+        self.selected_password_id = Some(id);
+        self.adding_new_saved_password = false;
+        cx.notify();
     }
 }
 

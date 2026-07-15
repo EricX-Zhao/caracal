@@ -692,3 +692,18 @@ SecurityAuth:
   password_name_placeholder:
     zh-CN: "名称"
     en: "Name"
+  tab_direct_password:
+    zh-CN: "直接输入"
+    en: "Direct"
+  tab_saved_password:
+    zh-CN: "已保存"
+    en: "Saved"
+  tab_import_new_key:
+    zh-CN: "导入新密钥"
+    en: "Import new"
+  tab_saved_key:
+    zh-CN: "已保存"
+    en: "Saved"
+  add_new_saved_password_row:
+    zh-CN: "+ 添加已保存密码..."
+    en: "+ Add saved password..."
