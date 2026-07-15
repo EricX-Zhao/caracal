@@ -132,7 +132,11 @@ impl FileTableDelegate {
     }
 
     /// Recompute the displayed `entries` from `all_entries`, filtering out
-    /// dotfiles (names starting with `.`) unless `show_hidden` is true.
+    /// dotfiles (names starting with `.`) unless `show_hidden` is true, and
+    /// re-fit the Name column to the (possibly changed) set of visible
+    /// names — this runs on every fresh directory load and hidden-file
+    /// toggle, the two moments the directory's contents actually change; a
+    /// manual column drag in between is left alone.
     fn apply_hidden_filter(&mut self, show_hidden: bool) {
         self.entries = if show_hidden {
             self.all_entries.clone()
@@ -143,6 +147,9 @@ impl FileTableDelegate {
                 .cloned()
                 .collect()
         };
+        if let Some(col) = self.columns.iter_mut().find(|c| c.key.as_ref() == "name") {
+            col.width = fit_name_column_width(&self.entries);
+        }
     }
 }
 
@@ -1886,6 +1893,39 @@ fn remote_parent(path: &str) -> String {
     }
 }
 
+/// Bounds for the Name column's auto-fit width — narrower than the min
+/// would clip almost every name; wider than the max would let one
+/// absurdly long name dominate the whole panel (names outside this range
+/// still fall back to `render_td`'s `text_ellipsis` truncation).
+const NAME_COL_MIN_WIDTH: f32 = 150.0;
+const NAME_COL_MAX_WIDTH: f32 = 400.0;
+/// Rough allowance (px) for the row's non-text chrome at the name
+/// column's text size: the folder/file icon, the gap after it, and the
+/// cell's own padding.
+const NAME_COL_CHROME_WIDTH: f32 = 40.0;
+/// Rough average glyph width (px) for the table's default text size —
+/// precise enough for a *default* width since the column stays
+/// user-resizable afterward.
+const NAME_COL_CHAR_WIDTH: f32 = 7.0;
+
+/// Auto-fit width for the Name column, sized to the *longest* display
+/// name among `entries` (directories counted with their rendered
+/// trailing "/"), clamped to `NAME_COL_MIN_WIDTH..=NAME_COL_MAX_WIDTH`.
+///
+/// Anchored to the max rather than e.g. the median: a median-sized
+/// column would leave roughly half of a directory's entries truncated,
+/// which is worse for a file browser than letting a rare outlier hit the
+/// clamp and ellipsize.
+fn fit_name_column_width(entries: &[SftpEntry]) -> Pixels {
+    let max_len = entries
+        .iter()
+        .map(|e| e.name.chars().count() + if e.is_dir { 1 } else { 0 })
+        .max()
+        .unwrap_or(0);
+    let width = NAME_COL_CHROME_WIDTH + max_len as f32 * NAME_COL_CHAR_WIDTH;
+    px(width.clamp(NAME_COL_MIN_WIDTH, NAME_COL_MAX_WIDTH))
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
     let mut size = bytes as f64;
@@ -1953,4 +1993,52 @@ fn human_mtime(mtime: u32) -> String {
     let year = if month <= 2 { y + 1 } else { y };
 
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+#[cfg(test)]
+mod name_column_width_tests {
+    use super::*;
+
+    fn entry(name: &str, is_dir: bool) -> SftpEntry {
+        SftpEntry {
+            name: name.to_string(),
+            is_dir,
+            size: 0,
+            mtime: 0,
+            perms: 0,
+        }
+    }
+
+    #[test]
+    fn empty_directory_clamps_to_min_width() {
+        assert_eq!(fit_name_column_width(&[]), px(NAME_COL_MIN_WIDTH));
+    }
+
+    #[test]
+    fn fits_the_longest_name_not_the_median() {
+        let entries = vec![entry("a", false), entry("bb", false), entry("a_very_long_filename.txt", false)];
+        let longest = "a_very_long_filename.txt".chars().count();
+        let expected = (NAME_COL_CHROME_WIDTH + longest as f32 * NAME_COL_CHAR_WIDTH)
+            .clamp(NAME_COL_MIN_WIDTH, NAME_COL_MAX_WIDTH);
+        assert_eq!(fit_name_column_width(&entries), px(expected));
+        // A median-based width (from "bb", len 2) would be far narrower —
+        // this asserts we're not accidentally doing that instead.
+        assert!(f32::from(fit_name_column_width(&entries)) > 100.0);
+    }
+
+    #[test]
+    fn directory_entries_get_credit_for_the_rendered_trailing_slash() {
+        // Long enough that the +1 char for "/" moves the (unclamped)
+        // estimate, rather than both sides landing on NAME_COL_MIN_WIDTH.
+        let name = "a".repeat(20);
+        let with_slash = fit_name_column_width(&[entry(&name, true)]);
+        let without_slash = fit_name_column_width(&[entry(&name, false)]);
+        assert!(f32::from(with_slash) > f32::from(without_slash));
+    }
+
+    #[test]
+    fn one_absurdly_long_name_clamps_to_max_width_instead_of_dominating() {
+        let entries = vec![entry(&"x".repeat(500), false)];
+        assert_eq!(fit_name_column_width(&entries), px(NAME_COL_MAX_WIDTH));
+    }
 }
