@@ -19,6 +19,7 @@ use gpui::{
     Styled, WeakEntity, Window, div, px,
 };
 use gpui_component::dock::{Panel, PanelEvent};
+use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, Sizable};
 use gpui_component::button::{Button, ButtonVariants};
 
@@ -540,6 +541,9 @@ impl MonitorPanel {
             .flex_col()
             .gap_3()
             .p_2()
+            .pb_4()
+            .flex_1()
+            .overflow_y_scrollbar()
             .child(self.render_system_section(stats, cx))
             .child(self.render_cpu_section(stats, cx))
             .child(self.render_memory_section(stats, cx))
