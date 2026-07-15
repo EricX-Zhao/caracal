@@ -1898,7 +1898,7 @@ fn remote_parent(path: &str) -> String {
 /// absurdly long name dominate the whole panel (names outside this range
 /// still fall back to `render_td`'s `text_ellipsis` truncation).
 const NAME_COL_MIN_WIDTH: f32 = 150.0;
-const NAME_COL_MAX_WIDTH: f32 = 400.0;
+const NAME_COL_MAX_WIDTH: f32 = 300.0;
 /// Rough allowance (px) for the row's non-text chrome at the name
 /// column's text size: the folder/file icon, the gap after it, and the
 /// cell's own padding.
