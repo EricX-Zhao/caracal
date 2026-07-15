@@ -10,7 +10,7 @@
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, InteractiveElement, IntoElement,
     ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, WeakEntity,
-    Window, div, prelude::FluentBuilder,
+    Window, div, prelude::FluentBuilder, px,
 };
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
@@ -879,28 +879,36 @@ impl NewConnectionWindow {
     /// The Key field's "Saved" tab: pick from the vault's shared keys.
     /// Extracted verbatim from the pre-tab layout, no logic change.
     fn render_saved_key_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .children(self.ssh_keys.clone().into_iter().map(|k| {
-                let selected = self.selected_key_id.as_deref() == Some(k.id.as_str());
-                let row_id = SharedString::from(format!("ssh-key-{}", k.id));
-                let key_id = k.id.clone();
-                div()
-                    .id(row_id)
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .when(selected, |el| el.bg(cx.theme().accent))
-                    .when(!selected, |el| el.bg(cx.theme().secondary))
-                    .child(k.name.clone())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.selected_key_id = Some(key_id.clone());
-                        this.pending_new_key = None;
-                        cx.notify();
-                    }))
-            }))
+        let weak = cx.entity().downgrade();
+        let keys = self.ssh_keys.clone();
+        let current_label: SharedString = self
+            .selected_key_id
+            .as_ref()
+            .and_then(|id| keys.iter().find(|k| &k.id == id))
+            .map(|k| SharedString::from(k.name.clone()))
+            .unwrap_or_else(|| rust_i18n::t!("NewConnectionWindow.select_button").into());
+        div().flex().flex_col().gap_1().child(
+            DropdownButton::new("saved-key-picker")
+                .small()
+                .button(Button::new("saved-key-picker-btn").label(current_label))
+                .dropdown_menu(move |menu, _window, _cx| {
+                    let mut menu = menu;
+                    for k in keys.clone() {
+                        let key_id = k.id.clone();
+                        let weak = weak.clone();
+                        menu = menu.item(PopupMenuItem::new(k.name.clone()).on_click(
+                            move |_ev, _window, cx| {
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.selected_key_id = Some(key_id.clone());
+                                    this.pending_new_key = None;
+                                    cx.notify();
+                                });
+                            },
+                        ));
+                    }
+                    menu
+                }),
+        )
     }
 
     /// The Key field's "Import new" tab: file-picker button + a pending
@@ -1019,31 +1027,38 @@ impl NewConnectionWindow {
     }
 
     fn render_saved_password_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div().flex().flex_col().gap_1();
-        for entry in self.saved_passwords.clone() {
-            let selected = self.selected_password_id.as_deref() == Some(entry.id.as_str());
-            let row_id = SharedString::from(format!("saved-password-{}", entry.id));
-            let entry_id = entry.id.clone();
-            list = list.child(
-                div()
-                    .id(row_id)
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .when(selected, |el| el.bg(cx.theme().accent))
-                    .when(!selected, |el| el.bg(cx.theme().secondary))
-                    .child(entry.name.clone())
-                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                        this.selected_password_id = Some(entry_id.clone());
-                        cx.notify();
-                    })),
-            );
-        }
+        let weak = cx.entity().downgrade();
+        let entries = self.saved_passwords.clone();
+        let current_label: SharedString = self
+            .selected_password_id
+            .as_ref()
+            .and_then(|id| entries.iter().find(|e| &e.id == id))
+            .map(|e| SharedString::from(e.name.clone()))
+            .unwrap_or_else(|| rust_i18n::t!("NewConnectionWindow.select_button").into());
+        let picker = DropdownButton::new("saved-password-picker")
+            .small()
+            .button(Button::new("saved-password-picker-btn").label(current_label))
+            .dropdown_menu(move |menu, _window, _cx| {
+                let mut menu = menu;
+                for entry in entries.clone() {
+                    let entry_id = entry.id.clone();
+                    let weak = weak.clone();
+                    menu = menu.item(PopupMenuItem::new(entry.name.clone()).on_click(
+                        move |_ev, _window, cx| {
+                            let _ = weak.update(cx, |this, cx| {
+                                this.selected_password_id = Some(entry_id.clone());
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+                menu
+            });
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .child(list)
+            .child(picker)
             .child(if self.adding_new_saved_password {
                 div()
                     .flex()
@@ -1151,6 +1166,57 @@ impl Render for NewConnectionWindow {
                         })),
                     ),
             )
+            .child(self.render_form_body(conn_type, cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        div()
+                            .id("newconn-cancel")
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .hover(|s| s.bg(cx.theme().accent))
+                            .child(rust_i18n::t!("NewConnectionWindow.cancel"))
+                            .on_click(cx.listener(|_this, _ev: &ClickEvent, window, _cx| {
+                                window.remove_window();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("newconn-save")
+                            .px_2()
+                            .py_0p5()
+                            .rounded_sm()
+                            .bg(cx.theme().primary)
+                            .text_color(cx.theme().primary_foreground)
+                            .child(rust_i18n::t!("NewConnectionWindow.save"))
+                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
+                                this.save(window, cx);
+                            })),
+                    ),
+            )
+    }
+}
+
+impl NewConnectionWindow {
+    /// The scrollable middle section (icon/name/type-specific fields) —
+    /// `flex_1` + `min_h(0)` so it shrinks to the space left by the fixed
+    /// type-pill row and Cancel/Save footer instead of pushing them off
+    /// the bottom of a fixed-size window. Pattern matches
+    /// `quick_commands_panel.rs`'s `#qc-list`.
+    fn render_form_body(&mut self, conn_type: ConnectionType, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("newconn-form-body")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .overflow_y_scroll()
             .child(self.render_icon_picker(cx))
             .child(self.field(rust_i18n::t!("NewConnectionWindow.name_label"), &self.name.clone(), cx))
             .children(match conn_type {
@@ -1205,37 +1271,5 @@ impl Render for NewConnectionWindow {
                     self.flow_control_field(cx).into_any_element(),
                 ],
             })
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        div()
-                            .id("newconn-cancel")
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .hover(|s| s.bg(cx.theme().accent))
-                            .child(rust_i18n::t!("NewConnectionWindow.cancel"))
-                            .on_click(cx.listener(|_this, _ev: &ClickEvent, window, _cx| {
-                                window.remove_window();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("newconn-save")
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .bg(cx.theme().primary)
-                            .text_color(cx.theme().primary_foreground)
-                            .child(rust_i18n::t!("NewConnectionWindow.save"))
-                            .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                this.save(window, cx);
-                            })),
-                    ),
-            )
     }
 }

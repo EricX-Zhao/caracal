@@ -433,7 +433,7 @@ impl SessionsPanel {
         let panel = cx.entity().downgrade();
         let ssh_keys = self.ssh_keys.clone();
         let saved_passwords = self.saved_passwords.clone();
-        let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(560.0)), cx);
+        let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(620.0)), cx);
         let result = cx.open_window(
             gpui::WindowOptions {
                 window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
