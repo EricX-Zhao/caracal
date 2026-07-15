@@ -282,6 +282,43 @@ impl SavedConnection {
     }
 }
 
+/// Vault metadata: how `[[connections]]`'s `encrypted_*` fields and
+/// `[[ssh_keys]]`'s `encrypted_content` are protected. Absent (`None` on
+/// `AppConfig.vault`) means the file predates encryption and needs
+/// one-time migration (see `vault::migrate`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VaultMeta {
+    /// Namespaces this vault's OS-keyring convenience-unlock entry.
+    pub vault_id: String,
+    pub kdf: String,
+    /// Base64-encoded random salt for `crypto::derive_wrapping_key`.
+    pub salt: String,
+    pub kdf_mem_kib: u32,
+    pub kdf_time: u32,
+    pub kdf_parallelism: u32,
+    /// `base64(nonce || ciphertext)` — the master key, encrypted with the
+    /// password-derived wrapping key. See `crypto::MasterKey::wrap`.
+    pub wrapped_master_key: String,
+}
+
+/// A named, shared SSH private key. Connections reference one by `id`
+/// instead of embedding their own copy, so reusing one physical key across
+/// many servers doesn't duplicate it, and rotating a key updates every
+/// connection that uses it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SshKeyEntry {
+    pub id: String,
+    pub name: String,
+    /// Where this key was originally read from. Informational only (e.g.
+    /// a future "reload from disk" action) — never used to locate the key
+    /// at connect time, since the path is meaningless after an export/
+    /// import to another machine.
+    #[serde(default)]
+    pub source_path: Option<String>,
+    /// `base64(nonce || ciphertext)` of the raw key file bytes.
+    pub encrypted_content: String,
+}
+
 /// The whole persisted config.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -289,6 +326,11 @@ pub struct AppConfig {
     pub connections: Vec<SavedConnection>,
     #[serde(default)]
     pub groups: Vec<SavedConnectionGroup>,
+    /// `None` until the vault is set up (see `vault::migrate`).
+    #[serde(default)]
+    pub vault: Option<VaultMeta>,
+    #[serde(default)]
+    pub ssh_keys: Vec<SshKeyEntry>,
 }
 
 /// `~/.caracal/connections.toml`.
@@ -322,6 +364,17 @@ pub fn save(cfg: &AppConfig) -> anyhow::Result<()> {
     let text = toml::to_string_pretty(cfg)?;
     std::fs::write(&path, text)?;
     Ok(())
+}
+
+/// A simple, sufficiently-unique-in-practice id: `id-<nanoseconds since
+/// epoch>`. Shared by connections, groups, and (as of the encrypted vault)
+/// `VaultMeta.vault_id` / `SshKeyEntry.id`.
+pub fn generate_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("id-{nanos}")
 }
 
 #[cfg(test)]
@@ -500,5 +553,47 @@ mod tests {
         let cfg: AppConfig =
             toml::from_str(toml_text).expect("old-format config must still parse");
         assert_eq!(cfg.connections[0].sort_order, 0);
+    }
+
+    #[test]
+    fn app_config_without_vault_section_still_deserializes() {
+        // Simulates a `connections.toml` written before this change — no
+        // [vault] table, no [[ssh_keys]] entries at all.
+        let toml_text = r#"
+            [[connections]]
+            host = "old.example.com"
+            user = "root"
+            conn_type = "ssh"
+        "#;
+        let cfg: AppConfig = toml::from_str(toml_text).expect("must still parse");
+        assert!(cfg.vault.is_none());
+        assert!(cfg.ssh_keys.is_empty());
+    }
+
+    #[test]
+    fn vault_meta_and_ssh_key_entry_roundtrip() {
+        let cfg = AppConfig {
+            connections: vec![],
+            groups: vec![],
+            vault: Some(VaultMeta {
+                vault_id: "id-1".to_string(),
+                kdf: "argon2id".to_string(),
+                salt: "c2FsdA==".to_string(),
+                kdf_mem_kib: 19_456,
+                kdf_time: 2,
+                kdf_parallelism: 1,
+                wrapped_master_key: "d3JhcHBlZA==".to_string(),
+            }),
+            ssh_keys: vec![SshKeyEntry {
+                id: "id-2".to_string(),
+                name: "id_ed25519".to_string(),
+                source_path: Some("/home/user/.ssh/id_ed25519".to_string()),
+                encrypted_content: "Y29udGVudA==".to_string(),
+            }],
+        };
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let round_tripped: AppConfig = toml::from_str(&text).unwrap();
+        assert_eq!(round_tripped.vault.unwrap().vault_id, "id-1");
+        assert_eq!(round_tripped.ssh_keys[0].name, "id_ed25519");
     }
 }

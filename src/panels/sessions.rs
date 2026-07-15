@@ -34,7 +34,6 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     Action, Anchor, App, AppContext, Bounds, ClickEvent, Context, DragMoveEvent, Entity,
@@ -309,11 +308,7 @@ impl SessionsPanel {
 
     /// Generate a unique ID for new groups/connections.
     fn generate_id() -> String {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        format!("id-{}", nanos)
+        config::generate_id()
     }
 
     /// Toggle the new-folder form (toolbar "新建文件夹" button — a root-level
@@ -834,10 +829,18 @@ impl SessionsPanel {
     }
 
     /// Persist the current state to disk.
+    ///
+    /// `vault`/`ssh_keys` aren't tracked as `SessionsPanel` state yet (see
+    /// the encrypted-credential-storage plan's Task 4) — reading them back
+    /// from the on-disk config before re-saving avoids silently wiping out
+    /// vault data with every save in the meantime.
     fn persist(&self) {
+        let existing = config::load();
         let cfg = AppConfig {
             connections: self.connections.clone(),
             groups: self.groups.clone(),
+            vault: existing.vault,
+            ssh_keys: existing.ssh_keys,
         };
         if let Err(e) = config::save(&cfg) {
             log::error!("failed to save connections: {e}");
@@ -858,9 +861,12 @@ impl SessionsPanel {
                 return;
             };
             let _ = weak.update(cx, |this, _cx| {
+                let existing = config::load();
                 let export = AppConfig {
                     connections: this.connections.clone(),
                     groups: this.groups.clone(),
+                    vault: existing.vault,
+                    ssh_keys: existing.ssh_keys,
                 };
                 let text = match toml::to_string_pretty(&export) {
                     Ok(t) => t,
