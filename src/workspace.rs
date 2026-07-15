@@ -1400,8 +1400,15 @@ impl Workspace {
             .child(
                 resizable_panel()
                     .visible(right_view.is_some())
-                    .size(px(240.0))
-                    .size_range(px(180.0)..px(560.0))
+                    // Wide enough that a connection row's subtitle (the
+                    // longest realistic case being `user@xxx.xxx.xxx.xxx:port`,
+                    // ~24 chars at `text_xs`) fits next to the row's icon and
+                    // its always-visible (if dim) edit/delete action icons
+                    // without wrapping — `render_connection` has no
+                    // truncation/ellipsis handling, so anything narrower
+                    // wraps the subtitle onto a second line.
+                    .size(px(220.0))
+                    .size_range(px(200.0)..px(500.0))
                     .child(
                         right_view
                             .map(|view| side_region_content(view, border, false))
