@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 
-use crate::config::{AppConfig, SshKeyEntry, VaultMeta, generate_id};
+use crate::config::{AppConfig, SavedPasswordEntry, SshKeyEntry, VaultMeta, generate_id};
 use crate::crypto::{self, MasterKey};
 
 /// One-time setup: generates a fresh master key, wraps it under a
@@ -101,10 +101,12 @@ pub fn unlock(cfg: &AppConfig, password: &str) -> Result<MasterKey> {
 pub fn reset(cfg: &mut AppConfig) {
     cfg.vault = None;
     cfg.ssh_keys.clear();
+    cfg.saved_passwords.clear();
     for conn in &mut cfg.connections {
         conn.encrypted_password.clear();
         conn.encrypted_key_passphrase = None;
         conn.private_key_id = None;
+        conn.password_id = None;
     }
 }
 
@@ -148,6 +150,33 @@ pub fn import_merge(dest: &mut AppConfig, dest_key: &MasterKey, source: &AppConf
         source_id_to_dest_id.insert(key.id.clone(), dest_id);
     }
 
+    // Same dedup-and-remap treatment for saved_passwords as ssh_keys above.
+    let mut dest_password_hash_to_id: HashMap<String, String> = HashMap::new();
+    for pw in &dest.saved_passwords {
+        let plaintext = dest_key.decrypt_str(&pw.encrypted_password)?;
+        dest_password_hash_to_id.insert(content_hash(plaintext.as_bytes()), pw.id.clone());
+    }
+
+    let mut source_password_id_to_dest_id: HashMap<String, String> = HashMap::new();
+    for pw in &source.saved_passwords {
+        let plaintext = source_key.decrypt_str(&pw.encrypted_password)?;
+        let hash = content_hash(plaintext.as_bytes());
+        let dest_id = match dest_password_hash_to_id.get(&hash) {
+            Some(existing) => existing.clone(),
+            None => {
+                let new_id = generate_id();
+                dest.saved_passwords.push(SavedPasswordEntry {
+                    id: new_id.clone(),
+                    name: pw.name.clone(),
+                    encrypted_password: dest_key.encrypt_str(&plaintext),
+                });
+                dest_password_hash_to_id.insert(hash, new_id.clone());
+                new_id
+            }
+        };
+        source_password_id_to_dest_id.insert(pw.id.clone(), dest_id);
+    }
+
     dest.groups.extend(source.groups.iter().cloned());
 
     for conn in &source.connections {
@@ -160,6 +189,9 @@ pub fn import_merge(dest: &mut AppConfig, dest_key: &MasterKey, source: &AppConf
         }
         if let Some(source_key_id) = &conn.private_key_id {
             conn.private_key_id = source_id_to_dest_id.get(source_key_id).cloned();
+        }
+        if let Some(source_password_id) = &conn.password_id {
+            conn.password_id = source_password_id_to_dest_id.get(source_password_id).cloned();
         }
         dest.connections.push(conn);
     }
@@ -203,6 +235,7 @@ mod tests {
             private_key_path: None,
             private_key_passphrase: None,
             private_key_id: None,
+            password_id: None,
             encrypted_key_passphrase: None,
             sort_order: 0,
         }
@@ -282,5 +315,65 @@ mod tests {
         import_merge(&mut dest, &dest_key, &source, &source_key).unwrap();
 
         assert_eq!(dest.ssh_keys.len(), 1, "importing the same key twice must not duplicate it");
+    }
+
+    #[test]
+    fn reset_clears_saved_passwords_and_password_id() {
+        let mut cfg = AppConfig { connections: vec![base_connection("a.example.com")], ..Default::default() };
+        let master = migrate(&mut cfg, "pw").unwrap();
+        cfg.saved_passwords.push(SavedPasswordEntry {
+            id: "pw-1".to_string(),
+            name: "shared".to_string(),
+            encrypted_password: master.encrypt_str("hunter2"),
+        });
+        cfg.connections[0].password_id = Some("pw-1".to_string());
+        reset(&mut cfg);
+        assert!(cfg.saved_passwords.is_empty());
+        assert!(cfg.connections[0].password_id.is_none());
+    }
+
+    #[test]
+    fn import_merge_dedups_saved_passwords_by_content_on_repeated_import() {
+        let mut dest = AppConfig::default();
+        let dest_key = migrate(&mut dest, "dest-pw").unwrap();
+
+        let mut source = AppConfig::default();
+        let source_key = MasterKey::generate();
+        source.saved_passwords.push(SavedPasswordEntry {
+            id: "src-pw-1".to_string(),
+            name: "shared root password".to_string(),
+            encrypted_password: source_key.encrypt_str("same-password"),
+        });
+
+        import_merge(&mut dest, &dest_key, &source, &source_key).unwrap();
+        import_merge(&mut dest, &dest_key, &source, &source_key).unwrap();
+
+        assert_eq!(dest.saved_passwords.len(), 1, "importing the same password twice must not duplicate it");
+    }
+
+    #[test]
+    fn import_merge_remaps_password_id_to_the_dest_vaults_entry() {
+        let mut dest = AppConfig::default();
+        let dest_key = migrate(&mut dest, "dest-pw").unwrap();
+
+        let mut source = AppConfig::default();
+        let source_key = MasterKey::generate();
+        source.saved_passwords.push(SavedPasswordEntry {
+            id: "src-pw-1".to_string(),
+            name: "shared".to_string(),
+            encrypted_password: source_key.encrypt_str("hunter2"),
+        });
+        let mut conn = base_connection("imported.example.com");
+        conn.auth_method = "password".to_string();
+        conn.password_id = Some("src-pw-1".to_string());
+        conn.encrypted_password = source_key.encrypt_str(""); // unused in Saved mode
+        source.connections.push(conn);
+
+        import_merge(&mut dest, &dest_key, &source, &source_key).unwrap();
+
+        let imported_conn = &dest.connections[0];
+        let new_id = imported_conn.password_id.as_ref().expect("password_id should remap, not clear");
+        let entry = dest.saved_passwords.iter().find(|p| &p.id == new_id).unwrap();
+        assert_eq!(dest_key.decrypt_str(&entry.encrypted_password).unwrap(), "hunter2");
     }
 }

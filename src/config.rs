@@ -130,6 +130,12 @@ pub struct SavedConnection {
     /// `auth_method == "key"`.
     #[serde(default)]
     pub private_key_id: Option<String>,
+    /// References an `AppConfig.saved_passwords` entry by id — the
+    /// connection form's "Saved" password tab. `None` means "Direct" mode:
+    /// use `encrypted_password` instead. Only meaningful when
+    /// `auth_method == "password"`.
+    #[serde(default)]
+    pub password_id: Option<String>,
     /// Manual ordering within a `group_id` scope (including `None`, the
     /// ungrouped section, which is its own scope). Lower sorts first.
     /// `SortMode::Default` reads this; drag-reorder writes it. New
@@ -157,6 +163,7 @@ impl SavedConnection {
     pub fn to_ssh_config(
         &self,
         ssh_keys: &[SshKeyEntry],
+        saved_passwords: &[SavedPasswordEntry],
         master_key: &crate::crypto::MasterKey,
     ) -> anyhow::Result<SshConfig> {
         let auth = if self.auth_method == "key" {
@@ -175,6 +182,13 @@ impl SavedConnection {
                 .map(|ct| master_key.decrypt_str(ct))
                 .transpose()?;
             SshAuth::PrivateKeyContent { content, passphrase }
+        } else if let Some(password_id) = &self.password_id {
+            let entry = saved_passwords
+                .iter()
+                .find(|p| &p.id == password_id)
+                .ok_or_else(|| anyhow::anyhow!("the saved password this connection uses was not found"))?;
+            let password = master_key.decrypt_str(&entry.encrypted_password)?;
+            SshAuth::Password(password)
         } else {
             let password = master_key.decrypt_str(&self.encrypted_password)?;
             SshAuth::Password(password)
@@ -360,6 +374,18 @@ pub struct SshKeyEntry {
     pub encrypted_content: String,
 }
 
+/// A named, shared password. Connections reference one by `id` (like
+/// `SshKeyEntry` already works) instead of only ever embedding their own —
+/// so rotating a password shared across many servers updates every
+/// connection that uses it, in one place.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SavedPasswordEntry {
+    pub id: String,
+    pub name: String,
+    /// `base64(nonce || ciphertext)`, via `crypto::MasterKey::encrypt_str`.
+    pub encrypted_password: String,
+}
+
 /// The whole persisted config.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -372,6 +398,8 @@ pub struct AppConfig {
     pub vault: Option<VaultMeta>,
     #[serde(default)]
     pub ssh_keys: Vec<SshKeyEntry>,
+    #[serde(default)]
+    pub saved_passwords: Vec<SavedPasswordEntry>,
 }
 
 /// `~/.caracal/connections.toml`.
@@ -447,6 +475,7 @@ mod tests {
             encrypted_password: String::new(),
             encrypted_key_passphrase: None,
             private_key_id: None,
+            password_id: None,
             sort_order: 0,
         }
     }
@@ -534,7 +563,7 @@ mod tests {
         let master = crate::crypto::MasterKey::generate();
         let mut conn = base_connection(ConnectionType::Ssh);
         conn.encrypted_password = master.encrypt_str("hunter2");
-        let cfg = conn.to_ssh_config(&[], &master).unwrap();
+        let cfg = conn.to_ssh_config(&[], &[], &master).unwrap();
         assert!(matches!(cfg.auth, crate::terminal::ssh::SshAuth::Password(p) if p == "hunter2"));
     }
 
@@ -551,7 +580,7 @@ mod tests {
         conn.auth_method = "key".to_string();
         conn.private_key_id = Some("key-1".to_string());
         conn.encrypted_key_passphrase = Some(master.encrypt_str("secret"));
-        let cfg = conn.to_ssh_config(&ssh_keys, &master).unwrap();
+        let cfg = conn.to_ssh_config(&ssh_keys, &[], &master).unwrap();
         match cfg.auth {
             crate::terminal::ssh::SshAuth::PrivateKeyContent { content, passphrase } => {
                 assert_eq!(content, b"key-bytes");
@@ -567,7 +596,29 @@ mod tests {
         let mut conn = base_connection(ConnectionType::Ssh);
         conn.auth_method = "key".to_string();
         conn.private_key_id = Some("does-not-exist".to_string());
-        assert!(conn.to_ssh_config(&[], &master).is_err());
+        assert!(conn.to_ssh_config(&[], &[], &master).is_err());
+    }
+
+    #[test]
+    fn to_ssh_config_resolves_a_saved_password_by_id() {
+        let master = crate::crypto::MasterKey::generate();
+        let saved = vec![SavedPasswordEntry {
+            id: "pw-1".to_string(),
+            name: "shared root password".to_string(),
+            encrypted_password: master.encrypt_str("hunter2"),
+        }];
+        let mut conn = base_connection(ConnectionType::Ssh);
+        conn.password_id = Some("pw-1".to_string());
+        let cfg = conn.to_ssh_config(&[], &saved, &master).unwrap();
+        assert!(matches!(cfg.auth, crate::terminal::ssh::SshAuth::Password(p) if p == "hunter2"));
+    }
+
+    #[test]
+    fn to_ssh_config_errors_when_referenced_password_is_missing() {
+        let master = crate::crypto::MasterKey::generate();
+        let mut conn = base_connection(ConnectionType::Ssh);
+        conn.password_id = Some("does-not-exist".to_string());
+        assert!(conn.to_ssh_config(&[], &[], &master).is_err());
     }
 
     #[test]
@@ -635,10 +686,16 @@ mod tests {
                 source_path: Some("/home/user/.ssh/id_ed25519".to_string()),
                 encrypted_content: "Y29udGVudA==".to_string(),
             }],
+            saved_passwords: vec![SavedPasswordEntry {
+                id: "id-3".to_string(),
+                name: "shared root password".to_string(),
+                encrypted_password: "cGFzc3dvcmQ=".to_string(),
+            }],
         };
         let text = toml::to_string_pretty(&cfg).unwrap();
         let round_tripped: AppConfig = toml::from_str(&text).unwrap();
         assert_eq!(round_tripped.vault.unwrap().vault_id, "id-1");
         assert_eq!(round_tripped.ssh_keys[0].name, "id_ed25519");
+        assert_eq!(round_tripped.saved_passwords[0].name, "shared root password");
     }
 }

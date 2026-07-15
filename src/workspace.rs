@@ -366,7 +366,15 @@ impl Workspace {
             show_unlock_dialog(window, cx);
         });
         let saved = cx.new(|cx| {
-            SessionsPanel::new(cfg.connections, cfg.groups, cfg.vault, cfg.ssh_keys, window, cx)
+            SessionsPanel::new(
+                cfg.connections,
+                cfg.groups,
+                cfg.vault,
+                cfg.ssh_keys,
+                cfg.saved_passwords,
+                window,
+                cx,
+            )
         });
         let saved_sub =
             cx.subscribe_in(&saved, window, |this, _panel, event, window, cx| match event {
@@ -379,7 +387,8 @@ impl Workspace {
                         return;
                     };
                     let ssh_keys = this.ssh_keys_snapshot(cx);
-                    match conn.to_ssh_config(&ssh_keys, &vault.0) {
+                    let saved_passwords = this.saved_passwords_snapshot(cx);
+                    match conn.to_ssh_config(&ssh_keys, &saved_passwords, &vault.0) {
                         Ok(ssh_config) => this.open_ssh(ssh_config, name.clone(), window, cx),
                         Err(e) => {
                             window.push_notification(
@@ -552,6 +561,12 @@ impl Workspace {
     /// connection's key-file auth at connect time (see `SessionsEvent::Open`).
     fn ssh_keys_snapshot(&self, cx: &App) -> Vec<crate::config::SshKeyEntry> {
         self.saved_sessions.read(cx).ssh_keys().to_vec()
+    }
+
+    /// Snapshot of the vault's shared saved passwords, for decrypting a
+    /// connection's Saved-mode password auth at connect time.
+    fn saved_passwords_snapshot(&self, cx: &App) -> Vec<crate::config::SavedPasswordEntry> {
+        self.saved_sessions.read(cx).saved_passwords().to_vec()
     }
 
     /// Open an SSH shell terminal (reusing the host's shared connection) as a

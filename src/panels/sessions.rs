@@ -221,6 +221,7 @@ pub struct SessionsPanel {
     groups: Vec<SavedConnectionGroup>,
     vault: Option<crate::config::VaultMeta>,
     ssh_keys: Vec<crate::config::SshKeyEntry>,
+    saved_passwords: Vec<crate::config::SavedPasswordEntry>,
     // UI state
     search_query: Entity<InputState>,
     sort_mode: SortMode,
@@ -263,6 +264,7 @@ impl SessionsPanel {
         groups: Vec<SavedConnectionGroup>,
         vault: Option<crate::config::VaultMeta>,
         ssh_keys: Vec<crate::config::SshKeyEntry>,
+        saved_passwords: Vec<crate::config::SavedPasswordEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -282,6 +284,7 @@ impl SessionsPanel {
             groups,
             vault,
             ssh_keys,
+            saved_passwords,
             search_query,
             sort_mode: SortMode::Default,
             expanded_groups,
@@ -429,6 +432,7 @@ impl SessionsPanel {
             .count() as i32;
         let panel = cx.entity().downgrade();
         let ssh_keys = self.ssh_keys.clone();
+        let saved_passwords = self.saved_passwords.clone();
         let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(560.0)), cx);
         let result = cx.open_window(
             gpui::WindowOptions {
@@ -549,6 +553,7 @@ impl SessionsPanel {
             }
             new_conn.encrypted_key_passphrase = None;
             new_conn.private_key_id = None;
+            new_conn.password_id = None;
             new_conn.sort_order = self
                 .connections
                 .iter()
@@ -842,20 +847,28 @@ impl SessionsPanel {
 
     /// Persist the current state to disk.
     ///
-    /// `vault`/`ssh_keys` aren't tracked as `SessionsPanel` state yet (see
-    /// the encrypted-credential-storage plan's Task 4) — reading them back
-    /// from the on-disk config before re-saving avoids silently wiping out
-    /// vault data with every save in the meantime.
+    /// Persist the current state to disk.
     fn persist(&self) {
         let cfg = AppConfig {
             connections: self.connections.clone(),
             groups: self.groups.clone(),
             vault: self.vault.clone(),
             ssh_keys: self.ssh_keys.clone(),
+            saved_passwords: self.saved_passwords.clone(),
         };
         if let Err(e) = config::save(&cfg) {
             log::error!("failed to save connections: {e}");
         }
+    }
+
+    /// Exposes `persist()` to callers outside this module (the
+    /// `SecurityAuthPanel`'s add/edit/delete dialogs) — those mutate
+    /// `ssh_keys`/`saved_passwords` via the `update_*`/`remove_*`/`add_*`
+    /// methods below, which intentionally don't persist themselves (same
+    /// rationale as `add_ssh_key`'s existing doc comment), so the caller
+    /// must persist explicitly once done.
+    pub(crate) fn persist_for_security_auth(&self) {
+        self.persist();
     }
 
     pub(crate) fn ssh_keys(&self) -> &[crate::config::SshKeyEntry] {
@@ -868,6 +881,68 @@ impl SessionsPanel {
     /// user action), not immediately here, to avoid a double-write.
     pub(crate) fn add_ssh_key(&mut self, entry: crate::config::SshKeyEntry) {
         self.ssh_keys.push(entry);
+    }
+
+    /// Renames an existing SSH key in place (content is never edited in
+    /// place — replacing content means importing a new key via
+    /// `add_ssh_key` again). No-op if `id` doesn't match any entry.
+    pub(crate) fn update_ssh_key(&mut self, id: &str, name: String) {
+        if let Some(entry) = self.ssh_keys.iter_mut().find(|k| k.id == id) {
+            entry.name = name;
+        }
+    }
+
+    /// Removes an SSH key. Any connection whose `private_key_id`
+    /// referenced it is left with a dangling reference — `to_ssh_config`
+    /// already fails cleanly for that case, and the connection form
+    /// already handles reopening a dangling reference gracefully.
+    pub(crate) fn remove_ssh_key(&mut self, id: &str) {
+        self.ssh_keys.retain(|k| k.id != id);
+    }
+
+    pub(crate) fn saved_passwords(&self) -> &[crate::config::SavedPasswordEntry] {
+        &self.saved_passwords
+    }
+
+    /// Adds a newly-created saved password. Mirrors `add_ssh_key` —
+    /// persistence happens on the next `persist()`-triggering action, not
+    /// immediately here.
+    pub(crate) fn add_saved_password(&mut self, entry: crate::config::SavedPasswordEntry) {
+        self.saved_passwords.push(entry);
+    }
+
+    /// Renames/re-encrypts an existing saved password in place. No-op if
+    /// `id` doesn't match any entry (e.g. it was deleted concurrently).
+    pub(crate) fn update_saved_password(&mut self, id: &str, name: String, encrypted_password: String) {
+        if let Some(entry) = self.saved_passwords.iter_mut().find(|p| p.id == id) {
+            entry.name = name;
+            entry.encrypted_password = encrypted_password;
+        }
+    }
+
+    /// Removes a saved password. Same dangling-reference contract as
+    /// `remove_ssh_key`.
+    pub(crate) fn remove_saved_password(&mut self, id: &str) {
+        self.saved_passwords.retain(|p| p.id != id);
+    }
+
+    /// Connection display names currently referencing a given saved key,
+    /// for the delete-confirm dialog's "used by N connections" warning.
+    pub(crate) fn connections_using_ssh_key(&self, id: &str) -> Vec<String> {
+        self.connections
+            .iter()
+            .filter(|c| c.private_key_id.as_deref() == Some(id))
+            .map(|c| c.display_name())
+            .collect()
+    }
+
+    /// Same as `connections_using_ssh_key`, for saved passwords.
+    pub(crate) fn connections_using_saved_password(&self, id: &str) -> Vec<String> {
+        self.connections
+            .iter()
+            .filter(|c| c.password_id.as_deref() == Some(id))
+            .map(|c| c.display_name())
+            .collect()
     }
 
     /// Write the entire current connections + groups list to a
@@ -996,12 +1071,14 @@ impl SessionsPanel {
                                     groups: this.groups.clone(),
                                     vault: this.vault.clone(),
                                     ssh_keys: this.ssh_keys.clone(),
+                                    saved_passwords: this.saved_passwords.clone(),
                                 };
                                 match vault::import_merge(&mut dest, &dest_key, &source, &source_key) {
                                     Ok(()) => {
                                         this.connections = dest.connections;
                                         this.groups = dest.groups;
                                         this.ssh_keys = dest.ssh_keys;
+                                        this.saved_passwords = dest.saved_passwords;
                                         this.persist();
                                         cx.notify();
                                         true

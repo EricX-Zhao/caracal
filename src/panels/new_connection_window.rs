@@ -278,6 +278,7 @@ impl NewConnectionWindow {
                     encrypted_password,
                     encrypted_key_passphrase,
                     private_key_id: key_id,
+                    password_id: None,
                 }
             }
             ConnectionType::Local => {
@@ -308,6 +309,7 @@ impl NewConnectionWindow {
                     encrypted_password: String::new(),
                     encrypted_key_passphrase: None,
                     private_key_id: None,
+                    password_id: None,
                 }
             }
             ConnectionType::Telnet => {
@@ -340,6 +342,7 @@ impl NewConnectionWindow {
                     encrypted_password: String::new(),
                     encrypted_key_passphrase: None,
                     private_key_id: None,
+                    password_id: None,
                 }
             }
             ConnectionType::Serial => {
@@ -374,6 +377,7 @@ impl NewConnectionWindow {
                     encrypted_password: String::new(),
                     encrypted_key_passphrase: None,
                     private_key_id: None,
+                    password_id: None,
                 }
             }
         };
