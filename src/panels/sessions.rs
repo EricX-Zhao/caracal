@@ -47,7 +47,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::dock::{Panel, PanelEvent};
 use gpui_component::menu::{ContextMenuExt, DropdownMenu, PopupMenuItem};
 use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme, ElementExt, Sizable, StyledExt, WindowExt};
+use gpui_component::{ActiveTheme, ElementExt, Sizable, StyledExt, WindowExt, v_flex};
 use serde::Deserialize;
 
 use crate::panels::icons::{AppIcon, icon};
@@ -57,6 +57,7 @@ use crate::panels::new_connection_window::NewConnectionWindow;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::SshConfig;
 use crate::terminal::telnet::TelnetConfig;
+use crate::vault;
 
 /// Actions dispatched from the connection/folder right-click context menus
 /// (`ContextMenuExt::context_menu`, `gpui_component::menu`). Each carries the
@@ -872,44 +873,35 @@ impl SessionsPanel {
     /// Write the entire current connections + groups list to a
     /// user-chosen TOML file (native "save as" dialog). Does not touch
     /// the app's own `connections.toml` — this is a separate export file.
+    /// Saves a copy of the current, already-encrypted `connections.toml`.
+    /// No re-encryption needed — the file is self-contained (it carries its
+    /// own `[vault]` section and `[[ssh_keys]]`), so the same master
+    /// password unlocks the copy on another machine. `persist()` first so
+    /// the export reflects any in-memory edits not yet flushed to disk.
     fn export_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.persist();
         let start_dir = config::config_path()
             .parent()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
         let rx = cx.prompt_for_new_path(&start_dir, Some("connections.toml"));
-        cx.spawn_in(window, async move |weak, cx| {
+        cx.spawn_in(window, async move |_weak, _cx| {
             let Ok(Ok(Some(path))) = rx.await else {
                 return;
             };
-            let _ = weak.update(cx, |this, _cx| {
-                let existing = config::load();
-                let export = AppConfig {
-                    connections: this.connections.clone(),
-                    groups: this.groups.clone(),
-                    vault: existing.vault,
-                    ssh_keys: existing.ssh_keys,
-                };
-                let text = match toml::to_string_pretty(&export) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        log::error!("failed to serialize exported connections: {e}");
-                        return;
-                    }
-                };
-                if let Err(e) = std::fs::write(&path, text) {
-                    log::error!("failed to write exported connections to {path:?}: {e}");
-                }
-            });
+            if let Err(e) = std::fs::copy(config::config_path(), &path) {
+                log::error!("failed to export connections to {path:?}: {e}");
+            }
         })
         .detach();
     }
 
-    /// Read a user-chosen TOML file (same shape as `connections.toml`) and
-    /// append every connection and group from it to the current lists. No
-    /// merge/dedup — `SavedConnection` has no stable id to merge on, so
-    /// importing the same file twice produces duplicates (deletable
-    /// manually), which is safer than silently dropping data.
+    /// Imports another vault file: picks it, prompts for *its* master
+    /// password (independent of the currently-unlocked vault), decrypts it
+    /// standalone, and merges its groups/connections/ssh_keys into the
+    /// current vault via `vault::import_merge` — which re-encrypts every
+    /// secret under the current master key. Connections/groups are
+    /// appended, never overwritten; `ssh_keys` are deduped by content hash.
     fn import_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
             files: true,
@@ -917,7 +909,8 @@ impl SessionsPanel {
             multiple: false,
             prompt: None,
         });
-        cx.spawn_in(window, async move |weak, cx| {
+        let weak = cx.entity().downgrade();
+        cx.spawn_in(window, async move |_this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
                 return;
             };
@@ -931,18 +924,98 @@ impl SessionsPanel {
                     return;
                 }
             };
-            let imported: AppConfig = match toml::from_str(&text) {
+            let source: AppConfig = match toml::from_str(&text) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     log::error!("failed to parse {path:?} as connections TOML: {e}");
                     return;
                 }
             };
-            let _ = weak.update(cx, |this, cx| {
-                this.connections.extend(imported.connections);
-                this.groups.extend(imported.groups);
-                this.persist();
-                cx.notify();
+            if source.vault.is_none() {
+                log::error!(
+                    "{path:?} has no [vault] section — nothing to import from an unmigrated file"
+                );
+                return;
+            }
+
+            let _ = cx.update(|window, cx| {
+                let pw_input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .masked(true)
+                        .placeholder(rust_i18n::t!("Vault.password_placeholder"))
+                });
+                let error: Entity<SharedString> = cx.new(|_cx| SharedString::default());
+
+                window.open_alert_dialog(cx, move |alert, _window, cx| {
+                    let pw_input = pw_input.clone();
+                    let error = error.clone();
+                    let source = source.clone();
+                    let weak = weak.clone();
+                    let body = v_flex()
+                        .gap_2()
+                        .child(div().child(rust_i18n::t!("Vault.import_password_body")))
+                        .child(Input::new(&pw_input))
+                        .when(!error.read(cx).is_empty(), |el| {
+                            el.child(div().text_color(gpui::red()).child(error.read(cx).clone()))
+                        });
+                    alert
+                        .title(rust_i18n::t!("Vault.import_password_title"))
+                        .description(body)
+                        .confirm()
+                        .on_ok(move |_, window, cx| {
+                            let password = pw_input.read(cx).value().to_string();
+                            let source_key = match vault::unlock(&source, &password) {
+                                Ok(key) => key,
+                                Err(_) => {
+                                    error.update(cx, |msg, cx| {
+                                        *msg = rust_i18n::t!("Vault.error_wrong_password").into();
+                                        cx.notify();
+                                    });
+                                    return false;
+                                }
+                            };
+                            // Copy the raw key bytes out (rather than
+                            // holding the `&VaultKey` global borrow) so the
+                            // borrow doesn't overlap with `weak.update`'s
+                            // exclusive access to `cx` below.
+                            let Some(dest_key_bytes) =
+                                cx.try_global::<crate::workspace::VaultKey>().map(|v| -> [u8; 32] { *v.0.0 })
+                            else {
+                                error.update(cx, |msg, cx| {
+                                    *msg = rust_i18n::t!("Vault.locked_error").into();
+                                    cx.notify();
+                                });
+                                return false;
+                            };
+                            let dest_key =
+                                crate::crypto::MasterKey(zeroize::Zeroizing::new(dest_key_bytes));
+
+                            let merged = weak.update(cx, |this, cx| {
+                                let mut dest = AppConfig {
+                                    connections: this.connections.clone(),
+                                    groups: this.groups.clone(),
+                                    vault: this.vault.clone(),
+                                    ssh_keys: this.ssh_keys.clone(),
+                                };
+                                match vault::import_merge(&mut dest, &dest_key, &source, &source_key) {
+                                    Ok(()) => {
+                                        this.connections = dest.connections;
+                                        this.groups = dest.groups;
+                                        this.ssh_keys = dest.ssh_keys;
+                                        this.persist();
+                                        cx.notify();
+                                        true
+                                    }
+                                    Err(e) => {
+                                        log::error!("failed to merge imported connections: {e}");
+                                        false
+                                    }
+                                }
+                            });
+                            window.close_dialog(cx);
+                            matches!(merged, Ok(true))
+                        })
+                });
             });
         })
         .detach();

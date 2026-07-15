@@ -634,3 +634,9 @@ Vault:
   reset_done:
     zh-CN: "密码库已重置，请重启应用设置新的主密码"
     en: "Vault reset. Restart the app to set a new master password."
+  import_password_title:
+    zh-CN: "输入导入文件的主密码"
+    en: "Enter the imported file's master password"
+  import_password_body:
+    zh-CN: "该文件使用自己的主密码加密，与当前密码库无关。"
+    en: "This file is encrypted with its own master password, independent of the current vault."
