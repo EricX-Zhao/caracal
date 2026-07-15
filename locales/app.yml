@@ -14,6 +14,13 @@ Settings:
     language_en:
       zh-CN: "English"
       en: "English"
+  Security:
+    forget_unlock_label:
+      zh-CN: "本机免密解锁"
+      en: "Convenience unlock on this device"
+    reset_vault_label:
+      zh-CN: "密码库"
+      en: "Vault"
   theme_label:
     zh-CN: "主题"
     en: "Theme"
@@ -585,6 +592,9 @@ Vault:
   unlock_title:
     zh-CN: "解锁"
     en: "Unlock"
+  remember_on_this_device:
+    zh-CN: "在本机上记住解锁（存入系统密钥链）"
+    en: "Remember on this device (stored in the OS keyring)"
   error_empty:
     zh-CN: "密码不能为空"
     en: "Password cannot be empty"
@@ -600,3 +610,27 @@ Vault:
   decrypt_failed_error:
     zh-CN: "解密连接信息失败：%{error}"
     en: "Failed to decrypt connection: %{error}"
+  forget_unlock_button:
+    zh-CN: "忘记本机的免密解锁"
+    en: "Forget saved unlock on this device"
+  forget_unlock_done:
+    zh-CN: "已忘记本机的免密解锁"
+    en: "Forgot the saved unlock on this device"
+  reset_vault_button:
+    zh-CN: "重置密码库"
+    en: "Reset vault"
+  reset_confirm_title:
+    zh-CN: "重置密码库？"
+    en: "Reset the vault?"
+  reset_confirm_body:
+    zh-CN: "这将清除所有已保存的密码和密钥。连接列表本身会保留。此操作不可撤销。"
+    en: "This clears every saved password and key. The connection list itself is kept. This cannot be undone."
+  reset_confirm_title_2:
+    zh-CN: "确定要继续吗？"
+    en: "Are you sure?"
+  reset_confirm_body_2:
+    zh-CN: "再次确认：所有已保存的密码和密钥都将被永久删除。"
+    en: "Confirming again: every saved password and key will be permanently deleted."
+  reset_done:
+    zh-CN: "密码库已重置，请重启应用设置新的主密码"
+    en: "Vault reset. Restart the app to set a new master password."

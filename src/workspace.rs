@@ -32,6 +32,7 @@ use gpui::{
     Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, font,
     prelude::FluentBuilder, px, size,
 };
+use gpui_component::checkbox::Checkbox;
 use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelStyle};
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
@@ -55,6 +56,7 @@ use crate::settings;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
 use crate::terminal::telnet::TelnetConfig;
+use crate::keyring_store::{self, SecretStore};
 use crate::terminal::view::{TerminalView, TerminalViewEvent};
 use crate::vault;
 
@@ -153,13 +155,32 @@ fn show_unlock_dialog(window: &mut Window, cx: &mut Context<Workspace>) {
             .placeholder(rust_i18n::t!("Vault.password_placeholder"))
     });
     let error: Entity<SharedString> = cx.new(|_cx| SharedString::default());
+    // Unchecked by default — the opt-in convenience unlock is a deliberate
+    // trade-off (see the design spec), never assumed.
+    let remember: Entity<bool> = cx.new(|_cx| false);
 
     window.open_alert_dialog(cx, move |alert, _window, cx| {
         let pw_input = pw_input.clone();
         let error = error.clone();
-        let body = v_flex().gap_2().child(Input::new(&pw_input)).when(!error.read(cx).is_empty(), |el| {
-            el.child(div().text_color(gpui::red()).child(error.read(cx).clone()))
-        });
+        let remember = remember.clone();
+        let remember_for_checkbox = remember.clone();
+        let body = v_flex()
+            .gap_2()
+            .child(Input::new(&pw_input))
+            .child(
+                Checkbox::new("vault-remember-on-this-device")
+                    .checked(*remember.read(cx))
+                    .label(SharedString::from(rust_i18n::t!("Vault.remember_on_this_device").to_string()))
+                    .on_click(move |checked, _window, cx| {
+                        remember_for_checkbox.update(cx, |r, cx| {
+                            *r = *checked;
+                            cx.notify();
+                        });
+                    }),
+            )
+            .when(!error.read(cx).is_empty(), |el| {
+                el.child(div().text_color(gpui::red()).child(error.read(cx).clone()))
+            });
         alert
             .title(rust_i18n::t!("Vault.unlock_title"))
             .description(body)
@@ -169,6 +190,11 @@ fn show_unlock_dialog(window: &mut Window, cx: &mut Context<Workspace>) {
                 let cfg = config::load();
                 match vault::unlock(&cfg, &password) {
                     Ok(master) => {
+                        if *remember.read(cx) {
+                            if let Some(vault_meta) = &cfg.vault {
+                                keyring_store::OsSecretStore.set(&vault_meta.vault_id, &master.0);
+                            }
+                        }
                         cx.set_global(VaultKey(master));
                         window.close_dialog(cx);
                         true
@@ -313,6 +339,7 @@ impl Workspace {
         // or its SFTP browser.
         let cfg = config::load();
         let needs_vault_setup = cfg.vault.is_none();
+        let vault_id = cfg.vault.as_ref().map(|v| v.vault_id.clone());
         // Dialogs require the window's root view to already be a
         // `gpui_component::Root` (`Root::update` panics otherwise) — that
         // only becomes true once `main.rs`'s `cx.open_window` closure
@@ -323,9 +350,20 @@ impl Workspace {
         cx.defer_in(window, move |_this, window, cx| {
             if needs_vault_setup {
                 show_setup_master_password_dialog(window, cx);
-            } else {
-                show_unlock_dialog(window, cx);
+                return;
             }
+            // Try the OS-keyring convenience-unlock cache first — a hit
+            // skips the password prompt entirely. Any failure (never
+            // opted in, keyring unavailable, entry cleared) is treated as
+            // a cache miss, never as blocking normal password unlock.
+            if let Some(vault_id) = &vault_id {
+                if let Some(key_bytes) = keyring_store::OsSecretStore.get(vault_id) {
+                    let master = crate::crypto::MasterKey(zeroize::Zeroizing::new(key_bytes));
+                    cx.set_global(VaultKey(master));
+                    return;
+                }
+            }
+            show_unlock_dialog(window, cx);
         });
         let saved = cx.new(|cx| {
             SessionsPanel::new(cfg.connections, cfg.groups, cfg.vault, cfg.ssh_keys, window, cx)

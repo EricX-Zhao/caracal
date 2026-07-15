@@ -46,12 +46,14 @@ use gpui::{
     Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window,
     div, prelude::FluentBuilder, px, red, transparent_black,
 };
-use gpui_component::button::{Button, DropdownButton};
+use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::input::{Input, InputState};
 use gpui_component::menu::PopupMenuItem;
+use gpui_component::notification::NotificationType;
 use gpui_component::switch::Switch;
-use gpui_component::{ActiveTheme, Sizable, Theme, ThemeMode, ThemeRegistry};
+use gpui_component::{ActiveTheme, Disableable, Sizable, Theme, ThemeMode, ThemeRegistry, WindowExt};
 
+use crate::keyring_store::SecretStore;
 use crate::settings::{self, AppSettings};
 use crate::terminal::view::{CJK_FALLBACK, DEFAULT_FONT_FAMILY, SYMBOL_FALLBACK};
 use crate::workspace::Workspace;
@@ -107,6 +109,7 @@ enum SettingsTab {
     General,
     Appearance,
     Terminal,
+    Security,
 }
 
 impl SettingsTab {
@@ -115,6 +118,7 @@ impl SettingsTab {
             SettingsTab::General => "General",
             SettingsTab::Appearance => "Appearance",
             SettingsTab::Terminal => "Terminal",
+            SettingsTab::Security => "Security",
         }
     }
 }
@@ -574,6 +578,108 @@ impl SettingsWindow {
             )
     }
 
+    /// The vault's two escape hatches (see
+    /// docs/superpowers/specs/2026-07-15-encrypted-credential-storage-design.md):
+    /// dropping the OS-keyring convenience-unlock cache, and a full reset
+    /// for a forgotten master password. Both act immediately (not gated by
+    /// this window's Apply/Confirm/Cancel draft model — there's no "draft"
+    /// state for a destructive one-shot action).
+    fn render_security_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let vault_unlocked = cx.try_global::<crate::workspace::VaultKey>().is_some();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Security.forget_unlock_label")),
+                    )
+                    .child(
+                        Button::new("settings-forget-unlock")
+                            .xsmall()
+                            .label(rust_i18n::t!("Vault.forget_unlock_button"))
+                            .disabled(!vault_unlocked)
+                            .on_click(cx.listener(|_this, _ev: &ClickEvent, window, cx| {
+                                if cx.try_global::<crate::workspace::VaultKey>().is_some() {
+                                    if let Some(meta) = crate::config::load().vault {
+                                        crate::keyring_store::OsSecretStore.clear(&meta.vault_id);
+                                    }
+                                }
+                                window.push_notification(
+                                    (NotificationType::Success, rust_i18n::t!("Vault.forget_unlock_done")),
+                                    cx,
+                                );
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Security.reset_vault_label")),
+                    )
+                    .child(
+                        Button::new("settings-reset-vault")
+                            .xsmall()
+                            .danger()
+                            .label(rust_i18n::t!("Vault.reset_vault_button"))
+                            .on_click(cx.listener(Self::reset_vault)),
+                    ),
+            )
+    }
+
+    /// Double-confirmation (see `SavedConnection` deletion's precedent in
+    /// `src/panels/sftp.rs`'s `delete_selected`) since this permanently
+    /// destroys every saved password/key.
+    fn reset_vault(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            alert
+                .title(rust_i18n::t!("Vault.reset_confirm_title"))
+                .description(rust_i18n::t!("Vault.reset_confirm_body"))
+                .confirm()
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    window.open_alert_dialog(cx, move |alert, _window, _cx| {
+                        alert
+                            .title(rust_i18n::t!("Vault.reset_confirm_title_2"))
+                            .description(rust_i18n::t!("Vault.reset_confirm_body_2"))
+                            .confirm()
+                            .on_ok(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let mut cfg = crate::config::load();
+                                if let Some(meta) = &cfg.vault {
+                                    crate::keyring_store::OsSecretStore.clear(&meta.vault_id);
+                                }
+                                crate::vault::reset(&mut cfg);
+                                if let Err(e) = crate::config::save(&cfg) {
+                                    log::error!("failed to save reset vault: {e}");
+                                }
+                                cx.remove_global::<crate::workspace::VaultKey>();
+                                window.push_notification(
+                                    (NotificationType::Warning, rust_i18n::t!("Vault.reset_done")),
+                                    cx,
+                                );
+                                true
+                            })
+                    });
+                    true
+                })
+        });
+    }
+
     /// Standard boolean-toggle style for this settings window: a pill switch
     /// (`gpui_component::switch::Switch`), not a text pill button — see the
     /// "UI conventions" note in `docs/superpowers/specs/2026-07-07-settings-page-design.md`.
@@ -593,6 +699,7 @@ impl Render for SettingsWindow {
             SettingsTab::General => self.render_general_tab(cx).into_any_element(),
             SettingsTab::Appearance => self.render_appearance_tab(cx).into_any_element(),
             SettingsTab::Terminal => self.render_terminal_tab(cx).into_any_element(),
+            SettingsTab::Security => self.render_security_tab(cx).into_any_element(),
         };
 
         div()
@@ -616,7 +723,8 @@ impl Render for SettingsWindow {
                             .border_color(border)
                             .child(self.tab_button(SettingsTab::General, cx))
                             .child(self.tab_button(SettingsTab::Appearance, cx))
-                            .child(self.tab_button(SettingsTab::Terminal, cx)),
+                            .child(self.tab_button(SettingsTab::Terminal, cx))
+                            .child(self.tab_button(SettingsTab::Security, cx)),
                     )
                     .child(div().flex_1().p_4().child(content)),
             )
