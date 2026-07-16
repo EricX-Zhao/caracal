@@ -59,7 +59,12 @@ jobs:
       # build time. Derived from Zed's own `script/linux` (gpui/gpui_platform
       # come from the Zed repo) and trimmed to what this project's actual
       # feature set uses — Zed's own list also carries audio/webrtc/sqlite/
-      # git2 packages this project doesn't depend on.
+      # git2 packages this project doesn't depend on. libdbus-1-dev is not
+      # from that list — it's needed by libdbus-sys, pulled in via the
+      # `keyring` crate's `sync-secret-service` feature (D-Bus Secret
+      # Service backend, used for the optional OS-keyring convenience
+      # unlock); without it, pkg-config can't find dbus-1.pc and the build
+      # fails at libdbus-sys's build script.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -77,7 +82,8 @@ jobs:
             libwayland-dev \
             libvulkan1 \
             libssl-dev \
-            libudev-dev
+            libudev-dev \
+            libdbus-1-dev
 
       # No extra system packages on Windows: serialport uses the native
       # Win32 API (no libudev equivalent needed), and wgpu's DX12/Vulkan

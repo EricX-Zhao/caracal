@@ -31,17 +31,18 @@ cargo build --release
 
 ### Linux build dependencies
 
-GPUI's X11/Wayland/font-kit support and the serial backend's device
-enumeration need a few system packages (Debian/Ubuntu package names shown;
-see [`.github/workflows/build.yml`](.github/workflows/build.yml) for the
-exact list used in CI):
+GPUI's X11/Wayland/font-kit support, the serial backend's device
+enumeration, and the D-Bus Secret Service keyring backend need a few system
+packages (Debian/Ubuntu package names shown; see
+[`.github/workflows/build.yml`](.github/workflows/build.yml) for the exact
+list used in CI):
 
 ```bash
 sudo apt-get install -y \
     build-essential clang cmake pkg-config \
     libfontconfig-dev libx11-dev libx11-xcb-dev \
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-    libvulkan1 libssl-dev libudev-dev
+    libvulkan1 libssl-dev libudev-dev libdbus-1-dev
 ```
 
 ### Windows
