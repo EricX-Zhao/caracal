@@ -70,3 +70,43 @@ env_logger = "0.11"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[package.metadata.packager]
+productName = "Caracal"
+identifier = "io.github.ericxzhao.caracal"
+homepage = "https://github.com/EricX-Zhao/caracal"
+authors = ["EricX-Zhao <uupks0325@gmail.com>"]
+longDescription = "A native, GPU-accelerated terminal, SSH, Telnet, and serial client with an integrated SFTP file browser, saved-connection management, and Nerd Font / powerline glyph rendering."
+outDir = "dist"
+icons = [
+    "assets/icon/icon-16.png",
+    "assets/icon/icon-24.png",
+    "assets/icon/icon-32.png",
+    "assets/icon/icon-48.png",
+    "assets/icon/icon-128.png",
+    "assets/icon/icon-256.png",
+    "assets/icon/icon-512.png",
+]
+
+[package.metadata.packager.deb]
+section = "net"
+priority = "optional"
+desktopTemplate = "packaging/linux/desktop-entry.hbs"
+depends = [
+    "libc6",
+    "libgcc-s1",
+    "libudev1",
+    "libxcb1",
+    "libxcb-xkb1",
+    "libxkbcommon0",
+    "libxkbcommon-x11-0",
+    "libxau6",
+    "libxdmcp6",
+    "libvulkan1",
+    "libfontconfig1",
+]
+
+[package.metadata.packager.nsis]
+installMode = "currentUser"
+installerIcon = "assets/icon/caracal.ico"
+languages = ["English", "SimpChinese"]
