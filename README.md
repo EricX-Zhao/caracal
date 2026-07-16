@@ -52,7 +52,11 @@ No extra system packages are needed beyond the Rust (MSVC) toolchain.
 
 Every push to `main` builds Windows and Linux binaries via
 [GitHub Actions](.github/workflows/build.yml); tagged releases (`vX.Y.Z`)
-publish them as GitHub Releases.
+publish them as GitHub Releases, alongside a Windows NSIS installer (`.exe`)
+and a Linux Debian package (`.deb`) built with
+[cargo-packager](https://github.com/crabnebula-dev/cargo-packager). The raw
+binaries are still included for anyone who'd rather place them on `PATH`
+manually.
 
 ## Acknowledgments
 

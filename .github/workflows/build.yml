@@ -95,11 +95,23 @@ jobs:
           mkdir -p dist
           cp target/release/${{ matrix.binary_name }} dist/${{ matrix.asset_name }}
 
+      - name: Install cargo-packager
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cargo install cargo-packager --locked
+
+      - name: Package Windows installer
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        run: cargo packager --release --formats nsis
+
+      - name: Package Linux .deb
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Linux'
+        run: cargo packager --release --formats deb
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/${{ matrix.asset_name }}
+          path: dist/*
           if-no-files-found: error
 
   release:
