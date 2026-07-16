@@ -35,6 +35,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # cargo-packager reads the package version straight from Cargo.toml's
+      # [package].version — it has no idea what git tag triggered the build.
+      # Left un-synced, every tagged release would ship installers stamped
+      # with whatever version happened to be committed (e.g. "0.1.0" forever)
+      # instead of the tag (e.g. "0.6.0"). Cargo.lock carries its own copy of
+      # the root package's version too, and `--locked` (used below) requires
+      # it to match Cargo.toml exactly, so both files are patched together.
+      - name: Sync Cargo.toml/Cargo.lock version to the release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "/^name = \"caracal\"\$/{n;s/^version = \".*\"/version = \"$VERSION\"/}" Cargo.toml
+          sed -i "/^name = \"caracal\"\$/{n;s/^version = \".*\"/version = \"$VERSION\"/}" Cargo.lock
+          echo "Synced version to $VERSION"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -120,8 +136,27 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: dist/*
+          path: dist/${{ matrix.asset_name }}
           if-no-files-found: error
+
+      # Separate, distinctly-named artifact so the release job can attach
+      # only the installer to the GitHub Release (not the raw binary above)
+      # — see the release job's "pattern: installer-*" filter. Named
+      # patterns differ per OS since that's what cargo-packager itself
+      # produces (NSIS installers end in "-setup.exe", not the raw binary's
+      # own asset_name). if-no-files-found is "ignore" rather than "error"
+      # because packaging is allowed to fail without failing the build (see
+      # continue-on-error above) — a failed pack means no installer file
+      # exists yet, which isn't itself an error at upload time.
+      - name: Upload installer artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os }}
+          path: |
+            dist/*-setup.exe
+            dist/*.deb
+          if-no-files-found: ignore
 
   release:
     name: Create GitHub Release
@@ -131,9 +166,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download installer artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: installer-*
           path: artifacts
 
       - name: Create release
