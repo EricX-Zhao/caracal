@@ -868,8 +868,8 @@ impl SessionsPanel {
     }
 
     /// Exposes `persist()` to callers outside this module (the
-    /// `SecurityAuthPanel`'s add/edit/delete dialogs) — those mutate
-    /// `ssh_keys`/`saved_passwords` via the `update_*`/`remove_*`/`add_*`
+    /// `SecurityAuthPanel`'s add/rename/delete dialogs) — those mutate
+    /// `ssh_keys` via the `add_ssh_key`/`update_ssh_key`/`remove_ssh_key`
     /// methods below, which intentionally don't persist themselves (same
     /// rationale as `add_ssh_key`'s existing doc comment), so the caller
     /// must persist explicitly once done.

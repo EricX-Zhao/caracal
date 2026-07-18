@@ -1,6 +1,8 @@
 //! `SecurityAuthPanel`: the 安全认证 left-sidebar panel for managing the
-//! vault's shared SSH keys and saved passwords (see
-//! docs/superpowers/specs/2026-07-15-security-auth-panel-design.md).
+//! vault's shared SSH keys (originally also saved passwords — see
+//! docs/superpowers/specs/2026-07-15-security-auth-panel-design.md for that
+//! history; the 2026-07-18 auth-simplification design removed the
+//! Passwords tab, reverting password auth to always-direct input).
 //! Reads/writes through a `WeakEntity<SessionsPanel>` — `SessionsPanel`
 //! stays the single owner/persister of this data, exactly as
 //! `NewConnectionWindow` already treats it.
