@@ -1963,6 +1963,7 @@ impl SftpPanel {
                 );
                 let transfer_id = t.id;
                 let row = div()
+                    .id(("transfer-row", transfer_id))
                     .flex()
                     .flex_col()
                     .gap_0p5()
