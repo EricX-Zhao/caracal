@@ -199,6 +199,53 @@ pub fn import_merge(dest: &mut AppConfig, dest_key: &MasterKey, source: &AppConf
     Ok(())
 }
 
+/// Core logic behind [`migrate_saved_passwords_to_direct`], factored out so
+/// it can also run directly against `SessionsPanel`'s own fields — the
+/// OS-keyring convenience-unlock path (`workspace.rs`) never has a full
+/// `AppConfig` in scope by the time it runs (its `cfg` was already moved
+/// into `SessionsPanel::new` earlier in the same function).
+pub(crate) fn migrate_password_ids(
+    connections: &mut [crate::config::SavedConnection],
+    saved_passwords: &[SavedPasswordEntry],
+    master: &MasterKey,
+) -> bool {
+    let mut changed = false;
+    for conn in connections {
+        let Some(password_id) = conn.password_id.take() else {
+            continue;
+        };
+        changed = true;
+        match saved_passwords.iter().find(|p| p.id == password_id) {
+            Some(entry) => match master.decrypt_str(&entry.encrypted_password) {
+                Ok(plaintext) => conn.encrypted_password = master.encrypt_str(&plaintext),
+                Err(e) => log::warn!(
+                    "saved-password migration: entry {password_id:?} failed to decrypt: {e:#}; leaving connection's password empty"
+                ),
+            },
+            None => log::warn!(
+                "saved-password migration: connection referenced missing saved password {password_id:?}"
+            ),
+        }
+    }
+    changed
+}
+
+/// One-time conversion of any connection still using the removed "saved
+/// password" sharing feature (see the 2026-07-18 auth-simplification
+/// design) back to direct mode: decrypts the referenced `saved_passwords`
+/// entry and re-encrypts it into the connection's own `encrypted_password`,
+/// then clears `password_id`. Safe to call on every unlock — a cheap no-op
+/// once a config has already been migrated. Returns `true` if anything
+/// changed, so the caller knows whether to persist.
+pub fn migrate_saved_passwords_to_direct(cfg: &mut AppConfig, master: &MasterKey) -> bool {
+    if cfg.saved_passwords.is_empty() && !cfg.connections.iter().any(|c| c.password_id.is_some()) {
+        return false;
+    }
+    let saved_passwords = std::mem::take(&mut cfg.saved_passwords);
+    migrate_password_ids(&mut cfg.connections, &saved_passwords, master);
+    true
+}
+
 fn content_hash(bytes: &[u8]) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -375,5 +422,51 @@ mod tests {
         let new_id = imported_conn.password_id.as_ref().expect("password_id should remap, not clear");
         let entry = dest.saved_passwords.iter().find(|p| &p.id == new_id).unwrap();
         assert_eq!(dest_key.decrypt_str(&entry.encrypted_password).unwrap(), "hunter2");
+    }
+
+    #[test]
+    fn migrate_saved_passwords_to_direct_converts_password_id_to_encrypted_password() {
+        let master = MasterKey::generate();
+        let mut cfg = AppConfig::default();
+        cfg.saved_passwords.push(SavedPasswordEntry {
+            id: "pw-1".to_string(),
+            name: "shared".to_string(),
+            encrypted_password: master.encrypt_str("hunter2"),
+        });
+        let mut conn = base_connection("a.example.com");
+        conn.password_id = Some("pw-1".to_string());
+        cfg.connections.push(conn);
+
+        let changed = migrate_saved_passwords_to_direct(&mut cfg, &master);
+
+        assert!(changed);
+        assert!(cfg.connections[0].password_id.is_none());
+        assert!(cfg.saved_passwords.is_empty());
+        assert_eq!(
+            master.decrypt_str(&cfg.connections[0].encrypted_password).unwrap(),
+            "hunter2"
+        );
+    }
+
+    #[test]
+    fn migrate_saved_passwords_to_direct_is_a_noop_when_nothing_to_migrate() {
+        let master = MasterKey::generate();
+        let mut cfg = AppConfig { connections: vec![base_connection("a.example.com")], ..Default::default() };
+        let changed = migrate_saved_passwords_to_direct(&mut cfg, &master);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn migrate_saved_passwords_to_direct_clears_dangling_reference_without_panicking() {
+        let master = MasterKey::generate();
+        let mut cfg = AppConfig::default();
+        let mut conn = base_connection("a.example.com");
+        conn.password_id = Some("does-not-exist".to_string());
+        cfg.connections.push(conn);
+
+        let changed = migrate_saved_passwords_to_direct(&mut cfg, &master);
+
+        assert!(changed);
+        assert!(cfg.connections[0].password_id.is_none());
     }
 }
