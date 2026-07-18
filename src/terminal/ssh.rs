@@ -7,7 +7,7 @@
 //! second connection. A command loop on the session thread multiplexes: it
 //! spawns the shell pump as a task and services SFTP requests inline.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -112,6 +112,27 @@ enum SftpRequest {
         cancel: Arc<AtomicBool>,
         cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     },
+    /// Recursively download every file under `remote` into `local`,
+    /// creating matching subdirectories as needed. One `TransferHandle` /
+    /// event stream for the whole job — see `TransferEvent::DoneWithFailures`.
+    DownloadDir {
+        remote: String,
+        local: PathBuf,
+        reply: flume::Sender<TransferHandle>,
+        id: u64,
+        cancel: Arc<AtomicBool>,
+        cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+    },
+    /// Recursively upload every file under `local` into `remote`. Mirrors
+    /// `DownloadDir`.
+    UploadDir {
+        local: PathBuf,
+        remote: String,
+        reply: flume::Sender<TransferHandle>,
+        id: u64,
+        cancel: Arc<AtomicBool>,
+        cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+    },
     /// Create a directory on the remote.
     Mkdir {
         path: String,
@@ -183,6 +204,14 @@ pub enum TransferEvent {
     /// left in whatever state was reached before the abort.
     Cancelled {
         transferred: u64,
+    },
+    /// A directory transfer (`sftp_download_dir`/`sftp_upload_dir`) finished
+    /// after skipping one or more files that failed individually
+    /// (permission denied, vanished mid-walk, etc.) — the rest of the
+    /// directory still completed. Never emitted for single-file transfers.
+    DoneWithFailures {
+        transferred: u64,
+        failed_paths: Vec<String>,
     },
 }
 
@@ -351,6 +380,45 @@ impl SshSession {
         self.cancels.lock().unwrap().insert(id, cancel.clone());
         let (reply, rx) = flume::bounded(1);
         let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::Upload {
+            local,
+            remote,
+            reply,
+            id,
+            cancel,
+            cancels: self.cancels.clone(),
+        }));
+        rx
+    }
+
+    /// Recursively download `remote` (a directory) into `local`. Same
+    /// `TransferHandle`/event-stream shape as [`Self::sftp_download`], but
+    /// `Started.total`/`Progress.transferred` are aggregate across every
+    /// file in the tree, and the terminal event may be
+    /// [`TransferEvent::DoneWithFailures`] if some files failed.
+    pub fn sftp_download_dir(&self, remote: String, local: PathBuf) -> flume::Receiver<TransferHandle> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancels.lock().unwrap().insert(id, cancel.clone());
+        let (reply, rx) = flume::bounded(1);
+        let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::DownloadDir {
+            remote,
+            local,
+            reply,
+            id,
+            cancel,
+            cancels: self.cancels.clone(),
+        }));
+        rx
+    }
+
+    /// Recursively upload `local` (a directory) into `remote`. Mirrors
+    /// [`Self::sftp_download_dir`].
+    pub fn sftp_upload_dir(&self, local: PathBuf, remote: String) -> flume::Receiver<TransferHandle> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancels.lock().unwrap().insert(id, cancel.clone());
+        let (reply, rx) = flume::bounded(1);
+        let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::UploadDir {
             local,
             remote,
             reply,
@@ -875,6 +943,86 @@ async fn service_sftp(
                 cancels.lock().unwrap().remove(&id);
             });
         }
+        SftpRequest::DownloadDir {
+            remote,
+            local,
+            reply,
+            id,
+            cancel,
+            cancels,
+        } => {
+            let (events_tx, events_rx) = flume::unbounded::<TransferEvent>();
+            let _ = reply.send(TransferHandle { id, events: events_rx });
+            let sftp_slot = sftp_slot.clone();
+            tokio::spawn(async move {
+                let sftp = {
+                    let g = sftp_slot.lock().await;
+                    match g.clone() {
+                        Some(s) => s,
+                        None => {
+                            let _ = events_tx.send(TransferEvent::Failed {
+                                error: "sftp session not initialized".into(),
+                            });
+                            cancels.lock().unwrap().remove(&id);
+                            return;
+                        }
+                    }
+                };
+                let items = match walk_remote_dir(&sftp, &remote, &local).await {
+                    Ok(items) => items,
+                    Err(e) => {
+                        invalidate_sftp_if_dead(&sftp_slot, &e).await;
+                        let _ = events_tx.send(TransferEvent::Failed {
+                            error: format!("{e:#}"),
+                        });
+                        cancels.lock().unwrap().remove(&id);
+                        return;
+                    }
+                };
+                run_download_dir(&sftp, items, &events_tx, &cancel).await;
+                cancels.lock().unwrap().remove(&id);
+            });
+        }
+        SftpRequest::UploadDir {
+            local,
+            remote,
+            reply,
+            id,
+            cancel,
+            cancels,
+        } => {
+            let (events_tx, events_rx) = flume::unbounded::<TransferEvent>();
+            let _ = reply.send(TransferHandle { id, events: events_rx });
+            let sftp_slot = sftp_slot.clone();
+            tokio::spawn(async move {
+                let sftp = {
+                    let g = sftp_slot.lock().await;
+                    match g.clone() {
+                        Some(s) => s,
+                        None => {
+                            let _ = events_tx.send(TransferEvent::Failed {
+                                error: "sftp session not initialized".into(),
+                            });
+                            cancels.lock().unwrap().remove(&id);
+                            return;
+                        }
+                    }
+                };
+                let items = match walk_local_dir(&sftp, &local, &remote).await {
+                    Ok(items) => items,
+                    Err(e) => {
+                        invalidate_sftp_if_dead(&sftp_slot, &e).await;
+                        let _ = events_tx.send(TransferEvent::Failed {
+                            error: format!("{e:#}"),
+                        });
+                        cancels.lock().unwrap().remove(&id);
+                        return;
+                    }
+                };
+                run_upload_dir(&sftp, items, &events_tx, &cancel).await;
+                cancels.lock().unwrap().remove(&id);
+            });
+        }
         SftpRequest::Mkdir { path, reply } => {
             let sftp = match clone_sftp(sftp_slot).await {
                 Ok(s) => s,
@@ -1059,7 +1207,10 @@ fn reply_sftp_error(request: SftpRequest, err: anyhow::Error) {
         SftpRequest::Realpath { reply, .. } => {
             let _ = reply.send(Err(err));
         }
-        SftpRequest::Download { reply, id, .. } | SftpRequest::Upload { reply, id, .. } => {
+        SftpRequest::Download { reply, id, .. }
+        | SftpRequest::Upload { reply, id, .. }
+        | SftpRequest::DownloadDir { reply, id, .. }
+        | SftpRequest::UploadDir { reply, id, .. } => {
             let (events_tx, events_rx) = flume::bounded::<TransferEvent>(1);
             let _ = events_tx.send(TransferEvent::Failed {
                 error: format!("{err:#}"),
@@ -1093,6 +1244,254 @@ async fn sftp_read_dir(sftp: &SftpSession, path: &str) -> Result<Vec<SftpEntry>>
     // Directories first, then alphabetical.
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
     Ok(entries)
+}
+
+/// One file to transfer as part of a recursive directory job: its remote
+/// path, its local path, and its size (known up front from the initial
+/// directory walk — used to size the job's aggregate progress bar).
+struct DirTransferItem {
+    remote: String,
+    local: PathBuf,
+    size: u64,
+}
+
+/// Recursively walk `remote_root` via SFTP `read_dir`, creating the
+/// matching local directory tree under `local_root` as it goes, and
+/// collecting every remote *file* (not directory) found along the way.
+async fn walk_remote_dir(
+    sftp: &SftpSession,
+    remote_root: &str,
+    local_root: &Path,
+) -> Result<Vec<DirTransferItem>> {
+    let mut items = Vec::new();
+    let mut stack = vec![(remote_root.to_string(), local_root.to_path_buf())];
+    while let Some((remote_dir, local_dir)) = stack.pop() {
+        tokio::fs::create_dir_all(&local_dir)
+            .await
+            .map_err(|e| anyhow!("create_dir_all {local_dir:?}: {e}"))?;
+        for entry in sftp_read_dir(sftp, &remote_dir).await? {
+            let remote_path = remote_join(&remote_dir, &entry.name);
+            let local_path = local_dir.join(&entry.name);
+            if entry.is_dir {
+                stack.push((remote_path, local_path));
+            } else {
+                items.push(DirTransferItem {
+                    remote: remote_path,
+                    local: local_path,
+                    size: entry.size,
+                });
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Recursively walk `local_root` on disk, creating the matching remote
+/// directory tree under `remote_root` via SFTP `mkdir` as it goes (best
+/// effort — a directory that already exists on the remote is not an error
+/// here), and collecting every local *file* found along the way.
+async fn walk_local_dir(
+    sftp: &SftpSession,
+    local_root: &Path,
+    remote_root: &str,
+) -> Result<Vec<DirTransferItem>> {
+    let mut items = Vec::new();
+    let mut stack = vec![(local_root.to_path_buf(), remote_root.to_string())];
+    while let Some((local_dir, remote_dir)) = stack.pop() {
+        let _ = sftp.create_dir(&remote_dir).await;
+        let mut rd = tokio::fs::read_dir(&local_dir)
+            .await
+            .map_err(|e| anyhow!("read_dir {local_dir:?}: {e}"))?;
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| anyhow!("read_dir {local_dir:?}: {e}"))?
+        {
+            let file_type = entry
+                .file_type()
+                .await
+                .map_err(|e| anyhow!("file_type {:?}: {e}", entry.path()))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let remote_path = remote_join(&remote_dir, &name);
+            if file_type.is_dir() {
+                stack.push((entry.path(), remote_path));
+            } else {
+                let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
+                items.push(DirTransferItem {
+                    remote: remote_path,
+                    local: entry.path(),
+                    size,
+                });
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// Download a single file within a directory job. Unlike
+/// `sftp_download_streaming`, this never emits `Progress` events itself —
+/// the caller (`run_download_dir`) reports progress once per completed
+/// file, using a running total across the whole directory, not per-chunk.
+async fn download_one_file(
+    sftp: &SftpSession,
+    remote: &str,
+    local: &PathBuf,
+    cancel: &AtomicBool,
+) -> Result<StreamingOutcome> {
+    const CHUNK: usize = 32 * 1024;
+    if let Some(parent) = local.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let mut remote_file = sftp.open(remote).await.map_err(|e| anyhow!("open {remote:?}: {e}"))?;
+    let mut local_file = tokio::fs::File::create(local)
+        .await
+        .map_err(|e| anyhow!("create {local:?}: {e}"))?;
+    let mut buf = vec![0u8; CHUNK];
+    let mut transferred: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(StreamingOutcome::Cancelled(transferred));
+        }
+        let n = remote_file.read(&mut buf).await.map_err(|e| anyhow!("read {remote:?}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        local_file
+            .write_all(&buf[..n])
+            .await
+            .map_err(|e| anyhow!("write {local:?}: {e}"))?;
+        transferred += n as u64;
+    }
+    local_file.flush().await.map_err(|e| anyhow!("flush {local:?}: {e}"))?;
+    Ok(StreamingOutcome::Completed(transferred))
+}
+
+/// Upload a single file within a directory job. Mirrors `download_one_file`
+/// — no intermediate `Progress` events, just a final byte count.
+async fn upload_one_file(
+    sftp: &SftpSession,
+    local: &PathBuf,
+    remote: &str,
+    cancel: &AtomicBool,
+) -> Result<StreamingOutcome> {
+    const CHUNK: usize = 32 * 1024;
+    let mut local_file = tokio::fs::File::open(local).await.map_err(|e| anyhow!("open {local:?}: {e}"))?;
+    let mut remote_file = sftp
+        .open_with_flags(remote, OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE)
+        .await
+        .map_err(|e| anyhow!("create {remote:?}: {e}"))?;
+    let mut buf = vec![0u8; CHUNK];
+    let mut transferred: u64 = 0;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(StreamingOutcome::Cancelled(transferred));
+        }
+        let n = local_file.read(&mut buf).await.map_err(|e| anyhow!("read {local:?}: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        remote_file
+            .write_all(&buf[..n])
+            .await
+            .map_err(|e| anyhow!("write {remote:?}: {e}"))?;
+        transferred += n as u64;
+    }
+    remote_file.shutdown().await.map_err(|e| anyhow!("close {remote:?}: {e}"))?;
+    Ok(StreamingOutcome::Completed(transferred))
+}
+
+/// Download every item in `items` sequentially, emitting one aggregate
+/// `Started`/`Progress` pair across the whole job (not per-file) plus a
+/// final `Done`/`DoneWithFailures`/`Cancelled`. A single file's failure is
+/// logged and skipped — the job keeps going (matches `sftp_remove`'s
+/// existing best-effort-recursion style).
+async fn run_download_dir(
+    sftp: &SftpSession,
+    items: Vec<DirTransferItem>,
+    events: &flume::Sender<TransferEvent>,
+    cancel: &AtomicBool,
+) {
+    let total: u64 = items.iter().map(|i| i.size).sum();
+    let _ = events.send(TransferEvent::Started { total });
+
+    let mut transferred: u64 = 0;
+    let mut failed_paths = Vec::new();
+    let mut cancelled = false;
+
+    for item in items {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+        match download_one_file(sftp, &item.remote, &item.local, cancel).await {
+            Ok(StreamingOutcome::Completed(n)) => {
+                transferred += n;
+                let _ = events.send(TransferEvent::Progress { transferred });
+            }
+            Ok(StreamingOutcome::Cancelled(n)) => {
+                transferred += n;
+                cancelled = true;
+                break;
+            }
+            Err(e) => {
+                log::warn!("sftp: download {:?} failed: {e:#}", item.remote);
+                failed_paths.push(item.remote);
+            }
+        }
+    }
+
+    if cancelled {
+        let _ = events.send(TransferEvent::Cancelled { transferred });
+    } else if failed_paths.is_empty() {
+        let _ = events.send(TransferEvent::Done { transferred });
+    } else {
+        let _ = events.send(TransferEvent::DoneWithFailures { transferred, failed_paths });
+    }
+}
+
+/// Mirror of `run_download_dir` for uploads.
+async fn run_upload_dir(
+    sftp: &SftpSession,
+    items: Vec<DirTransferItem>,
+    events: &flume::Sender<TransferEvent>,
+    cancel: &AtomicBool,
+) {
+    let total: u64 = items.iter().map(|i| i.size).sum();
+    let _ = events.send(TransferEvent::Started { total });
+
+    let mut transferred: u64 = 0;
+    let mut failed_paths = Vec::new();
+    let mut cancelled = false;
+
+    for item in items {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+        match upload_one_file(sftp, &item.local, &item.remote, cancel).await {
+            Ok(StreamingOutcome::Completed(n)) => {
+                transferred += n;
+                let _ = events.send(TransferEvent::Progress { transferred });
+            }
+            Ok(StreamingOutcome::Cancelled(n)) => {
+                transferred += n;
+                cancelled = true;
+                break;
+            }
+            Err(e) => {
+                log::warn!("sftp: upload {:?} failed: {e:#}", item.remote);
+                failed_paths.push(item.remote);
+            }
+        }
+    }
+
+    if cancelled {
+        let _ = events.send(TransferEvent::Cancelled { transferred });
+    } else if failed_paths.is_empty() {
+        let _ = events.send(TransferEvent::Done { transferred });
+    } else {
+        let _ = events.send(TransferEvent::DoneWithFailures { transferred, failed_paths });
+    }
 }
 
 /// Outcome of a streaming transfer — distinguishes a clean completion from
