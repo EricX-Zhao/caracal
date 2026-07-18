@@ -9,8 +9,8 @@
 
 use gpui::{
     App, AppContext, ClickEvent, Context, Div, Entity, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled, WeakEntity,
-    Window, div, prelude::FluentBuilder, px,
+    ParentElement, Render, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Subscription, WeakEntity, Window, div, px,
 };
 use gpui_component::button::{Button, DropdownButton};
 use gpui_component::input::{Input, InputState};
@@ -39,12 +39,6 @@ const ICON_OPTIONS: &[(Option<&str>, &str, AppIcon)] = &[
     (Some("serial"), "NewConnectionWindow.icon_serial", AppIcon::SerialPort),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KeyTab {
-    ImportNew,
-    Saved,
-}
-
 pub struct NewConnectionWindow {
     panel: WeakEntity<SessionsPanel>,
     /// `Some(ix)` when editing an existing connection in place; `None` when
@@ -66,13 +60,12 @@ pub struct NewConnectionWindow {
     /// from `save()`), which turns it into a new `SshKeyEntry` encrypted
     /// under the current vault key. `(name, content, source_path)`.
     pending_new_key: Option<(String, Vec<u8>, String)>,
-    /// Snapshot of the vault's shared keys, for the picker list.
+    /// Snapshot of the vault's shared keys, for the picker list. Kept live
+    /// via `_ssh_keys_sync_sub` — needs to be, now that this field's empty
+    /// state sends the user to Security & Auth to add a key and come back
+    /// to this still-open form.
     ssh_keys: Vec<crate::config::SshKeyEntry>,
-    /// Which sub-tab the Key field is on — a pure UI reshuffle of the
-    /// existing picker (key auth is always reference-based; this just
-    /// splits "import a new one" from "pick an existing one" into two
-    /// tabs instead of showing both stacked).
-    key_tab: KeyTab,
+    _ssh_keys_sync_sub: Subscription,
     private_key_passphrase: Entity<InputState>,
     shell_path: Entity<InputState>,
     working_dir: Entity<InputState>,
@@ -124,10 +117,17 @@ impl NewConnectionWindow {
                 .as_ref()
                 .and_then(|ct| vault.and_then(|v| v.0.decrypt_str(ct).ok()))
         });
-        let key_tab = if conn.as_ref().map(|c| c.auth_method.clone()).as_deref() == Some("key") {
-            KeyTab::Saved
+        // Re-sync `ssh_keys` whenever `SessionsPanel` changes — needed so
+        // adding a key via the empty-state's "open Security & Auth" jump
+        // (below) shows up here once the user returns to this still-open
+        // form. Mirrors `SecurityAuthPanel::new`'s identical `_sync_sub`.
+        let ssh_keys_sync_sub = if let Some(sessions) = panel.upgrade() {
+            cx.observe(&sessions, |this, sessions, cx| {
+                this.ssh_keys = sessions.read(cx).ssh_keys().to_vec();
+                cx.notify();
+            })
         } else {
-            KeyTab::ImportNew
+            cx.observe(&cx.entity(), |_, _: Entity<Self>, _| {})
         };
 
         Self {
@@ -174,7 +174,7 @@ impl NewConnectionWindow {
             selected_key_id: conn.as_ref().and_then(|c| c.private_key_id.clone()),
             pending_new_key: None,
             ssh_keys,
-            key_tab,
+            _ssh_keys_sync_sub: ssh_keys_sync_sub,
             private_key_passphrase: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
@@ -414,7 +414,7 @@ impl NewConnectionWindow {
                 encrypted_content: vault.0.encrypt_bytes(&content),
             };
             let id = entry.id.clone();
-            let _ = self.panel.update(cx, |panel, _cx| panel.add_ssh_key(entry));
+            let _ = self.panel.update(cx, |panel, cx| panel.add_ssh_key(entry, cx));
             self.selected_key_id = Some(id.clone());
             Some(id)
         } else {
@@ -778,41 +778,7 @@ impl NewConnectionWindow {
                             .flex_col()
                             .gap_0p5()
                             .child(self.field_label(rust_i18n::t!("NewConnectionWindow.private_key_file_label"), cx))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .gap_2()
-                                    .child(
-                                        Self::pill(
-                                            "key-tab-import",
-                                            rust_i18n::t!("SecurityAuth.tab_import_new_key"),
-                                            self.key_tab == KeyTab::ImportNew,
-                                            cx,
-                                        )
-                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                            this.key_tab = KeyTab::ImportNew;
-                                            cx.notify();
-                                        })),
-                                    )
-                                    .child(
-                                        Self::pill(
-                                            "key-tab-saved",
-                                            rust_i18n::t!("SecurityAuth.tab_saved_key"),
-                                            self.key_tab == KeyTab::Saved,
-                                            cx,
-                                        )
-                                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                                            this.key_tab = KeyTab::Saved;
-                                            cx.notify();
-                                        })),
-                                    ),
-                            )
-                            .child(if self.key_tab == KeyTab::Saved {
-                                self.render_saved_key_picker(cx).into_any_element()
-                            } else {
-                                self.render_import_new_key(cx).into_any_element()
-                            }),
+                            .child(self.render_saved_key_picker(cx)),
                     )
                     .child(self.field(
                         rust_i18n::t!("NewConnectionWindow.private_key_passphrase_placeholder"),
@@ -830,11 +796,15 @@ impl NewConnectionWindow {
             })
     }
 
-    /// The Key field's "Saved" tab: pick from the vault's shared keys.
-    /// Extracted verbatim from the pre-tab layout, no logic change.
+    /// The Key field's picker: a single dropdown, always shown (even with
+    /// zero saved keys) — lists existing keys plus two always-present
+    /// actions: "导入密钥文件..." (pick a file right here, no need to leave
+    /// this window) and "管理已保存的密钥..." (jump to Security & Auth for
+    /// rename/delete, which still only lives there).
     fn render_saved_key_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         let keys = self.ssh_keys.clone();
+        let has_keys = !keys.is_empty();
         let current_label: SharedString = self
             .selected_key_id
             .as_ref()
@@ -860,76 +830,71 @@ impl NewConnectionWindow {
                             },
                         ));
                     }
-                    menu
+                    if has_keys {
+                        menu = menu.separator();
+                    }
+                    let weak_for_import = weak.clone();
+                    let weak_for_manage = weak.clone();
+                    menu.item(
+                        PopupMenuItem::new(rust_i18n::t!("NewConnectionWindow.import_key_button")).on_click(
+                            move |_ev, window, cx| {
+                                let _ = weak_for_import.update(cx, |this, cx| {
+                                    this.start_import_new_key(window, cx);
+                                });
+                            },
+                        ),
+                    )
+                    .item(
+                        PopupMenuItem::new(rust_i18n::t!("NewConnectionWindow.manage_keys_button")).on_click(
+                            move |_ev, _window, cx| {
+                                let _ = weak_for_manage.update(cx, |this, cx| {
+                                    let _ = this.panel.update(cx, |panel, cx| panel.open_security_auth_panel(cx));
+                                });
+                            },
+                        ),
+                    )
                 }),
         )
     }
 
-    /// The Key field's "Import new" tab: file-picker button + a pending
-    /// (not-yet-saved) indicator. Extracted verbatim from the pre-tab
-    /// layout, no logic change.
-    fn render_import_new_key(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .when_some(self.pending_new_key.clone(), |el, (name, _, _)| {
-                el.child(
-                    div()
-                        .id("pending-new-ssh-key")
-                        .px_2()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(cx.theme().accent)
-                        .child(name),
-                )
-            })
-            .child(
-                div()
-                    .id("import-new-ssh-key")
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(cx.theme().secondary)
-                    .child(rust_i18n::t!("NewConnectionWindow.import_key_button"))
-                    .on_click(cx.listener(|_this, _ev: &ClickEvent, window, cx| {
-                        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
-                            files: true,
-                            directories: false,
-                            multiple: false,
-                            prompt: None,
-                        });
-                        // See the (removed) "browse private key path"
-                        // button this replaced for why `cx.spawn_in` +
-                        // `cx.update(|window, cx| ...)` is needed here
-                        // rather than a plain `cx.spawn`.
-                        cx.spawn_in(window, async move |this, cx| {
-                            let Ok(Ok(Some(paths))) = rx.await else {
-                                return;
-                            };
-                            let Some(path) = paths.into_iter().next() else {
-                                return;
-                            };
-                            let Ok(content) = std::fs::read(&path) else {
-                                return;
-                            };
-                            let name = path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_else(|| "key".to_string());
-                            let source_path = path.to_string_lossy().to_string();
-                            let _ = cx.update(|_window, cx| {
-                                let _ = this.update(cx, |this, cx| {
-                                    this.selected_key_id = None;
-                                    this.pending_new_key = Some((name, content, source_path));
-                                    cx.notify();
-                                });
-                            });
-                        })
-                        .detach();
-                    })),
-            )
+    /// Picks a key file, then stashes it as `pending_new_key` (consumed by
+    /// `resolve_key_id` at save time) — triggered from the saved-key
+    /// picker's "导入密钥文件..." menu item. Extracted so it can be called
+    /// from a `PopupMenuItem::on_click` (a plain closure with no direct
+    /// `&mut Self` access) via `weak.update(cx, |this, cx| this.start_import_new_key(window, cx))`.
+    fn start_import_new_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let Ok(content) = std::fs::read(&path) else {
+                return;
+            };
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "key".to_string());
+            let source_path = path.to_string_lossy().to_string();
+            let _ = cx.update(|_window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.selected_key_id = None;
+                    this.pending_new_key = Some((name, content, source_path));
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
+
 
 }
 

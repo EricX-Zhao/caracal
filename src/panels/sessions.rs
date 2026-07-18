@@ -885,16 +885,18 @@ impl SessionsPanel {
     /// Persistence happens on the next `upsert_connection`/`persist()` call
     /// (the connection referencing this key is always saved in the same
     /// user action), not immediately here, to avoid a double-write.
-    pub(crate) fn add_ssh_key(&mut self, entry: crate::config::SshKeyEntry) {
+    pub(crate) fn add_ssh_key(&mut self, entry: crate::config::SshKeyEntry, cx: &mut Context<Self>) {
         self.ssh_keys.push(entry);
+        cx.notify();
     }
 
     /// Renames an existing SSH key in place (content is never edited in
     /// place — replacing content means importing a new key via
     /// `add_ssh_key` again). No-op if `id` doesn't match any entry.
-    pub(crate) fn update_ssh_key(&mut self, id: &str, name: String) {
+    pub(crate) fn update_ssh_key(&mut self, id: &str, name: String, cx: &mut Context<Self>) {
         if let Some(entry) = self.ssh_keys.iter_mut().find(|k| k.id == id) {
             entry.name = name;
+            cx.notify();
         }
     }
 
@@ -902,8 +904,9 @@ impl SessionsPanel {
     /// referenced it is left with a dangling reference — `to_ssh_config`
     /// already fails cleanly for that case, and the connection form
     /// already handles reopening a dangling reference gracefully.
-    pub(crate) fn remove_ssh_key(&mut self, id: &str) {
+    pub(crate) fn remove_ssh_key(&mut self, id: &str, cx: &mut Context<Self>) {
         self.ssh_keys.retain(|k| k.id != id);
+        cx.notify();
     }
 
     pub(crate) fn saved_passwords(&self) -> &[crate::config::SavedPasswordEntry] {

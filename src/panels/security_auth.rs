@@ -172,7 +172,7 @@ impl SecurityAuthPanel {
                 .on_ok(move |_, window, cx| {
                     let new_name = name_input.read(cx).value().trim().to_string();
                     if !new_name.is_empty() {
-                        let _ = panel.update(cx, |p, _cx| p.update_ssh_key(&id, new_name));
+                        let _ = panel.update(cx, |p, cx| p.update_ssh_key(&id, new_name, cx));
                         let _ = panel.update(cx, |p, _cx| p.persist_for_security_auth());
                     }
                     window.close_dialog(cx);
@@ -201,7 +201,7 @@ impl SecurityAuthPanel {
                 .description(body)
                 .confirm()
                 .on_ok(move |_, window, cx| {
-                    let _ = panel.update(cx, |p, _cx| p.remove_ssh_key(&id));
+                    let _ = panel.update(cx, |p, cx| p.remove_ssh_key(&id, cx));
                     let _ = panel.update(cx, |p, _cx| p.persist_for_security_auth());
                     window.close_dialog(cx);
                     true
@@ -275,7 +275,7 @@ impl SecurityAuthPanel {
                                 source_path: Some(source_path.clone()),
                                 encrypted_content: vault.0.encrypt_bytes(&content),
                             };
-                            let _ = panel.update(cx, |p, _cx| p.add_ssh_key(entry));
+                            let _ = panel.update(cx, |p, cx| p.add_ssh_key(entry, cx));
                             let _ = panel.update(cx, |p, _cx| p.persist_for_security_auth());
                             window.close_dialog(cx);
                             true

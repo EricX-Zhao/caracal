@@ -395,6 +395,9 @@ NewConnectionWindow:
   import_key_button:
     zh-CN: "导入密钥文件..."
     en: "Import key file..."
+  manage_keys_button:
+    zh-CN: "管理已保存的密钥..."
+    en: "Manage saved keys..."
   type_local:
     zh-CN: "本地终端"
     en: "Local Terminal"

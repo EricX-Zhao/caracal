@@ -28,11 +28,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable, Font,
-    FontFallbacks, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, font,
-    prelude::FluentBuilder, px, size,
+    AnyView, AnyWindowHandle, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable,
+    Font, FontFallbacks, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, WindowBounds,
+    WindowHandle, WindowOptions, div, font, prelude::FluentBuilder, px, size,
 };
 use gpui_component::checkbox::Checkbox;
 use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelStyle};
@@ -332,6 +332,13 @@ pub struct Workspace {
     appearance_font_family: SharedString,
     appearance_font_fallback: SharedString,
     _subscriptions: Vec<Subscription>,
+    /// This window's own handle, captured at construction via
+    /// `window.window_handle()` — used by `open_security_auth_panel` to
+    /// bring this (main) window to the foreground when triggered from a
+    /// separate standalone window (`NewConnectionWindow`'s empty saved-key
+    /// picker), so the panel switch is actually visible rather than
+    /// happening silently behind whichever window currently has focus.
+    own_window: AnyWindowHandle,
 }
 
 impl Workspace {
@@ -492,6 +499,7 @@ impl Workspace {
             quick_commands_drag: None,
             active_title: "Caracal".into(),
             _subscriptions: vec![saved_sub],
+            own_window: window.window_handle(),
         }
     }
 
@@ -1220,10 +1228,13 @@ impl Workspace {
     /// Forces the left panel to Security & Auth — unlike `toggle_panel`,
     /// never closes it if already active. Called from `SessionsPanel`
     /// (itself called from `NewConnectionWindow`, a separate standalone
-    /// window with no other path back to this panel's slots).
+    /// window with no other path back to this panel's slots). Also
+    /// activates this (main) window — without it, the switch happens
+    /// invisibly behind whichever window currently has focus.
     pub(crate) fn open_security_auth_panel(&mut self, cx: &mut Context<Self>) {
         self.left_active = Some(PanelId::Security);
         cx.notify();
+        let _ = self.own_window.update(cx, |_view, window, _cx| window.activate_window());
     }
 
     /// Mouse-down on the quick-commands drawer's resize handle: record where
