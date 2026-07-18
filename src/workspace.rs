@@ -6,7 +6,9 @@
 //! The `DockArea` is used for the CENTER only (terminal tabs, plus future
 //! splits — it keeps its tab drag-docking). The left/right side regions are
 //! single-panel containers whose content is chosen by the activity bars and
-//! whose widths are controlled by an `h_resizable` group surrounding the body.
+//! whose widths are controlled by hand-rolled drag handles in `render_body`
+//! (not a `gpui_component` `h_resizable` group — see `left_width`'s doc
+//! comment for why).
 //!
 //! One connection per host (CLAUDE.md §2): SSH sessions are cached by host key
 //! in `ssh_sessions`, so a host's shell tab and SFTP browser share a single
@@ -36,7 +38,6 @@ use gpui_component::checkbox::Checkbox;
 use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelStyle};
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
-use gpui_component::resizable::{ResizableState, resizable_panel, h_resizable};
 use gpui_component::{ActiveTheme, Root, WindowExt, v_flex};
 
 use crate::config;
@@ -285,15 +286,24 @@ pub struct Workspace {
     right_active: Option<PanelId>,
 
     // --- horizontal body resize state ---------------------------------------
-    body_resize: Entity<ResizableState>,
+    /// Width of the left side region. A plain field, not a `gpui_component`
+    /// `ResizableState` — that state type keeps stale `bounds`/`size` for
+    /// whichever body-split panel is currently hidden via `.visible(false)`
+    /// (see `render_body`'s doc comment), which corrupted the *other*
+    /// panels' resize math (wrong min-width clamp + flicker while dragging).
+    /// Hand-rolled the same way the quick-commands drawer's height already
+    /// is, via raw mouse events (`start_left_resize`/`on_left_drag_move`/
+    /// `stop_left_resize`, and the `_right_` equivalents below).
+    left_width: Pixels,
+    /// `Some((mouse_x_at_drag_start, width_at_drag_start))` while the
+    /// left-region resize handle is being dragged; `None` otherwise.
+    left_drag: Option<(Pixels, Pixels)>,
+    /// Width of the right side region — mirrors `left_width` field-for-field.
+    right_width: Pixels,
+    right_drag: Option<(Pixels, Pixels)>,
     /// Current height of the quick-commands drawer, dragged via the handle
-    /// at its top edge. A plain field (not a `gpui_component` resizable
-    /// group) — nesting a `v_resizable` group inside one panel of the outer
-    /// `h_resizable("body-split")` group corrupted the *sibling* panels'
-    /// (left/right side regions) layout entirely, so the drag here is
-    /// implemented directly with raw mouse events instead
-    /// (`start_quick_commands_resize`/`on_quick_commands_drag_move`/
-    /// `stop_quick_commands_resize`).
+    /// at its top edge — the original hand-rolled-resize precedent that
+    /// `left_width`/`right_width` above now follow too.
     quick_commands_height: Pixels,
     /// `Some((mouse_y_at_drag_start, height_at_drag_start))` while the quick-
     /// commands resize handle is being dragged; `None` otherwise.
@@ -431,8 +441,6 @@ impl Workspace {
         let security_auth_panel: AnyView =
             cx.new(|cx| SecurityAuthPanel::new(saved.downgrade(), cx)).into();
 
-        let body_resize = cx.new(|_| ResizableState::default());
-
         let workspace_handle = cx.entity().downgrade();
         let quick_commands_panel = cx.new(|cx| QuickCommandsPanel::new(workspace_handle, cx));
 
@@ -463,7 +471,10 @@ impl Workspace {
             // `show_sftp`) or the user opens it manually; saved connections on the right.
             left_active: None,
             right_active: Some(PanelId::Sessions),
-            body_resize,
+            left_width: px(200.0),
+            left_drag: None,
+            right_width: px(220.0),
+            right_drag: None,
             quick_commands_height: px(220.0),
             quick_commands_drag: None,
             active_title: "Caracal".into(),
@@ -1238,6 +1249,62 @@ impl Workspace {
             cx.notify();
         }
     }
+
+    /// Mouse-down on the left region's resize handle: record where the drag
+    /// started (mouse X + current width) so `on_left_drag_move` can compute
+    /// the new width from the delta.
+    fn start_left_resize(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.left_drag = Some((ev.position.x, self.left_width));
+        cx.notify();
+    }
+
+    /// No-ops when not currently dragging (called unconditionally from the
+    /// outer `Render for Workspace`'s `on_mouse_move`, same pattern as
+    /// `on_quick_commands_drag_move`).
+    fn on_left_drag_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some((start_x, start_width)) = self.left_drag else {
+            return;
+        };
+        let delta = ev.position.x - start_x;
+        let new_width = (start_width + delta).clamp(px(180.0), px(560.0));
+        if new_width != self.left_width {
+            self.left_width = new_width;
+            cx.notify();
+        }
+    }
+
+    fn stop_left_resize(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.left_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Mirror of `start_left_resize` for the right region.
+    fn start_right_resize(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.right_drag = Some((ev.position.x, self.right_width));
+        cx.notify();
+    }
+
+    /// Dragging this handle left (toward the center) should *grow* the
+    /// right region, hence `start_x - mouse_x` — the mirror image of
+    /// `on_left_drag_move`'s `mouse_x - start_x`.
+    fn on_right_drag_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some((start_x, start_width)) = self.right_drag else {
+            return;
+        };
+        let delta = start_x - ev.position.x;
+        let new_width = (start_width + delta).clamp(px(200.0), px(500.0));
+        if new_width != self.right_width {
+            self.right_width = new_width;
+            cx.notify();
+        }
+    }
+
+    fn stop_right_resize(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.right_drag.take().is_some() {
+            cx.notify();
+        }
+    }
 }
 
 impl Workspace {
@@ -1308,117 +1375,138 @@ impl Workspace {
             .child(col)
     }
 
-    /// The body row between the two activity bars: an `h_resizable` group
-    /// containing three panels (left region | center | right region).
+    /// The body row between the two activity bars: left region | center dock
+    /// | right region, with a hand-rolled drag handle between each side
+    /// region and the center (see `left_width`'s doc comment for why this
+    /// isn't a `gpui_component` `h_resizable` group).
     ///
-    /// The left/right panels are ALWAYS present as group children — toggling
-    /// `left_active`/`right_active` only flips `.visible(..)` — instead of
-    /// conditionally adding/removing them. `ResizableState` indexes its
-    /// per-panel sizes positionally, and `sync_panels_count` only ever
-    /// extends/truncates the *end* of that list; if the left panel's
-    /// `resizable_panel()` came and went, a later re-add would land at index
-    /// 0 but inherit whatever size used to live at that index (the center
-    /// dock's, typically most of the window width) — hence a freshly-opened
-    /// SFTP panel rendering full-width. Keeping a stable 3-panel identity
-    /// (the pattern gpui-component's own resizable story uses for a
-    /// collapsible sidebar) avoids the index shift entirely.
+    /// Side widths are absolute pixels that do **not** rescale when the
+    /// window itself resizes — VSCode-style: a sidebar keeps whatever width
+    /// the user last dragged it to, and the center dock absorbs the change
+    /// via its own `flex_1`.
     fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let border = cx.theme().border;
         let left_view = self.left_active.and_then(|id| self.resolve(id));
         let right_view = self.right_active.and_then(|id| self.resolve(id));
+        let show_left = left_view.is_some();
+        let show_right = right_view.is_some();
 
-        let group = h_resizable("body-split")
-            .with_state(&self.body_resize)
+        let left_region = if let Some(view) = left_view {
+            div()
+                .h_full()
+                .flex_shrink_0()
+                .w(self.left_width)
+                .child(side_region_content(view, border, true))
+                .into_any_element()
+        } else {
+            div().h_full().flex_shrink_0().w(px(0.0)).into_any_element()
+        };
+
+        let left_handle = if show_left {
+            div()
+                .id("body-left-resize-handle")
+                .h_full()
+                .w(px(4.0))
+                .flex_shrink_0()
+                .cursor(gpui::CursorStyle::ResizeColumn)
+                .bg(border)
+                .hover(|s| s.bg(cx.theme().primary))
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::start_left_resize))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
+        let right_handle = if show_right {
+            div()
+                .id("body-right-resize-handle")
+                .h_full()
+                .w(px(4.0))
+                .flex_shrink_0()
+                .cursor(gpui::CursorStyle::ResizeColumn)
+                .bg(border)
+                .hover(|s| s.bg(cx.theme().primary))
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::start_right_resize))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
+        let right_region = if let Some(view) = right_view {
+            div()
+                .h_full()
+                .flex_shrink_0()
+                .w(self.right_width)
+                .child(side_region_content(view, border, false))
+                .into_any_element()
+        } else {
+            div().h_full().flex_shrink_0().w(px(0.0)).into_any_element()
+        };
+
+        let center = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .child(
-                resizable_panel()
-                    .visible(left_view.is_some())
-                    // Wide enough that the SFTP file list's 名称/修改时间/大小
-                    // columns are visible without resizing on first open.
-                    .size(px(200.0))
-                    .size_range(px(180.0)..px(560.0))
-                    .child(
-                        left_view
-                            .map(|view| side_region_content(view, border, true))
-                            .unwrap_or_else(|| div().into_any_element()),
-                    ),
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(self.dock_area.clone()),
             )
-            .child(
-                resizable_panel().child(
+            .when(self.show_quick_commands, |d| {
+                d.child(
                     div()
+                        .w_full()
+                        .h(self.quick_commands_height)
+                        .flex_shrink_0()
                         .flex()
                         .flex_col()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
+                        .child(
+                            // Drag handle: a thin strip at the drawer's top
+                            // edge. Mouse-move/up are handled on the outer
+                            // `Render for Workspace` div (`on_quick_commands_
+                            // drag_move`/`stop_quick_commands_resize`) so the
+                            // drag keeps tracking even if the cursor strays
+                            // off this thin strip mid-drag.
+                            div()
+                                .id("quick-commands-resize-handle")
+                                .w_full()
+                                .h(px(4.0))
+                                .flex_shrink_0()
+                                .cursor(gpui::CursorStyle::ResizeRow)
+                                .bg(border)
+                                .hover(|s| s.bg(cx.theme().primary))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(Self::start_quick_commands_resize),
+                                ),
+                        )
                         .child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.0))
                                 .overflow_hidden()
-                                .child(self.dock_area.clone()),
-                        )
-                        .when(self.show_quick_commands, |d| {
-                            d.child(
-                                div()
-                                    .w_full()
-                                    .h(self.quick_commands_height)
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        // Drag handle: a thin strip at the drawer's
-                                        // top edge. Mouse-move/up are handled on the
-                                        // outer `Render for Workspace` div (Step in
-                                        // `on_quick_commands_drag_move`/
-                                        // `stop_quick_commands_resize`) so the drag
-                                        // keeps tracking even if the cursor strays off
-                                        // this thin strip mid-drag.
-                                        div()
-                                            .id("quick-commands-resize-handle")
-                                            .w_full()
-                                            .h(px(4.0))
-                                            .flex_shrink_0()
-                                            .cursor(gpui::CursorStyle::ResizeRow)
-                                            .bg(border)
-                                            .hover(|s| s.bg(cx.theme().primary))
-                                            .on_mouse_down(
-                                                MouseButton::Left,
-                                                cx.listener(Self::start_quick_commands_resize),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_h(px(0.0))
-                                            .overflow_hidden()
-                                            .child(self.quick_commands_panel.clone()),
-                                    ),
-                            )
-                        }),
-                ),
-            )
-            .child(
-                resizable_panel()
-                    .visible(right_view.is_some())
-                    // Wide enough that a connection row's subtitle (the
-                    // longest realistic case being `user@xxx.xxx.xxx.xxx:port`,
-                    // ~24 chars at `text_xs`) fits next to the row's icon and
-                    // its always-visible (if dim) edit/delete action icons
-                    // without wrapping — `render_connection` has no
-                    // truncation/ellipsis handling, so anything narrower
-                    // wraps the subtitle onto a second line.
-                    .size(px(220.0))
-                    .size_range(px(200.0)..px(500.0))
-                    .child(
-                        right_view
-                            .map(|view| side_region_content(view, border, false))
-                            .unwrap_or_else(|| div().into_any_element()),
-                    ),
-            );
+                                .child(self.quick_commands_panel.clone()),
+                        ),
+                )
+            });
 
-        // Wrap in a flex_1 container so the group fills the remaining row width
-        // alongside the two fixed 44px activity bars.
-        div().flex_1().min_w(px(0.0)).child(group)
+        // Wrap in a flex_1 container so the row fills the remaining row
+        // width alongside the two fixed 44px activity bars.
+        div().flex_1().min_w(px(0.0)).child(
+            div()
+                .flex()
+                .flex_row()
+                .size_full()
+                .child(left_region)
+                .child(left_handle)
+                .child(center)
+                .child(right_handle)
+                .child(right_region),
+        )
     }
 
     /// Bottom status bar: a right-aligned cursor-position readout for the
@@ -1487,7 +1575,11 @@ impl Render for Workspace {
             // handled here, at the top level, so the drag keeps tracking
             // even if the cursor strays off the thin 4px handle strip.
             .on_mouse_move(cx.listener(Self::on_quick_commands_drag_move))
+            .on_mouse_move(cx.listener(Self::on_left_drag_move))
+            .on_mouse_move(cx.listener(Self::on_right_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::stop_quick_commands_resize))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::stop_left_resize))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::stop_right_resize))
             .child(header)
             .child(
                 div()
