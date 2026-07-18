@@ -549,6 +549,9 @@ Sftp:
   file_transfers_header:
     zh-CN: "文件传输"
     en: "File Transfers"
+  clear_completed_transfers_tooltip:
+    zh-CN: "清理已完成传输"
+    en: "Clear Completed Transfers"
   transfer_queued:
     zh-CN: "排队中"
     en: "Queued"

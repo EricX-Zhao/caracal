@@ -1097,6 +1097,17 @@ impl SftpPanel {
         self.session.sftp_cancel(id);
     }
 
+    /// Drops every transfer whose status is terminal (`Done`,
+    /// `DoneWithFailures`, `Failed`, or `Cancelled`) — success, partial
+    /// failure, hard failure, and user-cancelled all count as "completed"
+    /// for clearing purposes. In-flight transfers (`Queued`/`Active`) are
+    /// untouched.
+    fn clear_completed_transfers(&mut self, cx: &mut Context<Self>) {
+        self.transfers
+            .retain(|t| matches!(t.status, TransferStatus::Queued | TransferStatus::Active));
+        cx.notify();
+    }
+
     /// Opens a completed transfer's local file with the OS default handler.
     fn open_transfer_file(&self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(t) = self.transfers.iter().find(|t| t.id == id) else {
@@ -1864,6 +1875,15 @@ impl SftpPanel {
     }
 
     fn render_transfer_header(&self, cx: &Context<Self>) -> impl IntoElement {
+        let has_completed = self.transfers.iter().any(|t| {
+            matches!(
+                t.status,
+                TransferStatus::Done
+                    | TransferStatus::DoneWithFailures(_)
+                    | TransferStatus::Failed(_)
+                    | TransferStatus::Cancelled
+            )
+        });
         div()
             .flex()
             .flex_row()
@@ -1874,7 +1894,16 @@ impl SftpPanel {
             .border_color(cx.theme().border)
             .bg(cx.theme().muted)
             .text_color(cx.theme().foreground)
-            .child(rust_i18n::t!("Sftp.file_transfers_header"))
+            .child(div().flex_1().child(rust_i18n::t!("Sftp.file_transfers_header")))
+            .child(
+                Button::new("sftp-clear-completed-transfers")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::Delete)
+                    .tooltip(rust_i18n::t!("Sftp.clear_completed_transfers_tooltip"))
+                    .disabled(!has_completed)
+                    .on_click(cx.listener(|this, _, _w, cx| this.clear_completed_transfers(cx))),
+            )
     }
 
     fn render_transfer_body(&self, cx: &Context<Self>) -> impl IntoElement {
