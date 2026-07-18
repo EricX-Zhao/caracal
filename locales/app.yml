@@ -653,9 +653,6 @@ SecurityAuth:
   tab_keys:
     zh-CN: "密钥"
     en: "Keys"
-  tab_passwords:
-    zh-CN: "密码"
-    en: "Passwords"
   add_key_button:
     zh-CN: "添加密钥"
     en: "Add key"
@@ -677,42 +674,9 @@ SecurityAuth:
   delete_key_title:
     zh-CN: "删除密钥？"
     en: "Delete key?"
-  delete_password_title:
-    zh-CN: "删除密码？"
-    en: "Delete password?"
   delete_confirm_body:
     zh-CN: "此操作不可撤销。"
     en: "This cannot be undone."
   delete_confirm_body_in_use:
     zh-CN: "有 %{count} 个连接正在使用它——删除后这些连接将无法使用，直到重新选择。是否继续删除？"
     en: "Used by %{count} connection(s) — deleting leaves them unable to connect until you pick a different one. Delete anyway?"
-  add_password_button:
-    zh-CN: "添加密码"
-    en: "Add password"
-  add_password_title:
-    zh-CN: "添加已保存密码"
-    en: "Add saved password"
-  edit_button:
-    zh-CN: "编辑"
-    en: "Edit"
-  edit_password_title:
-    zh-CN: "编辑已保存密码"
-    en: "Edit saved password"
-  password_name_placeholder:
-    zh-CN: "名称"
-    en: "Name"
-  tab_direct_password:
-    zh-CN: "直接输入"
-    en: "Direct"
-  tab_saved_password:
-    zh-CN: "已保存"
-    en: "Saved"
-  tab_import_new_key:
-    zh-CN: "导入新密钥"
-    en: "Import new"
-  tab_saved_key:
-    zh-CN: "已保存"
-    en: "Saved"
-  add_new_saved_password_row:
-    zh-CN: "+ 添加密码..."
-    en: "+ Add password..."

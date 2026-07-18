@@ -913,28 +913,6 @@ impl SessionsPanel {
         &self.saved_passwords
     }
 
-    /// Adds a newly-created saved password. Mirrors `add_ssh_key` —
-    /// persistence happens on the next `persist()`-triggering action, not
-    /// immediately here.
-    pub(crate) fn add_saved_password(&mut self, entry: crate::config::SavedPasswordEntry) {
-        self.saved_passwords.push(entry);
-    }
-
-    /// Renames/re-encrypts an existing saved password in place. No-op if
-    /// `id` doesn't match any entry (e.g. it was deleted concurrently).
-    pub(crate) fn update_saved_password(&mut self, id: &str, name: String, encrypted_password: String) {
-        if let Some(entry) = self.saved_passwords.iter_mut().find(|p| p.id == id) {
-            entry.name = name;
-            entry.encrypted_password = encrypted_password;
-        }
-    }
-
-    /// Removes a saved password. Same dangling-reference contract as
-    /// `remove_ssh_key`.
-    pub(crate) fn remove_saved_password(&mut self, id: &str) {
-        self.saved_passwords.retain(|p| p.id != id);
-    }
-
     /// Connection display names currently referencing a given saved key,
     /// for the delete-confirm dialog's "used by N connections" warning.
     pub(crate) fn connections_using_ssh_key(&self, id: &str) -> Vec<String> {
@@ -966,15 +944,6 @@ impl SessionsPanel {
         let saved_passwords = std::mem::take(&mut self.saved_passwords);
         crate::vault::migrate_password_ids(&mut self.connections, &saved_passwords, master);
         true
-    }
-
-    /// Same as `connections_using_ssh_key`, for saved passwords.
-    pub(crate) fn connections_using_saved_password(&self, id: &str) -> Vec<String> {
-        self.connections
-            .iter()
-            .filter(|c| c.password_id.as_deref() == Some(id))
-            .map(|c| c.display_name())
-            .collect()
     }
 
     /// Write the entire current connections + groups list to a
