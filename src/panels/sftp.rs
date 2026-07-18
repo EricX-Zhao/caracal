@@ -56,6 +56,10 @@ enum TransferStatus {
     Queued,
     Active,
     Done,
+    /// A directory transfer completed but skipped one or more files
+    /// (`TransferEvent::DoneWithFailures`) — carries their remote paths for
+    /// display. Never constructed for single-file transfers.
+    DoneWithFailures(Vec<String>),
     Failed(String),
     Cancelled,
 }
@@ -85,7 +89,7 @@ impl Transfer {
     fn progress(&self) -> f32 {
         if self.total == 0 {
             match self.status {
-                TransferStatus::Done => 1.0,
+                TransferStatus::Done | TransferStatus::DoneWithFailures(_) => 1.0,
                 _ => 0.0,
             }
         } else {
@@ -624,13 +628,68 @@ impl SftpPanel {
             (entry.name.clone(), entry.is_dir)
         };
         if is_dir {
-            window.push_notification(
-                (NotificationType::Warning, rust_i18n::t!("Sftp.folder_download_unsupported")),
-                cx,
-            );
-            return;
+            self.download_dir_entry(&name, cx);
+        } else {
+            self.download(&name, cx);
         }
-        self.download(&name, cx);
+    }
+
+    /// Mirrors `download`, but for a directory entry: downloads the whole
+    /// remote subtree into `self.download_dir.join(name)` via
+    /// `sftp_download_dir`. The resulting `Transfer` row shows aggregate
+    /// progress across every file in the tree (see
+    /// `TransferEvent::DoneWithFailures` for the partial-failure case).
+    fn download_dir_entry(&mut self, name: &str, cx: &mut Context<Self>) {
+        let remote = remote_join(&self.path, name);
+        let display_name = name.to_string();
+        let local = self.download_dir.join(name);
+        let session = self.session.clone();
+
+        let placeholder_ix = self.transfers.len();
+        self.transfers.push(Transfer {
+            id: 0,
+            name: display_name,
+            direction: TransferDirection::Download,
+            total: 0,
+            transferred: 0,
+            status: TransferStatus::Queued,
+            started_at: Instant::now(),
+            local_path: local.clone(),
+        });
+        cx.notify();
+
+        let _ = std::fs::create_dir_all(&self.download_dir);
+
+        cx.spawn(async move |this, cx| {
+            let hrx = session.sftp_download_dir(remote, local.clone());
+            let handle = match hrx.recv_async().await {
+                Ok(h) => h,
+                Err(_) => {
+                    this.update(cx, |this, cx| {
+                        if let Some(t) = this.transfers.get_mut(placeholder_ix) {
+                            t.status = TransferStatus::Failed("session closed".into());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let TransferHandle { id, events } = handle;
+            let patched = this
+                .update(cx, |this, cx| {
+                    if let Some(t) = this.transfers.get_mut(placeholder_ix) {
+                        t.id = id;
+                        t.status = TransferStatus::Active;
+                    }
+                    cx.notify();
+                })
+                .is_ok();
+            if patched {
+                Self::pump_events(this, id, events, cx).await;
+            }
+        })
+        .detach();
     }
 
     fn upload(&mut self, cx: &mut Context<Self>) {
@@ -686,6 +745,91 @@ impl SftpPanel {
             let local_path = local.clone();
             let remote = remote_join(&path, &name);
             let hrx = session.sftp_upload(local, remote);
+            let handle = match hrx.recv_async().await {
+                Ok(h) => h,
+                Err(_) => {
+                    this.update(cx, |this, cx| {
+                        if let Some(t) = this.transfers.get_mut(placeholder_ix) {
+                            t.status = TransferStatus::Failed("session closed".into());
+                        }
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+            let TransferHandle { id, events } = handle;
+            this.update(cx, |this, cx| {
+                if let Some(t) = this.transfers.get_mut(placeholder_ix) {
+                    t.id = id;
+                    t.name = name.clone();
+                    t.status = TransferStatus::Active;
+                    t.local_path = local_path.clone();
+                }
+                cx.notify();
+            })
+            .ok();
+            Self::pump_events(this, id, events, cx).await;
+        })
+        .detach();
+    }
+
+    /// Mirrors `upload`, but lets the user pick a local folder (via a
+    /// directories-only native picker — mixing file and folder selection in
+    /// one dialog isn't reliably supported, hence the separate toolbar
+    /// button/menu item) and uploads the whole subtree via
+    /// `sftp_upload_dir`.
+    fn upload_dir(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        let session = self.session.clone();
+        let path = self.path.clone();
+
+        let placeholder_ix = self.transfers.len();
+        self.transfers.push(Transfer {
+            id: 0,
+            name: "(selecting…)".into(),
+            direction: TransferDirection::Upload,
+            total: 0,
+            transferred: 0,
+            status: TransferStatus::Queued,
+            started_at: Instant::now(),
+            local_path: PathBuf::new(),
+        });
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                this.update(cx, |this, cx| {
+                    if placeholder_ix < this.transfers.len() {
+                        this.transfers.remove(placeholder_ix);
+                    }
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            let Some(local) = paths.into_iter().next() else {
+                this.update(cx, |this, cx| {
+                    if placeholder_ix < this.transfers.len() {
+                        this.transfers.remove(placeholder_ix);
+                    }
+                    cx.notify();
+                })
+                .ok();
+                return;
+            };
+            let name = local
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "upload".to_string());
+            let local_path = local.clone();
+            let remote = remote_join(&path, &name);
+            let hrx = session.sftp_upload_dir(local, remote);
             let handle = match hrx.recv_async().await {
                 Ok(h) => h,
                 Err(_) => {
@@ -988,6 +1132,7 @@ impl SftpPanel {
         };
         let local_path = t.local_path.clone();
         let name = t.name.clone();
+        let is_dir = local_path.is_dir();
         let weak_panel = cx.entity().downgrade();
 
         window.open_alert_dialog(cx, move |alert, _window, _cx| {
@@ -998,12 +1143,20 @@ impl SftpPanel {
                 .description(rust_i18n::t!(
                     "Sftp.confirm_delete_body",
                     name = name.clone(),
-                    folder_note = String::new()
+                    folder_note = if is_dir {
+                        rust_i18n::t!("Sftp.confirm_delete_folder_note").to_string()
+                    } else {
+                        String::new()
+                    }
                 ))
                 .confirm()
                 .on_ok(move |_, window, cx| {
                     window.close_dialog(cx);
-                    let _ = std::fs::remove_file(&local_path);
+                    if is_dir {
+                        let _ = std::fs::remove_dir_all(&local_path);
+                    } else {
+                        let _ = std::fs::remove_file(&local_path);
+                    }
                     let _ = weak_panel.update(cx, |this, cx| {
                         this.transfers.retain(|t| t.id != id);
                         cx.notify();
@@ -1055,6 +1208,7 @@ impl SftpPanel {
                 TransferEvent::Done { .. }
                     | TransferEvent::Failed { .. }
                     | TransferEvent::Cancelled { .. }
+                    | TransferEvent::DoneWithFailures { .. }
             );
             let updated = this
                 .update(cx, |this, cx| {
@@ -1072,6 +1226,10 @@ impl SftpPanel {
                         TransferEvent::Done { transferred } => {
                             t.transferred = transferred;
                             t.status = TransferStatus::Done;
+                        }
+                        TransferEvent::DoneWithFailures { transferred, failed_paths } => {
+                            t.transferred = transferred;
+                            t.status = TransferStatus::DoneWithFailures(failed_paths);
                         }
                         TransferEvent::Failed { error } => {
                             t.status = TransferStatus::Failed(error);
@@ -1428,6 +1586,14 @@ impl SftpPanel {
                     .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
             )
             .child(
+                Button::new("sftp-upload-dir")
+                    .xsmall()
+                    .ghost()
+                    .icon(icon(AppIcon::Upload))
+                    .tooltip(rust_i18n::t!("Sftp.upload_folder_tooltip"))
+                    .on_click(cx.listener(|this, _, _w, cx| this.upload_dir(cx))),
+            )
+            .child(
                 Button::new("sftp-download")
                     .xsmall()
                     .ghost()
@@ -1682,6 +1848,12 @@ impl SftpPanel {
                     TransferStatus::Done => {
                         rust_i18n::t!("Sftp.transfer_done", size = human_size(t.transferred)).to_string()
                     }
+                    TransferStatus::DoneWithFailures(failed) => rust_i18n::t!(
+                        "Sftp.transfer_done_with_failures",
+                        size = human_size(t.transferred),
+                        count = failed.len()
+                    )
+                    .to_string(),
                     TransferStatus::Failed(e) => rust_i18n::t!("Sftp.transfer_failed", error = e).to_string(),
                     TransferStatus::Cancelled => rust_i18n::t!("Sftp.transfer_cancelled").to_string(),
                 };
@@ -1689,6 +1861,7 @@ impl SftpPanel {
                 let bar_color = match t.status {
                     TransferStatus::Failed(_) => cx.theme().danger,
                     TransferStatus::Done => cx.theme().success,
+                    TransferStatus::DoneWithFailures(_) => cx.theme().warning,
                     TransferStatus::Cancelled => cx.theme().muted_foreground,
                     _ => cx.theme().primary,
                 };
@@ -1696,7 +1869,10 @@ impl SftpPanel {
                     t.status,
                     TransferStatus::Queued | TransferStatus::Active
                 );
-                let is_done = matches!(t.status, TransferStatus::Done);
+                let is_done = matches!(
+                    t.status,
+                    TransferStatus::Done | TransferStatus::DoneWithFailures(_)
+                );
                 let transfer_id = t.id;
                 let row = div()
                     .flex()
@@ -1993,6 +2169,50 @@ fn human_mtime(mtime: u32) -> String {
     let year = if month <= 2 { y + 1 } else { y };
 
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+#[cfg(test)]
+mod transfer_progress_tests {
+    use super::*;
+
+    fn transfer_with(status: TransferStatus, total: u64, transferred: u64) -> Transfer {
+        Transfer {
+            id: 1,
+            name: "test".to_string(),
+            direction: TransferDirection::Download,
+            total,
+            transferred,
+            status,
+            started_at: Instant::now(),
+            local_path: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn done_with_failures_reports_full_progress_when_total_is_zero() {
+        let t = transfer_with(TransferStatus::DoneWithFailures(vec!["a.txt".into()]), 0, 0);
+        assert_eq!(t.progress(), 1.0);
+    }
+
+    #[test]
+    fn done_with_failures_reports_ratio_when_total_is_known() {
+        let t = transfer_with(TransferStatus::DoneWithFailures(vec!["a.txt".into()]), 100, 80);
+        assert_eq!(t.progress(), 0.8);
+    }
+
+    #[test]
+    fn clear_completed_transfers_keeps_only_in_flight_rows() {
+        let mut transfers = vec![
+            transfer_with(TransferStatus::Queued, 100, 0),
+            transfer_with(TransferStatus::Active, 100, 50),
+            transfer_with(TransferStatus::Done, 100, 100),
+            transfer_with(TransferStatus::DoneWithFailures(vec!["a".into()]), 100, 90),
+            transfer_with(TransferStatus::Failed("boom".into()), 100, 0),
+            transfer_with(TransferStatus::Cancelled, 100, 10),
+        ];
+        transfers.retain(|t| matches!(t.status, TransferStatus::Queued | TransferStatus::Active));
+        assert_eq!(transfers.len(), 2);
+    }
 }
 
 #[cfg(test)]

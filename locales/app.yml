@@ -444,9 +444,6 @@ Sftp:
   select_file_to_download:
     zh-CN: "请先选中一个文件再点下载"
     en: "Select a file first, then click Download"
-  folder_download_unsupported:
-    zh-CN: "暂不支持下载文件夹"
-    en: "Downloading folders isn't supported yet"
   rename_failed_slash:
     zh-CN: "重命名失败: 名称不能包含 \"/\""
     en: "Rename failed: name cannot contain \"/\""
@@ -519,6 +516,9 @@ Sftp:
   upload_tooltip:
     zh-CN: "上传"
     en: "Upload"
+  upload_folder_tooltip:
+    zh-CN: "上传文件夹"
+    en: "Upload Folder"
   go_up_tooltip:
     zh-CN: "向上一级"
     en: "Go Up"
@@ -555,6 +555,9 @@ Sftp:
   transfer_done:
     zh-CN: "完成 %{size}"
     en: "Done %{size}"
+  transfer_done_with_failures:
+    zh-CN: "完成 %{size}，%{count} 个失败"
+    en: "Done %{size}, %{count} failed"
   transfer_failed:
     zh-CN: "失败: %{error}"
     en: "Failed: %{error}"
