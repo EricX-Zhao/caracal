@@ -1602,7 +1602,7 @@ impl SftpPanel {
                 Button::new("sftp-upload-dir")
                     .xsmall()
                     .ghost()
-                    .icon(icon(AppIcon::Upload))
+                    .icon(icon(AppIcon::UploadFolder))
                     .tooltip(rust_i18n::t!("Sftp.upload_folder_tooltip"))
                     .on_click(cx.listener(|this, _, _w, cx| this.upload_dir(cx))),
             )

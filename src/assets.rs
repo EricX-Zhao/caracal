@@ -1,6 +1,6 @@
 //! 自定义 AssetSource：包装 `gpui_component_assets::Assets`（上游 lucide 图标集），
 //! 叠加本项目自定义 SVG 图标（upload / download / file-plus / folder-plus /
-//! refresh-cw / trash-2 / pencil / server）。
+//! refresh-cw / trash-2 / pencil / server / folder-up）。
 //!
 //! 上游没有的图标在这里补充，查找路径先查本地，再 fallthrough 到上游。
 //! 这样 `Icon::new(IconName::Upload)` 能直接渲染自定义 SVG，无需改调用方。
@@ -41,6 +41,10 @@ const LOCAL_ICONS: &[(&str, &[u8])] = &[
     (
         "icons/server.svg",
         include_bytes!("../assets/icons/server.svg"),
+    ),
+    (
+        "icons/folder-up.svg",
+        include_bytes!("../assets/icons/folder-up.svg"),
     ),
 ];
 

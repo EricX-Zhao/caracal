@@ -23,6 +23,7 @@ pub fn icon(a: AppIcon) -> Icon {
     match a {
         // 自定义 SVG 图标（上游 lucide 集合里没有精确对应）
         AppIcon::Upload => Icon::empty().path("icons/upload.svg"),
+        AppIcon::UploadFolder => Icon::empty().path("icons/folder-up.svg"),
         AppIcon::Download => Icon::empty().path("icons/download.svg"),
         AppIcon::NewFile => Icon::empty().path("icons/file-plus.svg"),
         AppIcon::NewFolder => Icon::empty().path("icons/folder-plus.svg"),
@@ -58,6 +59,7 @@ pub enum AppIcon {
     NewFile,
     NewFolder,
     Upload,
+    UploadFolder,
     Download,
     Delete,
     Up,
@@ -124,7 +126,7 @@ impl From<AppIcon> for IconName {
             WindowClose => IconName::WindowClose,
             // Upload / Download / Pencil / Sessions are handled by custom SVG in
             // `icon()`, not reachable here.
-            Upload | Download | Pencil | Sessions => unreachable!(),
+            Upload | UploadFolder | Download | Pencil | Sessions => unreachable!(),
         }
     }
 }
