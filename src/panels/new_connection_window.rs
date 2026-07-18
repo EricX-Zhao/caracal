@@ -40,12 +40,6 @@ const ICON_OPTIONS: &[(Option<&str>, &str, AppIcon)] = &[
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PasswordTab {
-    Direct,
-    Saved,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyTab {
     ImportNew,
     Saved,
@@ -74,22 +68,6 @@ pub struct NewConnectionWindow {
     pending_new_key: Option<(String, Vec<u8>, String)>,
     /// Snapshot of the vault's shared keys, for the picker list.
     ssh_keys: Vec<crate::config::SshKeyEntry>,
-    /// Which sub-tab the Password field is on. `Direct` is always the
-    /// default/starting tab, including when editing a connection with
-    /// `password_id: Some` and that entry has since been deleted —
-    /// `to_ssh_config` handles the dangling case at connect time; here it
-    /// just means the picker opens with nothing pre-selected.
-    password_tab: PasswordTab,
-    /// `Some(id)` when an existing saved password is selected on the
-    /// Saved tab.
-    selected_password_id: Option<String>,
-    /// Snapshot of the vault's shared saved passwords, for the picker list.
-    saved_passwords: Vec<crate::config::SavedPasswordEntry>,
-    /// `true` while the inline "add a new saved password" mini-form is
-    /// expanded within the Saved tab.
-    adding_new_saved_password: bool,
-    new_saved_password_name: Entity<InputState>,
-    new_saved_password_value: Entity<InputState>,
     /// Which sub-tab the Key field is on — a pure UI reshuffle of the
     /// existing picker (key auth is always reference-based; this just
     /// splits "import a new one" from "pick an existing one" into two
@@ -120,7 +98,6 @@ impl NewConnectionWindow {
         group_id: Option<String>,
         new_sort_order: i32,
         ssh_keys: Vec<crate::config::SshKeyEntry>,
-        saved_passwords: Vec<crate::config::SavedPasswordEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -147,12 +124,6 @@ impl NewConnectionWindow {
                 .as_ref()
                 .and_then(|ct| vault.and_then(|v| v.0.decrypt_str(ct).ok()))
         });
-        let password_tab = if conn.as_ref().and_then(|c| c.password_id.clone()).is_some() {
-            PasswordTab::Saved
-        } else {
-            PasswordTab::Direct
-        };
-        let selected_password_id = conn.as_ref().and_then(|c| c.password_id.clone());
         let key_tab = if conn.as_ref().map(|c| c.auth_method.clone()).as_deref() == Some("key") {
             KeyTab::Saved
         } else {
@@ -203,18 +174,6 @@ impl NewConnectionWindow {
             selected_key_id: conn.as_ref().and_then(|c| c.private_key_id.clone()),
             pending_new_key: None,
             ssh_keys,
-            password_tab,
-            selected_password_id,
-            saved_passwords,
-            adding_new_saved_password: false,
-            new_saved_password_name: cx.new(|cx| {
-                InputState::new(window, cx).placeholder(rust_i18n::t!("SecurityAuth.password_name_placeholder"))
-            }),
-            new_saved_password_value: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .masked(true)
-                    .placeholder(rust_i18n::t!("NewConnectionWindow.password_placeholder"))
-            }),
             key_tab,
             private_key_passphrase: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -283,17 +242,7 @@ impl NewConnectionWindow {
                 // switching to key auth would linger even though it's
                 // never used to connect (mirrors why `duplicate()` clears
                 // `encrypted_key_passphrase` when copying a connection).
-                // Computed as locals before the struct literal below since
-                // `resolve_key_id` needs `&mut self` (it may register a
-                // newly-imported key with the panel), which can't overlap
-                // with the `&self.field.read(cx)` borrows used for the
-                // other fields in the same literal.
-                let password_id = if self.auth_method == "password" && self.password_tab == PasswordTab::Saved {
-                    self.selected_password_id.clone()
-                } else {
-                    None
-                };
-                let plaintext_password = if self.auth_method == "key" || password_id.is_some() {
+                let plaintext_password = if self.auth_method == "key" {
                     String::new()
                 } else {
                     self.password.read(cx).value().to_string()
@@ -342,7 +291,7 @@ impl NewConnectionWindow {
                     encrypted_password,
                     encrypted_key_passphrase,
                     private_key_id: key_id,
-                    password_id,
+                    password_id: None,
                 }
             }
             ConnectionType::Local => {
@@ -872,7 +821,12 @@ impl NewConnectionWindow {
                     ))
                     .into_any_element()
             } else {
-                self.render_password_tabs(cx).into_any_element()
+                self.field(
+                    rust_i18n::t!("NewConnectionWindow.password_placeholder"),
+                    &self.password.clone(),
+                    cx,
+                )
+                .into_any_element()
             })
     }
 
@@ -977,163 +931,6 @@ impl NewConnectionWindow {
             )
     }
 
-    fn render_password_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_saved = self.password_tab == PasswordTab::Saved;
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .child(
-                        Self::pill(
-                            "password-tab-direct",
-                            rust_i18n::t!("SecurityAuth.tab_direct_password"),
-                            !is_saved,
-                            cx,
-                        )
-                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                            this.password_tab = PasswordTab::Direct;
-                            cx.notify();
-                        })),
-                    )
-                    .child(
-                        Self::pill(
-                            "password-tab-saved",
-                            rust_i18n::t!("SecurityAuth.tab_saved_password"),
-                            is_saved,
-                            cx,
-                        )
-                        .on_click(cx.listener(|this, _ev: &ClickEvent, _w, cx| {
-                            this.password_tab = PasswordTab::Saved;
-                            cx.notify();
-                        })),
-                    ),
-            )
-            .child(if is_saved {
-                self.render_saved_password_picker(cx).into_any_element()
-            } else {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(self.field_label(rust_i18n::t!("NewConnectionWindow.password_placeholder"), cx))
-                    .child(Input::new(&self.password).mask_toggle())
-                    .into_any_element()
-            })
-    }
-
-    fn render_saved_password_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let weak = cx.entity().downgrade();
-        let entries = self.saved_passwords.clone();
-        let current_label: SharedString = self
-            .selected_password_id
-            .as_ref()
-            .and_then(|id| entries.iter().find(|e| &e.id == id))
-            .map(|e| SharedString::from(e.name.clone()))
-            .unwrap_or_else(|| rust_i18n::t!("NewConnectionWindow.select_button").into());
-        let picker = DropdownButton::new("saved-password-picker")
-            .small()
-            .button(Button::new("saved-password-picker-btn").label(current_label))
-            .dropdown_menu(move |menu, _window, _cx| {
-                let mut menu = menu;
-                for entry in entries.clone() {
-                    let entry_id = entry.id.clone();
-                    let weak = weak.clone();
-                    menu = menu.item(PopupMenuItem::new(entry.name.clone()).on_click(
-                        move |_ev, _window, cx| {
-                            let _ = weak.update(cx, |this, cx| {
-                                this.selected_password_id = Some(entry_id.clone());
-                                cx.notify();
-                            });
-                        },
-                    ));
-                }
-                menu
-            });
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(picker)
-            .child(if self.adding_new_saved_password {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(Input::new(&self.new_saved_password_name))
-                    .child(Input::new(&self.new_saved_password_value).mask_toggle())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(
-                                Button::new("confirm-add-saved-password")
-                                    .xsmall()
-                                    .label(rust_i18n::t!("SecurityAuth.add_password_button"))
-                                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                                        this.confirm_add_new_saved_password(cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("cancel-add-saved-password")
-                                    .xsmall()
-                                    .label(rust_i18n::t!("NewConnectionWindow.cancel"))
-                                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                                        this.cancel_add_new_saved_password(window, cx);
-                                    })),
-                            ),
-                    )
-                    .into_any_element()
-            } else {
-                div()
-                    .id("add-new-saved-password-row")
-                    .px_2()
-                    .py_0p5()
-                    .rounded_sm()
-                    .bg(cx.theme().secondary)
-                    .child(rust_i18n::t!("SecurityAuth.add_new_saved_password_row"))
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, _window, cx| {
-                        this.adding_new_saved_password = true;
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
-    }
-
-    fn confirm_add_new_saved_password(&mut self, cx: &mut Context<Self>) {
-        let name = self.new_saved_password_name.read(cx).value().trim().to_string();
-        let value = self.new_saved_password_value.read(cx).value().to_string();
-        if name.is_empty() {
-            return;
-        }
-        let Some(vault) = cx.try_global::<crate::workspace::VaultKey>() else {
-            return;
-        };
-        let entry = crate::config::SavedPasswordEntry {
-            id: crate::config::generate_id(),
-            name,
-            encrypted_password: vault.0.encrypt_str(&value),
-        };
-        let id = entry.id.clone();
-        let _ = self.panel.update(cx, |panel, _cx| panel.add_saved_password(entry.clone()));
-        let _ = self.panel.update(cx, |panel, _cx| panel.persist_for_security_auth());
-        self.saved_passwords.push(entry);
-        self.selected_password_id = Some(id);
-        self.adding_new_saved_password = false;
-        cx.notify();
-    }
-
-    fn cancel_add_new_saved_password(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_saved_password_name.update(cx, |s, cx| s.set_value("", window, cx));
-        self.new_saved_password_value.update(cx, |s, cx| s.set_value("", window, cx));
-        self.adding_new_saved_password = false;
-        cx.notify();
-    }
 }
 
 impl Render for NewConnectionWindow {

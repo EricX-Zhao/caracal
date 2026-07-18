@@ -439,7 +439,6 @@ impl SessionsPanel {
             .count() as i32;
         let panel = cx.entity().downgrade();
         let ssh_keys = self.ssh_keys.clone();
-        let saved_passwords = self.saved_passwords.clone();
         let bounds = gpui::Bounds::centered(None, gpui::size(px(480.0), px(620.0)), cx);
         let result = cx.open_window(
             gpui::WindowOptions {
@@ -455,7 +454,6 @@ impl SessionsPanel {
                         group_id.clone(),
                         new_sort_order,
                         ssh_keys.clone(),
-                        saved_passwords.clone(),
                         window,
                         cx,
                     )
