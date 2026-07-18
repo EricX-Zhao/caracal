@@ -1397,6 +1397,7 @@ impl Render for SftpPanel {
         let pending_op = self.render_pending_op_row(cx);
         let path_bar = self.render_path_bar(&path_input, cx);
         let file_list = self.render_file_list(cx);
+        let blank_area = self.render_blank_area(cx);
         let status_row = self.render_status_row(cx);
 
         let transfer_header = self.render_transfer_header(cx);
@@ -1414,6 +1415,7 @@ impl Render for SftpPanel {
             .child(pending_op)
             .child(path_bar)
             .child(file_list)
+            .child(blank_area)
             .child(status_row);
 
         let bottom_pane = div()
@@ -1802,6 +1804,63 @@ impl SftpPanel {
                     .text_color(cx.theme().muted_foreground)
                     .child(SharedString::from(summary)),
             )
+    }
+
+    /// A thin, always-present strip below the file list — right-clicking it
+    /// shows root-level actions (new file/folder, refresh, upload). A
+    /// separate sibling rather than a context menu on the file list itself:
+    /// `gpui_component`'s `DataTable` already wraps its entire table in one
+    /// `ContextMenuExt::context_menu()` whose builder checks
+    /// `right_clicked_row`, but that field goes stale for a genuine
+    /// blank-space click; stacking a second `.context_menu()` on top would
+    /// also risk firing simultaneously with a row's own menu, since
+    /// `ContextMenuExt`'s right-click handler never calls
+    /// `stop_propagation()`. `sessions.rs`'s `render_blank_area` solves the
+    /// identical problem the same way, for its own (non-virtualized) list.
+    fn render_blank_area(&self, cx: &Context<Self>) -> impl IntoElement {
+        let weak = cx.entity().downgrade();
+        div()
+            .id("sftp-blank-area")
+            .h(px(28.0))
+            .flex_shrink_0()
+            .context_menu(move |menu, _window, _cx| {
+                let new_file = weak.clone();
+                let new_folder = weak.clone();
+                let refresh = weak.clone();
+                let upload = weak.clone();
+                let upload_dir = weak.clone();
+                let copy_path = weak.clone();
+                menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.new_file_tooltip")).on_click(
+                    move |_ev, window, cx| {
+                        let _ = new_file.update(cx, |panel, cx| panel.new_file(window, cx));
+                    },
+                ))
+                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.new_folder_tooltip")).on_click(
+                    move |_ev, window, cx| {
+                        let _ = new_folder.update(cx, |panel, cx| panel.new_folder(window, cx));
+                    },
+                ))
+                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.refresh_tooltip")).on_click(
+                    move |_ev, _window, cx| {
+                        let _ = refresh.update(cx, |panel, cx| panel.refresh(cx));
+                    },
+                ))
+                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.upload_tooltip")).on_click(
+                    move |_ev, _window, cx| {
+                        let _ = upload.update(cx, |panel, cx| panel.upload(cx));
+                    },
+                ))
+                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.upload_folder_tooltip")).on_click(
+                    move |_ev, _window, cx| {
+                        let _ = upload_dir.update(cx, |panel, cx| panel.upload_dir(cx));
+                    },
+                ))
+                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.copy_path")).on_click(
+                    move |_ev, _window, cx| {
+                        let _ = copy_path.update(cx, |panel, cx| panel.copy_path(cx));
+                    },
+                ))
+            })
     }
 
     fn render_transfer_header(&self, cx: &Context<Self>) -> impl IntoElement {
