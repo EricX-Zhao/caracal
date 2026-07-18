@@ -5,25 +5,21 @@
 //! stays the single owner/persister of this data, exactly as
 //! `NewConnectionWindow` already treats it.
 
-use std::collections::HashSet;
-
 use gpui::{
-    App, AppContext, ClickEvent, ClipboardItem, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, WeakEntity, Window, div, prelude::FluentBuilder,
-    transparent_black,
+    App, AppContext, ClickEvent, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    WeakEntity, Window, div, transparent_black,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Input, InputState};
 use gpui_component::{ActiveTheme, IconName, Sizable, WindowExt, v_flex};
 
-use crate::config::{SavedPasswordEntry, SshKeyEntry};
+use crate::config::SshKeyEntry;
 use crate::panels::sessions::SessionsPanel;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AuthTab {
     Keys,
-    Passwords,
 }
 
 pub struct SecurityAuthPanel {
@@ -31,19 +27,12 @@ pub struct SecurityAuthPanel {
     panel: WeakEntity<SessionsPanel>,
     active_tab: AuthTab,
     ssh_keys: Vec<SshKeyEntry>,
-    saved_passwords: Vec<SavedPasswordEntry>,
-    /// Which saved-password rows currently show their decrypted value —
-    /// toggled per-row by the eye icon.
-    revealed_password_ids: HashSet<String>,
     _sync_sub: gpui::Subscription,
 }
 
 impl SecurityAuthPanel {
     pub fn new(panel: WeakEntity<SessionsPanel>, cx: &mut Context<Self>) -> Self {
-        let (ssh_keys, saved_passwords) = panel
-            .upgrade()
-            .map(|p| (p.read(cx).ssh_keys().to_vec(), p.read(cx).saved_passwords().to_vec()))
-            .unwrap_or_default();
+        let ssh_keys = panel.upgrade().map(|p| p.read(cx).ssh_keys().to_vec()).unwrap_or_default();
 
         // Re-sync whenever `SessionsPanel` changes (e.g. a key imported
         // from the new-connection form while this panel is also open) —
@@ -51,7 +40,6 @@ impl SecurityAuthPanel {
         let sync_sub = if let Some(sessions) = panel.upgrade() {
             cx.observe(&sessions, |this, sessions, cx| {
                 this.ssh_keys = sessions.read(cx).ssh_keys().to_vec();
-                this.saved_passwords = sessions.read(cx).saved_passwords().to_vec();
                 cx.notify();
             })
         } else {
@@ -66,8 +54,6 @@ impl SecurityAuthPanel {
             panel,
             active_tab: AuthTab::Keys,
             ssh_keys,
-            saved_passwords,
-            revealed_password_ids: HashSet::new(),
             _sync_sub: sync_sub,
         }
     }
@@ -77,7 +63,6 @@ impl SecurityAuthPanel {
         div()
             .id(SharedString::from(match tab {
                 AuthTab::Keys => "security-auth-tab-keys",
-                AuthTab::Passwords => "security-auth-tab-passwords",
             }))
             .px_3()
             .py_1()
@@ -286,210 +271,6 @@ impl SecurityAuthPanel {
         .detach();
     }
 
-    // --- Passwords tab ---------------------------------------------------
-
-    fn render_passwords_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let vault = cx.try_global::<crate::workspace::VaultKey>();
-        let mut list = div().flex().flex_col().gap_1();
-        for entry in self.saved_passwords.clone() {
-            let id = entry.id.clone();
-            let revealed = self.revealed_password_ids.contains(&id);
-            let plaintext = if revealed {
-                vault.and_then(|v| v.0.decrypt_str(&entry.encrypted_password).ok())
-            } else {
-                None
-            };
-            let id_for_reveal = id.clone();
-            let id_for_edit = id.clone();
-            let id_for_delete = id.clone();
-            let plaintext_for_copy = plaintext.clone();
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .bg(cx.theme().secondary)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(entry.name.clone())
-                            .when_some(plaintext.clone(), |el, p| {
-                                el.child(div().text_xs().text_color(cx.theme().muted_foreground).child(p))
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_1()
-                            .child(
-                                Button::new(SharedString::from(format!("reveal-password-{id}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(if revealed { IconName::EyeOff } else { IconName::Eye })
-                                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
-                                        if this.revealed_password_ids.contains(&id_for_reveal) {
-                                            this.revealed_password_ids.remove(&id_for_reveal);
-                                        } else {
-                                            this.revealed_password_ids.insert(id_for_reveal.clone());
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("copy-password-{id}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Copy)
-                                    .on_click(cx.listener(move |_this, _ev: &ClickEvent, _window, cx| {
-                                        if let Some(p) = &plaintext_for_copy {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(p.clone()));
-                                        }
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("edit-password-{id}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .label(rust_i18n::t!("SecurityAuth.edit_button"))
-                                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                                        this.open_add_or_edit_password_dialog(
-                                            Some(id_for_edit.clone()),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("delete-password-{id}")))
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Delete)
-                                    .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
-                                        this.confirm_delete_saved_password(id_for_delete.clone(), window, cx);
-                                    })),
-                            ),
-                    ),
-            );
-        }
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(list)
-            .child(
-                Button::new("add-saved-password")
-                    .xsmall()
-                    .label(rust_i18n::t!("SecurityAuth.add_password_button"))
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        this.open_add_or_edit_password_dialog(None, window, cx);
-                    })),
-            )
-    }
-
-    /// Shared by "Add password" (`existing_id: None`) and each row's
-    /// "Edit" button (`existing_id: Some(id)`, pre-filled decrypted).
-    fn open_add_or_edit_password_dialog(
-        &mut self,
-        existing_id: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let existing = existing_id.as_ref().and_then(|id| self.saved_passwords.iter().find(|p| &p.id == id));
-        let vault = cx.try_global::<crate::workspace::VaultKey>();
-        let decrypted = existing.and_then(|e| vault.and_then(|v| v.0.decrypt_str(&e.encrypted_password).ok()));
-        let name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(rust_i18n::t!("SecurityAuth.password_name_placeholder"))
-                .default_value(existing.map(|e| e.name.clone()).unwrap_or_default())
-        });
-        let password_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder(rust_i18n::t!("NewConnectionWindow.password_placeholder"))
-                .default_value(decrypted.unwrap_or_default())
-        });
-        let panel = self.panel.clone();
-        window.open_alert_dialog(cx, move |alert, _window, _cx| {
-            let name_input = name_input.clone();
-            let password_input = password_input.clone();
-            let panel = panel.clone();
-            let existing_id = existing_id.clone();
-            let body = v_flex()
-                .gap_2()
-                .child(Input::new(&name_input))
-                .child(Input::new(&password_input).mask_toggle());
-            alert
-                .title(if existing_id.is_some() {
-                    rust_i18n::t!("SecurityAuth.edit_password_title")
-                } else {
-                    rust_i18n::t!("SecurityAuth.add_password_title")
-                })
-                .description(body)
-                .confirm()
-                .on_ok(move |_, window, cx| {
-                    let name = name_input.read(cx).value().trim().to_string();
-                    let plaintext = password_input.read(cx).value().to_string();
-                    if name.is_empty() {
-                        return false;
-                    }
-                    let Some(vault) = cx.try_global::<crate::workspace::VaultKey>() else {
-                        return false;
-                    };
-                    let encrypted = vault.0.encrypt_str(&plaintext);
-                    match &existing_id {
-                        Some(id) => {
-                            let _ = panel.update(cx, |p, _cx| p.update_saved_password(id, name, encrypted));
-                        }
-                        None => {
-                            let entry = crate::config::SavedPasswordEntry {
-                                id: crate::config::generate_id(),
-                                name,
-                                encrypted_password: encrypted,
-                            };
-                            let _ = panel.update(cx, |p, _cx| p.add_saved_password(entry));
-                        }
-                    }
-                    let _ = panel.update(cx, |p, _cx| p.persist_for_security_auth());
-                    window.close_dialog(cx);
-                    true
-                })
-        });
-    }
-
-    fn confirm_delete_saved_password(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let usage = self
-            .panel
-            .upgrade()
-            .map(|p| p.read(cx).connections_using_saved_password(&id))
-            .unwrap_or_default();
-        let panel = self.panel.clone();
-        window.open_alert_dialog(cx, move |alert, _window, _cx| {
-            let id = id.clone();
-            let panel = panel.clone();
-            let body = if usage.is_empty() {
-                rust_i18n::t!("SecurityAuth.delete_confirm_body").to_string()
-            } else {
-                rust_i18n::t!("SecurityAuth.delete_confirm_body_in_use", count = usage.len()).to_string()
-            };
-            alert
-                .title(rust_i18n::t!("SecurityAuth.delete_password_title"))
-                .description(body)
-                .confirm()
-                .on_ok(move |_, window, cx| {
-                    let _ = panel.update(cx, |p, _cx| p.remove_saved_password(&id));
-                    let _ = panel.update(cx, |p, _cx| p.persist_for_security_auth());
-                    window.close_dialog(cx);
-                    true
-                })
-        });
-    }
 }
 
 impl Focusable for SecurityAuthPanel {
@@ -513,17 +294,11 @@ impl Render for SecurityAuthPanel {
                     .p_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(self.tab_button(AuthTab::Keys, rust_i18n::t!("SecurityAuth.tab_keys").into(), cx))
-                    .child(self.tab_button(
-                        AuthTab::Passwords,
-                        rust_i18n::t!("SecurityAuth.tab_passwords").into(),
-                        cx,
-                    )),
+                    .child(self.tab_button(AuthTab::Keys, rust_i18n::t!("SecurityAuth.tab_keys").into(), cx)),
             )
             .child(
                 div().flex_1().p_2().child(match self.active_tab {
                     AuthTab::Keys => self.render_keys_tab(cx).into_any_element(),
-                    AuthTab::Passwords => self.render_passwords_tab(cx).into_any_element(),
                 }),
             )
     }
