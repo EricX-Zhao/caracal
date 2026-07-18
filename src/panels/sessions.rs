@@ -38,8 +38,8 @@ use std::rc::Rc;
 use gpui::{
     Action, Anchor, App, AppContext, Bounds, ClickEvent, Context, DragMoveEvent, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Pixels,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window, WindowHandle,
-    anchored, deferred, div, point, prelude::FluentBuilder, px,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
+    WindowHandle, anchored, deferred, div, point, prelude::FluentBuilder, px,
 };
 use gpui_component::Root;
 use gpui_component::button::{Button, ButtonVariants};
@@ -256,6 +256,11 @@ pub struct SessionsPanel {
     /// the new text in explicitly — nothing else re-reads it after
     /// construction. `None` forces the first render to sync unconditionally.
     search_placeholder_locale: Option<String>,
+    /// Back-reference so `open_security_auth_panel` can jump the user to
+    /// Security & Auth's Keys tab from `NewConnectionWindow`'s empty
+    /// saved-key picker (a separate, standalone window with no other path
+    /// back to the main workspace's left-panel slots).
+    workspace: WeakEntity<crate::workspace::Workspace>,
 }
 
 impl SessionsPanel {
@@ -265,6 +270,7 @@ impl SessionsPanel {
         vault: Option<crate::config::VaultMeta>,
         ssh_keys: Vec<crate::config::SshKeyEntry>,
         saved_passwords: Vec<crate::config::SavedPasswordEntry>,
+        workspace: WeakEntity<crate::workspace::Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -295,6 +301,7 @@ impl SessionsPanel {
             drag_reorder_target: None,
             tooltip_target: None,
             search_placeholder_locale: None,
+            workspace,
         }
     }
 
@@ -935,6 +942,29 @@ impl SessionsPanel {
             .filter(|c| c.private_key_id.as_deref() == Some(id))
             .map(|c| c.display_name())
             .collect()
+    }
+
+    /// Jumps the main workspace's left panel to Security & Auth's Keys tab
+    /// — used by `NewConnectionWindow`'s empty saved-key picker, since that
+    /// standalone window has no other path back to the workspace's
+    /// left-panel slots.
+    pub(crate) fn open_security_auth_panel(&self, cx: &mut Context<Self>) {
+        let _ = self.workspace.update(cx, |ws, cx| ws.open_security_auth_panel(cx));
+    }
+
+    /// Runs the one-time saved-password-to-direct migration (see
+    /// `vault::migrate_saved_passwords_to_direct`) directly against this
+    /// panel's own fields, for the one unlock path (`workspace.rs`'s
+    /// OS-keyring convenience-unlock) that never has a full `AppConfig` in
+    /// scope. Returns `true` if anything changed, so the caller knows
+    /// whether to persist. Does not persist itself.
+    pub(crate) fn migrate_saved_passwords_to_direct(&mut self, master: &crate::crypto::MasterKey) -> bool {
+        if self.saved_passwords.is_empty() && !self.connections.iter().any(|c| c.password_id.is_some()) {
+            return false;
+        }
+        let saved_passwords = std::mem::take(&mut self.saved_passwords);
+        crate::vault::migrate_password_ids(&mut self.connections, &saved_passwords, master);
+        true
     }
 
     /// Same as `connections_using_ssh_key`, for saved passwords.

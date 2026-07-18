@@ -125,6 +125,7 @@ fn show_setup_master_password_dialog(window: &mut Window, cx: &mut Context<Works
                 let mut cfg = config::load();
                 match vault::migrate(&mut cfg, &password) {
                     Ok(master) => {
+                        vault::migrate_saved_passwords_to_direct(&mut cfg, &master);
                         if let Err(e) = config::save(&cfg) {
                             log::error!("failed to save migrated vault: {e}");
                         }
@@ -189,9 +190,14 @@ fn show_unlock_dialog(window: &mut Window, cx: &mut Context<Workspace>) {
             .confirm()
             .on_ok(move |_, window, cx| {
                 let password = pw_input.read(cx).value().to_string();
-                let cfg = config::load();
+                let mut cfg = config::load();
                 match vault::unlock(&cfg, &password) {
                     Ok(master) => {
+                        if vault::migrate_saved_passwords_to_direct(&mut cfg, &master) {
+                            if let Err(e) = config::save(&cfg) {
+                                log::error!("failed to save migrated config: {e}");
+                            }
+                        }
                         if *remember.read(cx) {
                             if let Some(vault_meta) = &cfg.vault {
                                 keyring_store::OsSecretStore.set(&vault_meta.vault_id, &master.0);
@@ -372,12 +378,19 @@ impl Workspace {
             if let Some(vault_id) = &vault_id {
                 if let Some(key_bytes) = keyring_store::OsSecretStore.get(vault_id) {
                     let master = crate::crypto::MasterKey(zeroize::Zeroizing::new(key_bytes));
+                    let changed = _this
+                        .saved_sessions
+                        .update(cx, |panel, _cx| panel.migrate_saved_passwords_to_direct(&master));
+                    if changed {
+                        _this.saved_sessions.read(cx).persist_for_security_auth();
+                    }
                     cx.set_global(VaultKey(master));
                     return;
                 }
             }
             show_unlock_dialog(window, cx);
         });
+        let workspace_handle = cx.entity().downgrade();
         let saved = cx.new(|cx| {
             SessionsPanel::new(
                 cfg.connections,
@@ -385,6 +398,7 @@ impl Workspace {
                 cfg.vault,
                 cfg.ssh_keys,
                 cfg.saved_passwords,
+                workspace_handle.clone(),
                 window,
                 cx,
             )
@@ -441,7 +455,6 @@ impl Workspace {
         let security_auth_panel: AnyView =
             cx.new(|cx| SecurityAuthPanel::new(saved.downgrade(), cx)).into();
 
-        let workspace_handle = cx.entity().downgrade();
         let quick_commands_panel = cx.new(|cx| QuickCommandsPanel::new(workspace_handle, cx));
 
         Self {
@@ -1201,6 +1214,15 @@ impl Workspace {
         } else {
             *slot = Some(id);
         }
+        cx.notify();
+    }
+
+    /// Forces the left panel to Security & Auth — unlike `toggle_panel`,
+    /// never closes it if already active. Called from `SessionsPanel`
+    /// (itself called from `NewConnectionWindow`, a separate standalone
+    /// window with no other path back to this panel's slots).
+    pub(crate) fn open_security_auth_panel(&mut self, cx: &mut Context<Self>) {
+        self.left_active = Some(PanelId::Security);
         cx.notify();
     }
 
