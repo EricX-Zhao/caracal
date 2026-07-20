@@ -86,7 +86,7 @@ Add to the `#[cfg(test)] mod tests` block at the bottom of `src/workspace.rs` (a
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test --lib workspace::tests -- next_tab_index prev_tab_index goto_tab_index`
+Run: `cargo test workspace::tests:: -- next_tab_index prev_tab_index goto_tab_index`
 Expected: FAIL to compile — `next_tab_index`/`prev_tab_index`/`goto_tab_index` not found on `Workspace`.
 
 - [ ] **Step 3: Implement the pure functions**
@@ -127,7 +127,7 @@ Add near `Workspace::lowest_free_number` (around line 570 of `src/workspace.rs`)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --lib workspace::tests -- next_tab_index prev_tab_index goto_tab_index`
+Run: `cargo test workspace::tests:: -- next_tab_index prev_tab_index goto_tab_index`
 Expected: PASS (10 tests).
 
 - [ ] **Step 5: Commit**
@@ -771,7 +771,7 @@ Add to `workspace.rs`'s `#[cfg(test)] mod tests`:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test --lib workspace::tests -- clamped_font_size`
+Run: `cargo test workspace::tests:: -- clamped_font_size`
 Expected: FAIL to compile — `clamped_font_size` not found.
 
 - [ ] **Step 3: Implement the clamp function and the actions**
@@ -852,7 +852,7 @@ gpui::actions!(caracal_workspace, [
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --lib workspace::tests -- clamped_font_size`
+Run: `cargo test workspace::tests:: -- clamped_font_size`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Wire the handlers into `Render for Workspace`**
