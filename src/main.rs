@@ -41,7 +41,7 @@ use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::{
     GotoTab1, GotoTab2, GotoTab3, GotoTab4, GotoTab5, GotoTab6, GotoTab7, GotoTab8, GotoTab9,
     NewConnectionAction, NewTab, NextTab, OpenSettingsAction, PrevTab, ToggleLeftSidebar,
-    ToggleQuickCommands, ToggleRightSidebar, Workspace,
+    ToggleQuickCommands, ToggleRightSidebar, Workspace, ZoomIn, ZoomOut,
 };
 
 rust_i18n::i18n!("locales", fallback = "zh-CN");
@@ -177,6 +177,9 @@ fn main() {
             KeyBinding::new("secondary-shift-b", ToggleRightSidebar, None),
             KeyBinding::new("secondary-j", ToggleQuickCommands, None),
             KeyBinding::new("secondary-,", OpenSettingsAction, None),
+            KeyBinding::new("secondary-=", ZoomIn, None),
+            KeyBinding::new("secondary-shift-=", ZoomIn, None),
+            KeyBinding::new("secondary--", ZoomOut, None),
         ]);
 
         if let Err(e) = cx.text_system().add_fonts(vec![

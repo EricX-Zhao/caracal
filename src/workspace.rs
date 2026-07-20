@@ -80,6 +80,8 @@ gpui::actions!(caracal_workspace, [
     ToggleRightSidebar,
     ToggleQuickCommands,
     OpenSettingsAction,
+    ZoomIn,
+    ZoomOut,
 ]);
 
 /// The unlocked vault's master key, available anywhere via
@@ -1125,6 +1127,50 @@ impl Workspace {
         });
     }
 
+    /// Bounds match `settings_window.rs`'s `parse_font_size` validation
+    /// range (6..=96px) — zooming can't push the terminal font outside what
+    /// Settings would already reject if typed by hand.
+    const MIN_FONT_SIZE: f32 = 6.0;
+    const MAX_FONT_SIZE: f32 = 96.0;
+    const ZOOM_STEP: f32 = 1.0;
+
+    fn clamped_font_size(current: f32, delta: f32) -> f32 {
+        (current + delta).clamp(Self::MIN_FONT_SIZE, Self::MAX_FONT_SIZE)
+    }
+
+    /// Adjust the persisted terminal font size by `delta`px (clamped) and
+    /// broadcast it to every open tab — the same effect as changing the
+    /// font-size field in Settings and clicking Apply, just without opening
+    /// the dialog. No-ops (does not touch disk) if the delta is fully
+    /// absorbed by the clamp, i.e. already at the min/max.
+    fn zoom_font(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let mut loaded = settings::load();
+        let new_size = Self::clamped_font_size(loaded.terminal.font_size, delta);
+        if new_size == loaded.terminal.font_size {
+            return;
+        }
+        loaded.terminal.font_size = new_size;
+        if let Err(e) = settings::save(&loaded) {
+            log::error!("failed to save zoomed font size: {e}");
+            return;
+        }
+        self.apply_font_settings(
+            loaded.terminal.font_family.clone(),
+            px(new_size),
+            loaded.terminal.font_fallback1.clone(),
+            loaded.terminal.font_fallback2.clone(),
+            cx,
+        );
+    }
+
+    fn on_zoom_in(&mut self, _: &ZoomIn, _window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_font(Self::ZOOM_STEP, cx);
+    }
+
+    fn on_zoom_out(&mut self, _: &ZoomOut, _window: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_font(-Self::ZOOM_STEP, cx);
+    }
+
     /// Update the header's active title and the focused-terminal pointer
     /// (used by quick commands and the status bar's cursor-position display)
     /// from a (possibly-dropped) terminal. Also (re)subscribes to the
@@ -1893,6 +1939,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_right_sidebar))
             .on_action(cx.listener(Self::on_toggle_quick_commands))
             .on_action(cx.listener(Self::on_open_settings_action))
+            .on_action(cx.listener(Self::on_zoom_in))
+            .on_action(cx.listener(Self::on_zoom_out))
             // Quick-commands drawer resize: mouse-down starts on the handle
             // itself (`start_quick_commands_resize`), but move/up are
             // handled here, at the top level, so the drag keeps tracking
@@ -1927,6 +1975,22 @@ mod tests {
     #[test]
     fn resolve_appearance_font_passes_through_explicit_value() {
         assert_eq!(Workspace::resolve_appearance_font("Consolas"), "Consolas".to_string());
+    }
+
+    #[test]
+    fn clamped_font_size_applies_the_step() {
+        assert_eq!(Workspace::clamped_font_size(14.0, 1.0), 15.0);
+        assert_eq!(Workspace::clamped_font_size(14.0, -1.0), 13.0);
+    }
+
+    #[test]
+    fn clamped_font_size_does_not_exceed_the_max() {
+        assert_eq!(Workspace::clamped_font_size(96.0, 1.0), 96.0);
+    }
+
+    #[test]
+    fn clamped_font_size_does_not_go_below_the_min() {
+        assert_eq!(Workspace::clamped_font_size(6.0, -1.0), 6.0);
     }
 
     #[test]
