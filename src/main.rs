@@ -37,7 +37,7 @@ use gpui_platform::application;
 use crate::assets::CaracalAssets;
 
 use gpui_component::dock::ClosePanel;
-use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
+use terminal::view::{ClearScreen, Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::{
     GotoTab1, GotoTab2, GotoTab3, GotoTab4, GotoTab5, GotoTab6, GotoTab7, GotoTab8, GotoTab9,
     NewConnectionAction, NewTab, NextTab, OpenSettingsAction, PrevTab, ToggleLeftSidebar,
@@ -159,6 +159,7 @@ fn main() {
             KeyBinding::new("ctrl-c", Interrupt, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
+            KeyBinding::new("secondary-shift-l", ClearScreen, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("secondary-shift-t", NewTab, None),
             KeyBinding::new("secondary-shift-w", ClosePanel, None),
             KeyBinding::new("secondary-shift-n", NewConnectionAction, None),

@@ -42,7 +42,7 @@ const PTY_CHANNEL_CAPACITY: usize = 32;
 // "Terminal" context (see `main`), which wins over Root, and forward the right
 // bytes to the PTY. Plain `on_key_down` never sees them — Root's bindings run
 // before key listeners (gpui window dispatch order).
-gpui::actions!(caracal_terminal, [Interrupt, SendTab, SendBackTab]);
+gpui::actions!(caracal_terminal, [Interrupt, SendTab, SendBackTab, ClearScreen]);
 
 /// The `key_context` set on the terminal element; the reclaiming key bindings in
 /// `main` target this same context.
@@ -829,6 +829,17 @@ impl TerminalView {
         self.send_input(b"\x1b[Z");
     }
 
+    /// `secondary-shift-l`: erase the visible viewport only (not
+    /// scrollback history) — a client-side force-clear, distinct from
+    /// plain `Ctrl+L` (still passed through as a raw byte to the
+    /// shell/remote program, which already binds it to clear-screen via
+    /// readline in almost every shell).
+    fn on_clear_screen(&mut self, _: &ClearScreen, _window: &mut Window, cx: &mut Context<Self>) {
+        use alacritty_terminal::vte::ansi::{ClearMode, Handler};
+        self.term.lock().clear_screen(ClearMode::All);
+        cx.notify();
+    }
+
     /// Mouse-down: start a selection. Click type (Simple / Semantic /
     /// Lines) comes from the platform's `click_count`. A right-click
     /// starts nothing here — `TerminalPanel` wraps this view in a
@@ -1043,6 +1054,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::on_interrupt))
             .on_action(cx.listener(Self::on_send_tab))
             .on_action(cx.listener(Self::on_send_back_tab))
+            .on_action(cx.listener(Self::on_clear_screen))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_click))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
