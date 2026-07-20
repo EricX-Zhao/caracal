@@ -75,6 +75,7 @@ gpui::actions!(caracal_workspace, [
     GotoTab7,
     GotoTab8,
     GotoTab9,
+    NewConnectionAction,
 ]);
 
 /// The unlocked vault's master key, available anywhere via
@@ -1312,6 +1313,15 @@ impl Workspace {
         self.open_ssh(config, display_name, window, cx);
     }
 
+    /// `secondary-shift-n`: open the "New Connection" window (focuses it
+    /// instead of opening a duplicate if one is already open — see
+    /// `SessionsPanel::open_new_connection_window`).
+    fn on_new_connection(&mut self, _: &NewConnectionAction, window: &mut Window, cx: &mut Context<Self>) {
+        self.saved_sessions.update(cx, |panel, cx| {
+            panel.open_new_connection_window(None, None, window, cx);
+        });
+    }
+
     fn on_next_tab(&mut self, _: &NextTab, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(tabs_item) = self.active_tabs_item(cx) else {
             return;
@@ -1801,6 +1811,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_goto_tab_7))
             .on_action(cx.listener(Self::on_goto_tab_8))
             .on_action(cx.listener(Self::on_goto_tab_9))
+            .on_action(cx.listener(Self::on_new_connection))
             // Quick-commands drawer resize: mouse-down starts on the handle
             // itself (`start_quick_commands_resize`), but move/up are
             // handled here, at the top level, so the drag keeps tracking

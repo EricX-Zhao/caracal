@@ -40,7 +40,7 @@ use gpui_component::dock::ClosePanel;
 use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::{
     GotoTab1, GotoTab2, GotoTab3, GotoTab4, GotoTab5, GotoTab6, GotoTab7, GotoTab8, GotoTab9,
-    NewTab, NextTab, PrevTab, Workspace,
+    NewConnectionAction, NewTab, NextTab, PrevTab, Workspace,
 };
 
 rust_i18n::i18n!("locales", fallback = "zh-CN");
@@ -160,6 +160,7 @@ fn main() {
             KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("secondary-shift-t", NewTab, None),
             KeyBinding::new("secondary-shift-w", ClosePanel, None),
+            KeyBinding::new("secondary-shift-n", NewConnectionAction, None),
             KeyBinding::new("secondary-tab", NextTab, None),
             KeyBinding::new("secondary-shift-tab", PrevTab, None),
             KeyBinding::new("secondary-1", GotoTab1, None),
