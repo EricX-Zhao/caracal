@@ -575,6 +575,36 @@ impl Workspace {
         n
     }
 
+    /// The tab index one to the right of `current`, wrapping to `0` past the
+    /// last tab. Returns `0` when `len == 0` (nothing to wrap over) — a safe
+    /// no-op for the "no tabs open" case, same convention as
+    /// `prev_tab_index`/`goto_tab_index` below.
+    fn next_tab_index(current: usize, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        (current + 1) % len
+    }
+
+    /// The tab index one to the left of `current`, wrapping to the last tab
+    /// index past the first. Mirrors `next_tab_index`.
+    fn prev_tab_index(current: usize, len: usize) -> usize {
+        if len == 0 {
+            return 0;
+        }
+        if current == 0 { len - 1 } else { current - 1 }
+    }
+
+    /// Converts a 1-indexed `secondary-N` target (as pressed by the user)
+    /// into a 0-indexed tab index, or `None` if `target_one_indexed` is `0`
+    /// or beyond the current tab count.
+    fn goto_tab_index(target_one_indexed: usize, len: usize) -> Option<usize> {
+        if target_one_indexed == 0 || target_one_indexed > len {
+            return None;
+        }
+        Some(target_one_indexed - 1)
+    }
+
     /// Allocate the lowest unused positive tab number for the SSH connection
     /// keyed by `key`, marking it used. `release_ssh_tab_number` frees it
     /// again when that tab closes.
@@ -1656,5 +1686,55 @@ mod tests {
         // allocation should reuse 2, not jump to 4.
         let used: HashSet<u32> = [1, 3].into_iter().collect();
         assert_eq!(Workspace::lowest_free_number(&used), 2);
+    }
+
+    #[test]
+    fn next_tab_index_advances_by_one() {
+        assert_eq!(Workspace::next_tab_index(0, 3), 1);
+        assert_eq!(Workspace::next_tab_index(1, 3), 2);
+    }
+
+    #[test]
+    fn next_tab_index_wraps_at_the_end() {
+        assert_eq!(Workspace::next_tab_index(2, 3), 0);
+    }
+
+    #[test]
+    fn next_tab_index_is_a_safe_no_op_with_no_tabs() {
+        assert_eq!(Workspace::next_tab_index(0, 0), 0);
+    }
+
+    #[test]
+    fn next_tab_index_stays_put_with_a_single_tab() {
+        assert_eq!(Workspace::next_tab_index(0, 1), 0);
+    }
+
+    #[test]
+    fn prev_tab_index_retreats_by_one() {
+        assert_eq!(Workspace::prev_tab_index(2, 3), 1);
+        assert_eq!(Workspace::prev_tab_index(1, 3), 0);
+    }
+
+    #[test]
+    fn prev_tab_index_wraps_at_the_start() {
+        assert_eq!(Workspace::prev_tab_index(0, 3), 2);
+    }
+
+    #[test]
+    fn prev_tab_index_is_a_safe_no_op_with_no_tabs() {
+        assert_eq!(Workspace::prev_tab_index(0, 0), 0);
+    }
+
+    #[test]
+    fn goto_tab_index_converts_one_indexed_to_zero_indexed() {
+        assert_eq!(Workspace::goto_tab_index(1, 3), Some(0));
+        assert_eq!(Workspace::goto_tab_index(3, 3), Some(2));
+    }
+
+    #[test]
+    fn goto_tab_index_rejects_out_of_range() {
+        assert_eq!(Workspace::goto_tab_index(4, 3), None);
+        assert_eq!(Workspace::goto_tab_index(0, 3), None);
+        assert_eq!(Workspace::goto_tab_index(1, 0), None);
     }
 }
