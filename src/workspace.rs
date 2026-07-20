@@ -76,6 +76,10 @@ gpui::actions!(caracal_workspace, [
     GotoTab8,
     GotoTab9,
     NewConnectionAction,
+    ToggleLeftSidebar,
+    ToggleRightSidebar,
+    ToggleQuickCommands,
+    OpenSettingsAction,
 ]);
 
 /// The unlocked vault's master key, available anywhere via
@@ -315,6 +319,16 @@ pub struct Workspace {
     // --- active slots (one per side) ----------------------------------------
     left_active: Option<PanelId>,
     right_active: Option<PanelId>,
+    /// Which panel to reopen when `secondary-b` toggles the left sidebar
+    /// back on after it was closed — closing it (mouse click on the active
+    /// icon, or the keyboard toggle) sets `left_active` to `None`, which
+    /// loses track of what was showing, so this remembers it separately.
+    /// Defaults to `Sftp` (`side_items(Side::Left)`'s first entry).
+    left_last_panel: PanelId,
+    /// Mirrors `left_last_panel` for the right sidebar. Defaults to
+    /// `Sessions`, matching today's actual startup default
+    /// (`right_active: Some(PanelId::Sessions)` below).
+    right_last_panel: PanelId,
 
     // --- horizontal body resize state ---------------------------------------
     /// Width of the left side region. A plain field, not a `gpui_component`
@@ -517,6 +531,8 @@ impl Workspace {
             // `show_sftp`) or the user opens it manually; saved connections on the right.
             left_active: None,
             right_active: Some(PanelId::Sessions),
+            left_last_panel: PanelId::Sftp,
+            right_last_panel: PanelId::Sessions,
             left_width: px(200.0),
             left_drag: None,
             right_width: px(220.0),
@@ -1407,16 +1423,24 @@ impl Workspace {
     }
 
     /// Toggle `id` in its side's single slot: open it if it isn't the active
-    /// panel, otherwise close the slot.
+    /// panel, otherwise close the slot. Also updates that side's
+    /// remembered panel (`left_last_panel`/`right_last_panel`) whenever the
+    /// slot opens, so the keyboard sidebar toggle (`toggle_side`, below)
+    /// reopens the same panel a mouse click last chose.
     fn toggle_panel(&mut self, id: PanelId, _window: &mut Window, cx: &mut Context<Self>) {
-        let slot = match id.side() {
-            Side::Left => &mut self.left_active,
-            Side::Right => &mut self.right_active,
+        let is_active = match id.side() {
+            Side::Left => self.left_active == Some(id),
+            Side::Right => self.right_active == Some(id),
         };
-        if *slot == Some(id) {
-            *slot = None;
-        } else {
-            *slot = Some(id);
+        match id.side() {
+            Side::Left => self.left_active = if is_active { None } else { Some(id) },
+            Side::Right => self.right_active = if is_active { None } else { Some(id) },
+        }
+        if !is_active {
+            match id.side() {
+                Side::Left => self.left_last_panel = id,
+                Side::Right => self.right_last_panel = id,
+            }
         }
         cx.notify();
     }
@@ -1429,8 +1453,61 @@ impl Workspace {
     /// invisibly behind whichever window currently has focus.
     pub(crate) fn open_security_auth_panel(&mut self, cx: &mut Context<Self>) {
         self.left_active = Some(PanelId::Security);
+        self.left_last_panel = PanelId::Security;
         cx.notify();
         let _ = self.own_window.update(cx, |_view, window, _cx| window.activate_window());
+    }
+
+    /// Shared by `on_toggle_left_sidebar`/`on_toggle_right_sidebar`: flips
+    /// the side's slot between `None` and its remembered panel.
+    fn toggle_side(&mut self, side: Side, cx: &mut Context<Self>) {
+        let (currently_open, remembered) = match side {
+            Side::Left => (self.left_active.is_some(), self.left_last_panel),
+            Side::Right => (self.right_active.is_some(), self.right_last_panel),
+        };
+        let new_value = if currently_open { None } else { Some(remembered) };
+        match side {
+            Side::Left => self.left_active = new_value,
+            Side::Right => self.right_active = new_value,
+        }
+        cx.notify();
+    }
+
+    fn on_toggle_left_sidebar(
+        &mut self,
+        _: &ToggleLeftSidebar,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_side(Side::Left, cx);
+    }
+
+    fn on_toggle_right_sidebar(
+        &mut self,
+        _: &ToggleRightSidebar,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_side(Side::Right, cx);
+    }
+
+    fn on_toggle_quick_commands(
+        &mut self,
+        _: &ToggleQuickCommands,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_quick_commands = !self.show_quick_commands;
+        cx.notify();
+    }
+
+    fn on_open_settings_action(
+        &mut self,
+        _: &OpenSettingsAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(window, cx);
     }
 
     /// Mouse-down on the quick-commands drawer's resize handle: record where
@@ -1812,6 +1889,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_goto_tab_8))
             .on_action(cx.listener(Self::on_goto_tab_9))
             .on_action(cx.listener(Self::on_new_connection))
+            .on_action(cx.listener(Self::on_toggle_left_sidebar))
+            .on_action(cx.listener(Self::on_toggle_right_sidebar))
+            .on_action(cx.listener(Self::on_toggle_quick_commands))
+            .on_action(cx.listener(Self::on_open_settings_action))
             // Quick-commands drawer resize: mouse-down starts on the handle
             // itself (`start_quick_commands_resize`), but move/up are
             // handled here, at the top level, so the drag keeps tracking
