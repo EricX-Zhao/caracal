@@ -1242,6 +1242,7 @@ impl Workspace {
         }
         self.active_sftp = Some(key);
         self.left_active = Some(PanelId::Sftp);
+        self.left_last_panel = PanelId::Sftp;
         cx.notify();
     }
 
