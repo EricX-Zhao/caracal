@@ -36,8 +36,12 @@ use gpui_platform::application;
 
 use crate::assets::CaracalAssets;
 
+use gpui_component::dock::ClosePanel;
 use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
-use workspace::Workspace;
+use workspace::{
+    GotoTab1, GotoTab2, GotoTab3, GotoTab4, GotoTab5, GotoTab6, GotoTab7, GotoTab8, GotoTab9,
+    NewTab, NextTab, PrevTab, Workspace,
+};
 
 rust_i18n::i18n!("locales", fallback = "zh-CN");
 
@@ -154,6 +158,19 @@ fn main() {
             KeyBinding::new("ctrl-c", Interrupt, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
+            KeyBinding::new("secondary-shift-t", NewTab, None),
+            KeyBinding::new("secondary-shift-w", ClosePanel, None),
+            KeyBinding::new("secondary-tab", NextTab, None),
+            KeyBinding::new("secondary-shift-tab", PrevTab, None),
+            KeyBinding::new("secondary-1", GotoTab1, None),
+            KeyBinding::new("secondary-2", GotoTab2, None),
+            KeyBinding::new("secondary-3", GotoTab3, None),
+            KeyBinding::new("secondary-4", GotoTab4, None),
+            KeyBinding::new("secondary-5", GotoTab5, None),
+            KeyBinding::new("secondary-6", GotoTab6, None),
+            KeyBinding::new("secondary-7", GotoTab7, None),
+            KeyBinding::new("secondary-8", GotoTab8, None),
+            KeyBinding::new("secondary-9", GotoTab9, None),
         ]);
 
         if let Err(e) = cx.text_system().add_fonts(vec![

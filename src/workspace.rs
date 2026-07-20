@@ -62,6 +62,21 @@ use crate::keyring_store::{self, SecretStore};
 use crate::terminal::view::{TerminalView, TerminalViewEvent};
 use crate::vault;
 
+gpui::actions!(caracal_workspace, [
+    NewTab,
+    NextTab,
+    PrevTab,
+    GotoTab1,
+    GotoTab2,
+    GotoTab3,
+    GotoTab4,
+    GotoTab5,
+    GotoTab6,
+    GotoTab7,
+    GotoTab8,
+    GotoTab9,
+]);
+
 /// The unlocked vault's master key, available anywhere via
 /// `cx.global::<VaultKey>()` / `cx.try_global::<VaultKey>()` once unlock
 /// succeeds — set once at startup (see `Workspace::new`), never re-locked
@@ -242,6 +257,15 @@ pub struct Workspace {
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
     terminal_views: Vec<WeakEntity<TerminalView>>,
+    /// Number of tabs currently open in the center dock's (single) tab
+    /// group. Tracked here rather than read from gpui-component's own
+    /// `DockArea.center()` tree, whose cached panel list is stale after any
+    /// tab close (see `center_tab_group_is_stale`'s doc comment) — and
+    /// `TabPanel` has no public panel-count getter either. Incremented in
+    /// `add_center` (the single entry point every `open_*` method uses),
+    /// decremented wherever a `TerminalPanelEvent::Closed` is observed
+    /// below.
+    tab_count: usize,
     /// The open settings window, if any — re-triggering the menu item
     /// focuses this instead of opening a duplicate.
     settings_window: Option<WindowHandle<Root>>,
@@ -470,6 +494,7 @@ impl Workspace {
             ssh_reconnect_configs: HashMap::new(),
             ssh_tab_numbers: HashMap::new(),
             terminal_views: Vec::new(),
+            tab_count: 0,
             settings_window: None,
             focused_terminal: None,
             _focused_terminal_observation: None,
@@ -557,6 +582,11 @@ impl Workspace {
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, _panel, event, _window, _cx| {
+            let TerminalPanelEvent::Closed = event;
+            this.tab_count = this.tab_count.saturating_sub(1);
+        });
+        self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
@@ -712,6 +742,7 @@ impl Workspace {
         let closed_key = key.clone();
         let closed_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, window, cx| {
             let TerminalPanelEvent::Closed = event;
+            this.tab_count = this.tab_count.saturating_sub(1);
             this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
             this.release_ssh_tab_number(&closed_key, tab_number);
         });
@@ -904,6 +935,11 @@ impl Workspace {
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, _panel, event, _window, _cx| {
+            let TerminalPanelEvent::Closed = event;
+            this.tab_count = this.tab_count.saturating_sub(1);
+        });
+        self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
@@ -924,6 +960,11 @@ impl Workspace {
         });
         self._subscriptions.push(sub);
         let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, _panel, event, _window, _cx| {
+            let TerminalPanelEvent::Closed = event;
+            this.tab_count = this.tab_count.saturating_sub(1);
+        });
+        self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
@@ -1183,6 +1224,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.tab_count += 1;
         self.dock_area.update(cx, |dock_area, cx| {
             // When the Center dock's tab group empties out (every terminal
             // tab closed), its `TabPanel` detaches itself from the live
@@ -1214,6 +1256,120 @@ impl Workspace {
             DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx).is_none(),
             _ => false,
         }
+    }
+
+    /// Find the (currently only ever one) `Tabs` group inside the center
+    /// dock's tree — a `Split` wrapping a single `Tabs` item today (see
+    /// `add_center`'s doc comment); this walk also handles a future nested
+    /// `Split` without changes.
+    fn active_tabs_item(&self, cx: &App) -> Option<DockItem> {
+        fn find(item: &DockItem) -> Option<DockItem> {
+            match item {
+                DockItem::Tabs { .. } => Some(item.clone()),
+                DockItem::Split { items, .. } => items.iter().find_map(find),
+                _ => None,
+            }
+        }
+        find(self.dock_area.read(cx).center())
+    }
+
+    /// Switch the center dock's active tab to `ix` (0-indexed). Uses
+    /// `DockItem::active_index`, gpui-component's own public method for
+    /// mutating the live `TabPanel` entity's active index — but that method
+    /// doesn't call `cx.notify()` itself (confirmed by reading its body), so
+    /// this does that explicitly afterward, or the tab switch wouldn't
+    /// repaint until something unrelated triggered a redraw.
+    fn set_active_tab_index(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(tabs_item) = self.active_tabs_item(cx) else {
+            return;
+        };
+        let DockItem::Tabs { ref view, .. } = tabs_item else {
+            return;
+        };
+        let view = view.clone();
+        tabs_item.active_index(ix, cx);
+        view.update(cx, |_, cx| cx.notify());
+    }
+
+    /// `secondary-shift-t`: duplicate the focused tab's connection — a new
+    /// shell on the same host if it's SSH, otherwise (or with nothing
+    /// focused) a new local shell, same fallback `open_local_with` already
+    /// uses elsewhere.
+    fn on_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+        let fallback_title = rust_i18n::t!("NewConnectionWindow.type_local").to_string();
+        let Some(terminal) = self.focused_terminal.as_ref().and_then(|w| w.upgrade()) else {
+            self.open_local_with(String::new(), String::new(), fallback_title, window, cx);
+            return;
+        };
+        let Some(config) = self.ssh_reconnect_configs.get(&terminal.entity_id()).cloned() else {
+            self.open_local_with(String::new(), String::new(), fallback_title, window, cx);
+            return;
+        };
+        // SSH tab titles are always "{display_name}:{n}" (see `open_ssh`) —
+        // recover the original display name by dropping the numeric suffix.
+        let title = terminal.read(cx).title().to_string();
+        let display_name = title.rsplit_once(':').map_or(title.clone(), |(name, _)| name.to_string());
+        self.open_ssh(config, display_name, window, cx);
+    }
+
+    fn on_next_tab(&mut self, _: &NextTab, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tabs_item) = self.active_tabs_item(cx) else {
+            return;
+        };
+        let DockItem::Tabs { ref view, .. } = tabs_item else {
+            return;
+        };
+        let current = view.read(cx).active_ix();
+        let new_ix = Self::next_tab_index(current, self.tab_count);
+        self.set_active_tab_index(new_ix, cx);
+    }
+
+    fn on_prev_tab(&mut self, _: &PrevTab, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tabs_item) = self.active_tabs_item(cx) else {
+            return;
+        };
+        let DockItem::Tabs { ref view, .. } = tabs_item else {
+            return;
+        };
+        let current = view.read(cx).active_ix();
+        let new_ix = Self::prev_tab_index(current, self.tab_count);
+        self.set_active_tab_index(new_ix, cx);
+    }
+
+    /// Shared by the nine `on_goto_tab_N` handlers below.
+    fn goto_tab(&mut self, one_indexed: usize, cx: &mut Context<Self>) {
+        let Some(ix) = Self::goto_tab_index(one_indexed, self.tab_count) else {
+            return;
+        };
+        self.set_active_tab_index(ix, cx);
+    }
+
+    fn on_goto_tab_1(&mut self, _: &GotoTab1, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(1, cx);
+    }
+    fn on_goto_tab_2(&mut self, _: &GotoTab2, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(2, cx);
+    }
+    fn on_goto_tab_3(&mut self, _: &GotoTab3, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(3, cx);
+    }
+    fn on_goto_tab_4(&mut self, _: &GotoTab4, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(4, cx);
+    }
+    fn on_goto_tab_5(&mut self, _: &GotoTab5, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(5, cx);
+    }
+    fn on_goto_tab_6(&mut self, _: &GotoTab6, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(6, cx);
+    }
+    fn on_goto_tab_7(&mut self, _: &GotoTab7, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(7, cx);
+    }
+    fn on_goto_tab_8(&mut self, _: &GotoTab8, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(8, cx);
+    }
+    fn on_goto_tab_9(&mut self, _: &GotoTab9, _window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(9, cx);
     }
 
     // --- panel registry / slots ---------------------------------------------
@@ -1633,6 +1789,18 @@ impl Render for Workspace {
             .flex_col()
             .size_full()
             .font(chrome_font)
+            .on_action(cx.listener(Self::on_new_tab))
+            .on_action(cx.listener(Self::on_next_tab))
+            .on_action(cx.listener(Self::on_prev_tab))
+            .on_action(cx.listener(Self::on_goto_tab_1))
+            .on_action(cx.listener(Self::on_goto_tab_2))
+            .on_action(cx.listener(Self::on_goto_tab_3))
+            .on_action(cx.listener(Self::on_goto_tab_4))
+            .on_action(cx.listener(Self::on_goto_tab_5))
+            .on_action(cx.listener(Self::on_goto_tab_6))
+            .on_action(cx.listener(Self::on_goto_tab_7))
+            .on_action(cx.listener(Self::on_goto_tab_8))
+            .on_action(cx.listener(Self::on_goto_tab_9))
             // Quick-commands drawer resize: mouse-down starts on the handle
             // itself (`start_quick_commands_resize`), but move/up are
             // handled here, at the top level, so the drag keeps tracking
