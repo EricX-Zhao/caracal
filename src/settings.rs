@@ -17,6 +17,8 @@ pub struct AppSettings {
     pub appearance: AppearanceSettings,
     #[serde(default)]
     pub terminal: TerminalSettings,
+    #[serde(default)]
+    pub keybindings: KeybindingsSettings,
 }
 
 /// General application settings, editable from Settings → General.
@@ -151,6 +153,18 @@ impl Default for TerminalSettings {
     }
 }
 
+/// Per-action keyboard-shortcut overrides, editable from Settings →
+/// Shortcuts. Only entries the user has actually changed are present —
+/// anything absent falls back to
+/// `crate::panels::keybindings::DEFAULT_KEYBINDINGS`. Deliberately just a
+/// `HashMap`, not one field per action: a future addition to the default
+/// table needs no migration here.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct KeybindingsSettings {
+    #[serde(default)]
+    pub overrides: std::collections::HashMap<String, String>,
+}
+
 /// `~/.caracal/settings.toml`.
 pub fn settings_path() -> PathBuf {
     crate::paths::app_dir().join("settings.toml")
@@ -237,6 +251,43 @@ mod tests {
     }
 
     #[test]
+    fn default_keybindings_overrides_is_empty() {
+        let settings = AppSettings::default();
+        assert!(settings.keybindings.overrides.is_empty());
+    }
+
+    #[test]
+    fn round_trip_preserves_keybinding_overrides() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("new_tab".to_string(), "secondary-shift-r".to_string());
+        let settings = AppSettings {
+            keybindings: KeybindingsSettings { overrides },
+            ..AppSettings::default()
+        };
+        let text = toml::to_string_pretty(&settings).expect("serialize");
+        let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
+        assert_eq!(
+            parsed.keybindings.overrides.get("new_tab").map(String::as_str),
+            Some("secondary-shift-r")
+        );
+    }
+
+    #[test]
+    fn old_settings_file_without_keybindings_table_still_deserializes() {
+        let toml_text = r#"
+            [appearance]
+            theme_name = "Default Dark"
+
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert!(settings.keybindings.overrides.is_empty());
+    }
+
+    #[test]
     fn round_trip_preserves_fields() {
         let settings = AppSettings {
             general: GeneralSettings {
@@ -256,6 +307,7 @@ mod tests {
                 font_fallback1: "JetBrains Mono".to_string(),
                 font_fallback2: "Symbols Nerd Font".to_string(),
             },
+            keybindings: KeybindingsSettings::default(),
         };
         let text = toml::to_string_pretty(&settings).expect("serialize");
         let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
