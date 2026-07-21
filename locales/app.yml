@@ -4,6 +4,21 @@ Header:
     zh-CN: "终端"
     en: "Terminal"
 Settings:
+  tab_general:
+    zh-CN: "通用"
+    en: "General"
+  tab_appearance:
+    zh-CN: "外观"
+    en: "Appearance"
+  tab_terminal:
+    zh-CN: "终端"
+    en: "Terminal"
+  tab_security:
+    zh-CN: "安全"
+    en: "Security"
+  tab_shortcuts:
+    zh-CN: "快捷键"
+    en: "Shortcuts"
   General:
     language_label:
       zh-CN: "语言"

@@ -124,6 +124,42 @@ fn shortcut_action_label(action_id: &str) -> SharedString {
     }
 }
 
+/// Human-readable form of a raw gpui binding string (e.g.
+/// `"secondary-shift-t"` -> `"Ctrl+Shift+T"` on Windows/Linux, `"⌘+Shift+T"`
+/// on macOS) — what the Shortcuts tab actually displays, instead of gpui's
+/// internal syntax. Reuses gpui's own `Keystroke::parse` (rather than
+/// hand-splitting on `-`) specifically because a couple of this feature's
+/// own default keys use `-`/`=`/`,` as the literal final key (e.g.
+/// `zoom_out`'s default `"secondary--"`), which a naive split on `-` can't
+/// disambiguate from a modifier separator — `Keystroke::parse` already
+/// handles that correctly.
+fn format_binding_for_display(binding: &str) -> String {
+    let Ok(ks) = gpui::Keystroke::parse(binding) else {
+        return binding.to_string();
+    };
+    let mut parts = Vec::new();
+    if ks.modifiers.secondary() {
+        parts.push(if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" }.to_string());
+    }
+    if ks.modifiers.alt {
+        parts.push(if cfg!(target_os = "macos") { "⌥" } else { "Alt" }.to_string());
+    }
+    if ks.modifiers.shift {
+        parts.push("Shift".to_string());
+    }
+    let key_label = if ks.key.chars().count() == 1 {
+        ks.key.to_uppercase()
+    } else {
+        let mut chars = ks.key.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => ks.key.clone(),
+        }
+    };
+    parts.push(key_label);
+    parts.join("+")
+}
+
 /// Identifies which font-setting field a `SettingsWindow::font_picker`
 /// dropdown reads/writes.
 #[derive(Clone, Copy)]
@@ -160,13 +196,26 @@ enum SettingsTab {
 }
 
 impl SettingsTab {
-    fn label(self) -> &'static str {
+    /// Stable ASCII id for this tab's element id — independent of
+    /// `label()`'s (possibly Chinese) display text, so switching the
+    /// language live doesn't change the sidebar buttons' element ids.
+    fn id_key(self) -> &'static str {
         match self {
-            SettingsTab::General => "General",
-            SettingsTab::Appearance => "Appearance",
-            SettingsTab::Terminal => "Terminal",
-            SettingsTab::Security => "Security",
-            SettingsTab::Shortcuts => "Shortcuts",
+            SettingsTab::General => "general",
+            SettingsTab::Appearance => "appearance",
+            SettingsTab::Terminal => "terminal",
+            SettingsTab::Security => "security",
+            SettingsTab::Shortcuts => "shortcuts",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            SettingsTab::General => rust_i18n::t!("Settings.tab_general").into(),
+            SettingsTab::Appearance => rust_i18n::t!("Settings.tab_appearance").into(),
+            SettingsTab::Terminal => rust_i18n::t!("Settings.tab_terminal").into(),
+            SettingsTab::Security => rust_i18n::t!("Settings.tab_security").into(),
+            SettingsTab::Shortcuts => rust_i18n::t!("Settings.tab_shortcuts").into(),
         }
     }
 }
@@ -464,7 +513,7 @@ impl SettingsWindow {
     fn tab_button(&self, tab: SettingsTab, cx: &Context<Self>) -> impl IntoElement {
         let active = self.active_tab == tab;
         div()
-            .id(SharedString::from(format!("settings-tab-{}", tab.label())))
+            .id(SharedString::from(format!("settings-tab-{}", tab.id_key())))
             .px_3()
             .py_1()
             .rounded_sm()
@@ -819,7 +868,7 @@ impl SettingsWindow {
                             .child(if is_recording {
                                 rust_i18n::t!("Settings.Shortcuts.recording_prompt").to_string()
                             } else {
-                                current_key
+                                format_binding_for_display(&current_key)
                             }),
                     )
                     .child(
@@ -924,8 +973,10 @@ impl SettingsWindow {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(format!(
-                        "{}: secondary-1 .. secondary-9",
-                        rust_i18n::t!("Settings.Shortcuts.goto_tab_label")
+                        "{}: {} .. {}",
+                        rust_i18n::t!("Settings.Shortcuts.goto_tab_label"),
+                        format_binding_for_display("secondary-1"),
+                        format_binding_for_display("secondary-9")
                     )),
             )
             .child(
@@ -1043,6 +1094,32 @@ impl Render for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_binding_for_display_renders_modifiers_and_key() {
+        // On this dev/CI host (non-macOS), the "secondary" modifier reads
+        // as "Ctrl" — see `keybindings.rs`'s tests for the same convention.
+        assert_eq!(format_binding_for_display("secondary-shift-t"), "Ctrl+Shift+T");
+        assert_eq!(format_binding_for_display("secondary-b"), "Ctrl+B");
+        assert_eq!(format_binding_for_display("secondary-tab"), "Ctrl+Tab");
+    }
+
+    #[test]
+    fn format_binding_for_display_handles_punctuation_keys() {
+        // These are exactly the defaults (zoom_out, open_settings, zoom_in)
+        // that a naive split-on-'-' can't parse correctly — the key IS a
+        // hyphen/comma/equals, not a separator.
+        assert_eq!(format_binding_for_display("secondary--"), "Ctrl+-");
+        assert_eq!(format_binding_for_display("secondary-,"), "Ctrl+,");
+        assert_eq!(format_binding_for_display("secondary-="), "Ctrl+=");
+    }
+
+    #[test]
+    fn format_binding_for_display_falls_back_to_raw_string_on_parse_failure() {
+        // Two unrecognized non-modifier tokens in a row is rejected by
+        // `Keystroke::parse` (not a valid `key->key_char` form either).
+        assert_eq!(format_binding_for_display("abc-def"), "abc-def");
+    }
 
     #[test]
     fn parses_valid_size() {

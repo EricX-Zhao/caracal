@@ -1343,7 +1343,18 @@ impl Workspace {
     /// doesn't call `cx.notify()` itself (confirmed by reading its body), so
     /// this does that explicitly afterward, or the tab switch wouldn't
     /// repaint until something unrelated triggered a redraw.
-    fn set_active_tab_index(&mut self, ix: usize, cx: &mut Context<Self>) {
+    ///
+    /// Also moves keyboard focus into the newly active panel. Mouse-click
+    /// tab switching goes through `TabPanel`'s own private `set_active_ix`,
+    /// which additionally calls a private `focus_active_panel` helper
+    /// (confirmed by reading `tab_panel.rs`) — `DockItem::active_index`
+    /// bypasses that entirely since it only touches the `active_ix` field
+    /// directly, so a keyboard-driven switch left focus on whatever had it
+    /// before (typically the now-hidden previous tab), stranding keystrokes
+    /// there. Reproduces the same effect via `TabPanel`'s public
+    /// `active_panel`/`PanelView::focus_handle` instead of needing the
+    /// private method itself.
+    fn set_active_tab_index(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tabs_item) = self.active_tabs_item(cx) else {
             return;
         };
@@ -1353,6 +1364,9 @@ impl Workspace {
         let view = view.clone();
         tabs_item.active_index(ix, cx);
         view.update(cx, |_, cx| cx.notify());
+        if let Some(panel) = view.read(cx).active_panel(cx) {
+            panel.focus_handle(cx).focus(window, cx);
+        }
     }
 
     /// `secondary-shift-t`: duplicate the focused tab's connection — a new
@@ -1385,7 +1399,7 @@ impl Workspace {
         });
     }
 
-    fn on_next_tab(&mut self, _: &NextTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tabs_item) = self.active_tabs_item(cx) else {
             return;
         };
@@ -1394,10 +1408,10 @@ impl Workspace {
         };
         let current = view.read(cx).active_ix();
         let new_ix = Self::next_tab_index(current, self.tab_count);
-        self.set_active_tab_index(new_ix, cx);
+        self.set_active_tab_index(new_ix, window, cx);
     }
 
-    fn on_prev_tab(&mut self, _: &PrevTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tabs_item) = self.active_tabs_item(cx) else {
             return;
         };
@@ -1406,43 +1420,43 @@ impl Workspace {
         };
         let current = view.read(cx).active_ix();
         let new_ix = Self::prev_tab_index(current, self.tab_count);
-        self.set_active_tab_index(new_ix, cx);
+        self.set_active_tab_index(new_ix, window, cx);
     }
 
     /// Shared by the nine `on_goto_tab_N` handlers below.
-    fn goto_tab(&mut self, one_indexed: usize, cx: &mut Context<Self>) {
+    fn goto_tab(&mut self, one_indexed: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = Self::goto_tab_index(one_indexed, self.tab_count) else {
             return;
         };
-        self.set_active_tab_index(ix, cx);
+        self.set_active_tab_index(ix, window, cx);
     }
 
-    fn on_goto_tab_1(&mut self, _: &GotoTab1, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(1, cx);
+    fn on_goto_tab_1(&mut self, _: &GotoTab1, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(1, window, cx);
     }
-    fn on_goto_tab_2(&mut self, _: &GotoTab2, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(2, cx);
+    fn on_goto_tab_2(&mut self, _: &GotoTab2, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(2, window, cx);
     }
-    fn on_goto_tab_3(&mut self, _: &GotoTab3, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(3, cx);
+    fn on_goto_tab_3(&mut self, _: &GotoTab3, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(3, window, cx);
     }
-    fn on_goto_tab_4(&mut self, _: &GotoTab4, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(4, cx);
+    fn on_goto_tab_4(&mut self, _: &GotoTab4, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(4, window, cx);
     }
-    fn on_goto_tab_5(&mut self, _: &GotoTab5, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(5, cx);
+    fn on_goto_tab_5(&mut self, _: &GotoTab5, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(5, window, cx);
     }
-    fn on_goto_tab_6(&mut self, _: &GotoTab6, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(6, cx);
+    fn on_goto_tab_6(&mut self, _: &GotoTab6, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(6, window, cx);
     }
-    fn on_goto_tab_7(&mut self, _: &GotoTab7, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(7, cx);
+    fn on_goto_tab_7(&mut self, _: &GotoTab7, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(7, window, cx);
     }
-    fn on_goto_tab_8(&mut self, _: &GotoTab8, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(8, cx);
+    fn on_goto_tab_8(&mut self, _: &GotoTab8, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(8, window, cx);
     }
-    fn on_goto_tab_9(&mut self, _: &GotoTab9, _window: &mut Window, cx: &mut Context<Self>) {
-        self.goto_tab(9, cx);
+    fn on_goto_tab_9(&mut self, _: &GotoTab9, window: &mut Window, cx: &mut Context<Self>) {
+        self.goto_tab(9, window, cx);
     }
 
     // --- panel registry / slots ---------------------------------------------
