@@ -41,6 +41,29 @@ fn parse_scrollback_lines(text: &str) -> Option<u32> {
     }
 }
 
+/// Check the 12 configurable shortcuts' *resolved* keys (override or
+/// default, via `keybindings::effective_key`) for a duplicate. Returns
+/// `(key, first_action_id, second_action_id)` for the first collision
+/// found (table order), or `None` if every resolved key is unique. O(n^2)
+/// over exactly 12 entries — a HashMap-based dedup isn't worth the extra
+/// code at this fixed, tiny size.
+fn find_keybinding_conflict(
+    overrides: &std::collections::HashMap<String, String>,
+) -> Option<(String, &'static str, &'static str)> {
+    let resolved: Vec<(&'static str, String)> = keybindings::DEFAULT_KEYBINDINGS
+        .iter()
+        .map(|(id, _)| (*id, keybindings::effective_key(id, overrides).unwrap_or_default()))
+        .collect();
+    for i in 0..resolved.len() {
+        for j in (i + 1)..resolved.len() {
+            if resolved[i].1 == resolved[j].1 {
+                return Some((resolved[i].1.clone(), resolved[i].0, resolved[j].0));
+            }
+        }
+    }
+    None
+}
+
 use gpui::{
     App, AppContext, ClickEvent, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
@@ -233,6 +256,22 @@ impl SettingsWindow {
             cx.notify();
             return false;
         }
+
+        if let Some((key, _first, second)) =
+            find_keybinding_conflict(&self.draft.keybindings.overrides)
+        {
+            self.error = Some(
+                rust_i18n::t!(
+                    "Settings.Shortcuts.conflict_error",
+                    key = key,
+                    action = shortcut_action_label(second)
+                )
+                .into(),
+            );
+            cx.notify();
+            return false;
+        }
+
         if let Err(e) = settings::save(&self.draft) {
             log::error!("failed to save settings: {e}");
             self.error = Some(rust_i18n::t!("Settings.save_failed").into());
@@ -270,6 +309,29 @@ impl SettingsWindow {
                 cx,
             );
         });
+
+        // Keyboard shortcuts: re-register only the actions whose resolved
+        // key actually changed since `committed` — appending a fresh
+        // `KeyBinding` is immediate and safe (see `keybindings.rs`'s doc
+        // comment: gpui's own precedence rule means a later-added binding
+        // shadows an earlier one for the same keystroke+context, so this
+        // never needs `clear_key_bindings()` and never touches
+        // gpui-component's own internal bindings).
+        let mut changed: Vec<(&'static str, String)> = Vec::new();
+        for (action_id, _) in keybindings::DEFAULT_KEYBINDINGS {
+            let old_key =
+                keybindings::effective_key(action_id, &self.committed.keybindings.overrides);
+            let new_key =
+                keybindings::effective_key(action_id, &self.draft.keybindings.overrides);
+            if old_key != new_key {
+                if let Some(new_key) = new_key {
+                    changed.push((action_id, new_key));
+                }
+            }
+        }
+        if !changed.is_empty() {
+            cx.bind_keys(keybindings::build_key_bindings_for(&changed));
+        }
 
         self.committed = self.draft.clone();
         cx.notify();
@@ -1004,5 +1066,29 @@ mod tests {
     fn rejects_non_numeric_scrollback_lines() {
         assert_eq!(parse_scrollback_lines("abc"), None);
         assert_eq!(parse_scrollback_lines(""), None);
+    }
+
+    #[test]
+    fn find_keybinding_conflict_none_when_all_defaults() {
+        let overrides = std::collections::HashMap::new();
+        assert!(find_keybinding_conflict(&overrides).is_none());
+    }
+
+    #[test]
+    fn find_keybinding_conflict_detects_a_collision() {
+        let mut overrides = std::collections::HashMap::new();
+        // toggle_left_sidebar's default is "secondary-b" — collide new_tab into it.
+        overrides.insert("new_tab".to_string(), "secondary-b".to_string());
+        let conflict = find_keybinding_conflict(&overrides).expect("expected a conflict");
+        assert_eq!(conflict.0, "secondary-b");
+        assert_eq!(conflict.1, "new_tab");
+        assert_eq!(conflict.2, "toggle_left_sidebar");
+    }
+
+    #[test]
+    fn find_keybinding_conflict_none_when_override_is_still_unique() {
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("new_tab".to_string(), "secondary-shift-r".to_string());
+        assert!(find_keybinding_conflict(&overrides).is_none());
     }
 }
