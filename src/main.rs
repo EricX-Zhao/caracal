@@ -36,12 +36,10 @@ use gpui_platform::application;
 
 use crate::assets::CaracalAssets;
 
-use gpui_component::dock::ClosePanel;
-use terminal::view::{ClearScreen, Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
+use terminal::view::{Interrupt, SendBackTab, SendTab, TERMINAL_KEY_CONTEXT};
 use workspace::{
     GotoTab1, GotoTab2, GotoTab3, GotoTab4, GotoTab5, GotoTab6, GotoTab7, GotoTab8, GotoTab9,
-    NewConnectionAction, NewTab, NextTab, OpenSettingsAction, PrevTab, ToggleLeftSidebar,
-    ToggleQuickCommands, ToggleRightSidebar, Workspace, ZoomIn, ZoomOut,
+    Workspace, ZoomIn,
 };
 
 rust_i18n::i18n!("locales", fallback = "zh-CN");
@@ -155,16 +153,18 @@ fn main() {
         // Reclaim keys that gpui-component's Root context binds (tab → focus nav,
         // ctrl-c → Copy): bind them in the deeper "Terminal" context so the
         // terminal receives them as raw input (tab completion, SIGINT).
-        cx.bind_keys([
+        // Fixed bindings that are never user-configurable: raw terminal
+        // input (Interrupt/SendTab/SendBackTab), the 9 jump-to-tab keys,
+        // and ZoomIn's permanent shifted-`+` convenience alias. The 12
+        // *configurable* shortcuts (Settings → Shortcuts) come from
+        // `panels::keybindings::build_key_bindings`, seeded with whatever
+        // the user has overridden in `settings.toml` — see that module's
+        // doc comment for why later Settings-window edits never need
+        // `clear_key_bindings()`.
+        let mut key_bindings = vec![
             KeyBinding::new("ctrl-c", Interrupt, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
             KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
-            KeyBinding::new("secondary-shift-l", ClearScreen, Some(TERMINAL_KEY_CONTEXT)),
-            KeyBinding::new("secondary-shift-t", NewTab, None),
-            KeyBinding::new("secondary-shift-w", ClosePanel, None),
-            KeyBinding::new("secondary-shift-n", NewConnectionAction, None),
-            KeyBinding::new("secondary-tab", NextTab, None),
-            KeyBinding::new("secondary-shift-tab", PrevTab, None),
             KeyBinding::new("secondary-1", GotoTab1, None),
             KeyBinding::new("secondary-2", GotoTab2, None),
             KeyBinding::new("secondary-3", GotoTab3, None),
@@ -174,14 +174,12 @@ fn main() {
             KeyBinding::new("secondary-7", GotoTab7, None),
             KeyBinding::new("secondary-8", GotoTab8, None),
             KeyBinding::new("secondary-9", GotoTab9, None),
-            KeyBinding::new("secondary-b", ToggleLeftSidebar, None),
-            KeyBinding::new("secondary-shift-b", ToggleRightSidebar, None),
-            KeyBinding::new("secondary-j", ToggleQuickCommands, None),
-            KeyBinding::new("secondary-,", OpenSettingsAction, None),
-            KeyBinding::new("secondary-=", ZoomIn, None),
             KeyBinding::new("secondary-shift-=", ZoomIn, None),
-            KeyBinding::new("secondary--", ZoomOut, None),
-        ]);
+        ];
+        key_bindings.extend(panels::keybindings::build_key_bindings(
+            &startup_settings.keybindings.overrides,
+        ));
+        cx.bind_keys(key_bindings);
 
         if let Err(e) = cx.text_system().add_fonts(vec![
             Cow::Borrowed(SYMBOLS_NERD_FONT_MONO),
