@@ -6,6 +6,7 @@
 pub mod activity_bar;
 pub mod header;
 pub mod icons;
+pub mod keybindings;
 pub mod monitor;
 pub mod new_connection_window;
 pub mod quick_commands_panel;
