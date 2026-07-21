@@ -21,6 +21,64 @@ Settings:
     reset_vault_label:
       zh-CN: "密码库"
       en: "Vault"
+  Shortcuts:
+    new_tab:
+      zh-CN: "新建标签页"
+      en: "New Tab"
+    close_tab:
+      zh-CN: "关闭标签页"
+      en: "Close Tab"
+    next_tab:
+      zh-CN: "下一个标签页"
+      en: "Next Tab"
+    prev_tab:
+      zh-CN: "上一个标签页"
+      en: "Previous Tab"
+    new_connection:
+      zh-CN: "新建连接"
+      en: "New Connection"
+    toggle_left_sidebar:
+      zh-CN: "切换左侧栏"
+      en: "Toggle Left Sidebar"
+    toggle_right_sidebar:
+      zh-CN: "切换右侧栏"
+      en: "Toggle Right Sidebar"
+    toggle_quick_commands:
+      zh-CN: "切换快捷命令面板"
+      en: "Toggle Quick Commands"
+    open_settings:
+      zh-CN: "打开设置"
+      en: "Open Settings"
+    zoom_in:
+      zh-CN: "放大字体"
+      en: "Zoom In"
+    zoom_out:
+      zh-CN: "缩小字体"
+      en: "Zoom Out"
+    clear_screen:
+      zh-CN: "清除屏幕"
+      en: "Clear Screen"
+    goto_tab_label:
+      zh-CN: "跳转到标签页 1-9"
+      en: "Jump to Tab 1-9"
+    record_button:
+      zh-CN: "记录"
+      en: "Record"
+    recording_prompt:
+      zh-CN: "按下新按键…"
+      en: "Press a key…"
+    reset_button:
+      zh-CN: "恢复默认"
+      en: "Reset"
+    reset_all_button:
+      zh-CN: "全部恢复默认"
+      en: "Reset All"
+    needs_modifier:
+      zh-CN: "需要至少一个修饰键"
+      en: "Requires at least one modifier key"
+    conflict_error:
+      zh-CN: "%{key} 已被\"%{action}\"占用"
+      en: "%{key} is already used by \"%{action}\""
   theme_label:
     zh-CN: "主题"
     en: "Theme"
