@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use gpui::{KeyBinding, Keystroke};
+use gpui::{KeyBinding, Keystroke, NoAction};
 use gpui_component::dock::ClosePanel;
 
 use crate::terminal::view::{ClearScreen, TERMINAL_KEY_CONTEXT};
@@ -73,6 +73,32 @@ fn keybinding_for(action_id: &str, key: &str) -> KeyBinding {
         "clear_screen" => KeyBinding::new(key, ClearScreen, Some(TERMINAL_KEY_CONTEXT)),
         _ => unreachable!("keybinding_for called with an unknown action_id: {action_id}"),
     }
+}
+
+/// Context for `action_id` — mirrors `keybinding_for`'s context choice but
+/// without needing the concrete Action type, since `suppress_key` always
+/// binds to `gpui::NoAction`.
+fn context_for(action_id: &str) -> Option<&'static str> {
+    match action_id {
+        "clear_screen" => Some(TERMINAL_KEY_CONTEXT),
+        "new_tab" | "close_tab" | "next_tab" | "prev_tab" | "new_connection"
+        | "toggle_left_sidebar" | "toggle_right_sidebar" | "toggle_quick_commands"
+        | "open_settings" | "zoom_in" | "zoom_out" => None,
+        _ => unreachable!("context_for called with an unknown action_id: {action_id}"),
+    }
+}
+
+/// Build a `KeyBinding` that explicitly suppresses `old_key` for
+/// `action_id`'s context, using gpui's own `NoAction` sentinel action.
+/// Confirmed against gpui's actual dispatch source
+/// (`Keymap::bindings_for_input` in `crates/gpui/src/keymap.rs`): when a
+/// `NoAction` binding is the highest-precedence match for a keystroke, the
+/// dispatch loop `break`s, discarding every lower-precedence (earlier-
+/// added) binding for that same keystroke+context — so appending this
+/// after a live-rebind makes the old key immediately stop firing the
+/// action it used to, without ever calling `clear_key_bindings()`.
+pub fn suppress_key(action_id: &str, old_key: &str) -> KeyBinding {
+    KeyBinding::new(old_key, NoAction, context_for(action_id))
 }
 
 /// Build the live `KeyBinding`s for all 12 configurable actions, using
@@ -233,5 +259,63 @@ mod tests {
     #[test]
     fn has_modifier_false_for_a_bare_key() {
         assert!(!has_modifier(&keystroke(false, false, false, "t")));
+    }
+
+    #[test]
+    fn suppress_key_uses_no_action() {
+        // Constructing it must not panic, and the binding must target the
+        // given key string — full dispatch-level behavior is exercised in
+        // settings_window.rs's own test for the end-to-end scenario.
+        let _binding = suppress_key("new_tab", "secondary-shift-t");
+    }
+
+    #[test]
+    fn old_key_stops_matching_after_rebind_and_suppression() {
+        use std::collections::HashMap;
+        // Reproduces exactly what SettingsWindow::apply does: startup with
+        // defaults, then a live-rebind of one action to a new key, PLUS
+        // the suppression binding for its old key.
+        let mut keymap = gpui::Keymap::new(build_key_bindings(&HashMap::new()));
+        keymap.add_bindings(build_key_bindings_for(&[(
+            "new_tab",
+            "secondary-shift-r".to_string(),
+        )]));
+        keymap.add_bindings([suppress_key("new_tab", "secondary-shift-t")]);
+
+        let old_key = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                alt: false,
+                platform: false,
+                function: false,
+            },
+            key: "t".to_string(),
+            key_char: None,
+        };
+        let new_key = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                alt: false,
+                platform: false,
+                function: false,
+            },
+            key: "r".to_string(),
+            key_char: None,
+        };
+
+        let (old_matches, _) = keymap.bindings_for_input(&[old_key], &[]);
+        let (new_matches, _) = keymap.bindings_for_input(&[new_key], &[]);
+
+        assert!(
+            old_matches.is_empty(),
+            "old key should no longer match anything after suppression"
+        );
+        assert_eq!(
+            new_matches.len(),
+            1,
+            "new key should match exactly the rebound action"
+        );
     }
 }

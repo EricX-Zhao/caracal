@@ -318,6 +318,7 @@ impl SettingsWindow {
         // never needs `clear_key_bindings()` and never touches
         // gpui-component's own internal bindings).
         let mut changed: Vec<(&'static str, String)> = Vec::new();
+        let mut suppressed: Vec<(&'static str, String)> = Vec::new();
         for (action_id, _) in keybindings::DEFAULT_KEYBINDINGS {
             let old_key =
                 keybindings::effective_key(action_id, &self.committed.keybindings.overrides);
@@ -327,10 +328,19 @@ impl SettingsWindow {
                 if let Some(new_key) = new_key {
                     changed.push((action_id, new_key));
                 }
+                if let Some(old_key) = old_key {
+                    suppressed.push((action_id, old_key));
+                }
             }
         }
-        if !changed.is_empty() {
-            cx.bind_keys(keybindings::build_key_bindings_for(&changed));
+        if !changed.is_empty() || !suppressed.is_empty() {
+            let mut bindings = keybindings::build_key_bindings_for(&changed);
+            bindings.extend(
+                suppressed
+                    .iter()
+                    .map(|(action_id, old_key)| keybindings::suppress_key(action_id, old_key)),
+            );
+            cx.bind_keys(bindings);
         }
 
         self.committed = self.draft.clone();
