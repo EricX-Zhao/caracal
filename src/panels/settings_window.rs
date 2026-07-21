@@ -329,7 +329,9 @@ impl SettingsWindow {
                     changed.push((action_id, new_key));
                 }
                 if let Some(old_key) = old_key {
-                    suppressed.push((action_id, old_key));
+                    if !keybindings::FIXED_KEYS.contains(&old_key.as_str()) {
+                        suppressed.push((action_id, old_key));
+                    }
                 }
             }
         }
@@ -480,6 +482,8 @@ impl SettingsWindow {
             .child(tab.label())
             .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
                 this.active_tab = tab;
+                this.recording = None;
+                this.error = None;
                 cx.notify();
             }))
     }
@@ -872,6 +876,7 @@ impl SettingsWindow {
         let ks = &ev.keystroke;
         if ks.key == "escape" {
             self.recording = None;
+            self.error = None;
             cx.notify();
             return;
         }

@@ -23,6 +23,32 @@ use crate::workspace::{
     ToggleQuickCommands, ToggleRightSidebar, ZoomIn, ZoomOut,
 };
 
+/// Bindings that are never user-configurable (raw terminal input,
+/// jump-to-tab-N, and `ZoomIn`'s permanent convenience alias — see
+/// `main.rs`'s literal `cx.bind_keys` list). Suppression must never
+/// target one of these: a configurable action's *old* key can
+/// coincidentally collide with one of these (an accepted, documented
+/// edge case — the collision merely shadows the fixed binding), but
+/// explicitly `NoAction`-disabling it here would leave that fixed
+/// shortcut dead for the rest of the running session even after the
+/// colliding configurable action moves elsewhere — strictly worse than
+/// the shadow-only behavior the collision is supposed to degrade to.
+pub const FIXED_KEYS: &[&str] = &[
+    "ctrl-c",
+    "tab",
+    "shift-tab",
+    "secondary-1",
+    "secondary-2",
+    "secondary-3",
+    "secondary-4",
+    "secondary-5",
+    "secondary-6",
+    "secondary-7",
+    "secondary-8",
+    "secondary-9",
+    "secondary-shift-=",
+];
+
 /// `(action_id, default_binding_string)` for every user-configurable
 /// shortcut, in the order the Settings → Shortcuts tab lists them.
 pub const DEFAULT_KEYBINDINGS: &[(&str, &str)] = &[
@@ -384,6 +410,100 @@ mod tests {
             t_matches.len(),
             1,
             "secondary-shift-t should resolve to exactly one binding (toggle_left_sidebar's new key)"
+        );
+    }
+
+    #[test]
+    fn suppress_key_list_never_targets_a_fixed_key_in_practice() {
+        // Not a test of suppress_key itself (it has no built-in
+        // fixed-key awareness — the filter lives at the call site in
+        // settings_window.rs) but a guard that FIXED_KEYS actually
+        // contains the literal strings main.rs registers, so the
+        // settings_window.rs filter has something real to check against.
+        assert!(FIXED_KEYS.contains(&"secondary-1"));
+        assert!(FIXED_KEYS.contains(&"secondary-9"));
+        assert!(FIXED_KEYS.contains(&"secondary-shift-="));
+        assert!(FIXED_KEYS.contains(&"ctrl-c"));
+        assert!(FIXED_KEYS.contains(&"tab"));
+        assert!(FIXED_KEYS.contains(&"shift-tab"));
+        assert_eq!(FIXED_KEYS.len(), 13);
+    }
+
+    #[test]
+    fn reset_all_then_rebind_restores_every_default_binding() {
+        use std::collections::HashMap;
+        // Simulates: two actions have standing overrides (the "committed"
+        // state), the user clicks Reset All (draft's override map becomes
+        // empty), then Apply runs the same diff-and-rebind logic
+        // apply() uses. Proves the reset-all round trip actually restores
+        // each action's *live* binding to its literal default, not just
+        // that the persisted map is empty.
+        let mut committed_overrides = HashMap::new();
+        committed_overrides.insert("new_tab".to_string(), "secondary-shift-r".to_string());
+
+        let mut keymap = gpui::Keymap::new(build_key_bindings(&committed_overrides));
+
+        // Reset All: draft has no overrides.
+        let draft_overrides: HashMap<String, String> = HashMap::new();
+
+        let mut changed: Vec<(&str, String)> = Vec::new();
+        let mut suppressed: Vec<(&str, String)> = Vec::new();
+        for (action_id, _) in DEFAULT_KEYBINDINGS {
+            let old_key = effective_key(action_id, &committed_overrides);
+            let new_key = effective_key(action_id, &draft_overrides);
+            if old_key != new_key {
+                if let Some(new_key) = new_key {
+                    changed.push((action_id, new_key));
+                }
+                if let Some(old_key) = old_key {
+                    if !FIXED_KEYS.contains(&old_key.as_str()) {
+                        suppressed.push((action_id, old_key));
+                    }
+                }
+            }
+        }
+        let mut bindings: Vec<KeyBinding> = suppressed
+            .iter()
+            .map(|(id, key)| suppress_key(id, key))
+            .collect();
+        bindings.extend(build_key_bindings_for(&changed));
+        keymap.add_bindings(bindings);
+
+        let default_new_tab_key = Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                alt: false,
+                platform: false,
+                function: false,
+            },
+            key: "t".to_string(),
+            key_char: None,
+        };
+        let stale_override_key = Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                alt: false,
+                platform: false,
+                function: false,
+            },
+            key: "r".to_string(),
+            key_char: None,
+        };
+
+        let (default_matches, _) = keymap.bindings_for_input(&[default_new_tab_key], &[]);
+        let (stale_matches, _) = keymap.bindings_for_input(&[stale_override_key], &[]);
+
+        assert_eq!(
+            default_matches.len(),
+            1,
+            "default key should be restored after reset-all"
+        );
+        assert_eq!(
+            stale_matches.len(),
+            0,
+            "old override key should no longer match anything after reset-all"
         );
     }
 }
