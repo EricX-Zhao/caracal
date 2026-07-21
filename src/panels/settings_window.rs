@@ -42,9 +42,9 @@ fn parse_scrollback_lines(text: &str) -> Option<u32> {
 }
 
 use gpui::{
-    App, AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, WeakEntity, Window,
-    div, prelude::FluentBuilder, px, red, transparent_black,
+    App, AppContext, ClickEvent, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
+    KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    WeakEntity, Window, div, prelude::FluentBuilder, px, red, transparent_black,
 };
 use gpui_component::button::{Button, ButtonVariants, DropdownButton};
 use gpui_component::input::{Input, InputState};
@@ -157,6 +157,14 @@ pub struct SettingsWindow {
     monitor_interval_input: Entity<InputState>,
     scrollback_input: Entity<InputState>,
     error: Option<SharedString>,
+    /// The action-id currently being recorded (`Record` button clicked,
+    /// waiting for the next keystroke), or `None` when nothing is being
+    /// recorded.
+    recording: Option<String>,
+    /// Focus target for capturing the next keystroke while recording —
+    /// created once in `new`, (re)focused via `window.focus(...)` each
+    /// time `Record` is clicked.
+    record_focus: FocusHandle,
 }
 
 impl SettingsWindow {
@@ -182,6 +190,8 @@ impl SettingsWindow {
             monitor_interval_input,
             scrollback_input,
             error: None,
+            recording: None,
+            record_focus: cx.focus_handle(),
         }
     }
 
@@ -705,13 +715,14 @@ impl SettingsWindow {
         });
     }
 
-    /// One row: action label, current resolved key (override or
-    /// default), and a Reset button. `Record` (interactive capture) is
-    /// added in a later change to this same function.
+    /// One row: action label, current resolved key (override or default) —
+    /// or the recording prompt while this row is being captured — plus
+    /// Record and Reset buttons.
     fn shortcut_row(&self, action_id: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let current_key =
             keybindings::effective_key(action_id, &self.draft.keybindings.overrides)
                 .unwrap_or_default();
+        let is_recording = self.recording.as_deref() == Some(action_id);
 
         div()
             .flex()
@@ -730,7 +741,21 @@ impl SettingsWindow {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(current_key),
+                            .child(if is_recording {
+                                rust_i18n::t!("Settings.Shortcuts.recording_prompt").to_string()
+                            } else {
+                                current_key
+                            }),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "settings-shortcut-record-{action_id}"
+                        )))
+                        .xsmall()
+                        .label(rust_i18n::t!("Settings.Shortcuts.record_button"))
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, window, cx| {
+                            this.start_recording(action_id, window, cx);
+                        })),
                     )
                     .child(
                         Button::new(SharedString::from(format!(
@@ -747,6 +772,47 @@ impl SettingsWindow {
 
     fn reset_shortcut(&mut self, action_id: &'static str, cx: &mut Context<Self>) {
         self.draft.keybindings.overrides.remove(action_id);
+        cx.notify();
+    }
+
+    fn start_recording(
+        &mut self,
+        action_id: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.recording = Some(action_id.to_string());
+        self.error = None;
+        window.focus(&self.record_focus, cx);
+        cx.notify();
+    }
+
+    /// Handles the next keystroke while `self.recording` is `Some`.
+    /// Escape cancels (reverts to whatever key the row had before,
+    /// without capturing Escape itself as a binding — standard capture-
+    /// widget convention). A bare, unmodified key is rejected inline. A
+    /// successful capture stages the canonicalized key string into
+    /// `self.draft.keybindings.overrides` — nothing is bound live or
+    /// saved to disk here; that only happens on Apply (Task 7).
+    fn on_capture_key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(action_id) = self.recording.clone() else {
+            return;
+        };
+        let ks = &ev.keystroke;
+        if ks.key == "escape" {
+            self.recording = None;
+            cx.notify();
+            return;
+        }
+        if !keybindings::has_modifier(ks) {
+            self.error = Some(rust_i18n::t!("Settings.Shortcuts.needs_modifier").into());
+            cx.notify();
+            return;
+        }
+        let key_string = keybindings::format_keystroke(ks);
+        self.draft.keybindings.overrides.insert(action_id, key_string);
+        self.recording = None;
+        self.error = None;
         cx.notify();
     }
 
@@ -768,6 +834,8 @@ impl SettingsWindow {
         }
 
         div()
+            .track_focus(&self.record_focus)
+            .on_key_down(cx.listener(Self::on_capture_key_down))
             .flex()
             .flex_col()
             .gap_3()
