@@ -54,6 +54,7 @@ use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme, Disableable, Sizable, Theme, ThemeMode, ThemeRegistry, WindowExt};
 
 use crate::keyring_store::SecretStore;
+use crate::panels::keybindings;
 use crate::settings::{self, AppSettings};
 use crate::terminal::view::{CJK_FALLBACK, DEFAULT_FONT_FAMILY, SYMBOL_FALLBACK};
 use crate::workspace::Workspace;
@@ -75,6 +76,28 @@ fn font_choice_label(value: &str) -> SharedString {
         SharedString::from(rust_i18n::t!("Settings.system_default"))
     } else {
         SharedString::from(value.to_string())
+    }
+}
+
+/// Localized display label for one of the 12 configurable shortcut
+/// action-ids (see `panels::keybindings::DEFAULT_KEYBINDINGS`). Falls back
+/// to the raw id for anything unrecognized (shouldn't happen — every
+/// caller sources ids from that same table).
+fn shortcut_action_label(action_id: &str) -> SharedString {
+    match action_id {
+        "new_tab" => rust_i18n::t!("Settings.Shortcuts.new_tab").into(),
+        "close_tab" => rust_i18n::t!("Settings.Shortcuts.close_tab").into(),
+        "next_tab" => rust_i18n::t!("Settings.Shortcuts.next_tab").into(),
+        "prev_tab" => rust_i18n::t!("Settings.Shortcuts.prev_tab").into(),
+        "new_connection" => rust_i18n::t!("Settings.Shortcuts.new_connection").into(),
+        "toggle_left_sidebar" => rust_i18n::t!("Settings.Shortcuts.toggle_left_sidebar").into(),
+        "toggle_right_sidebar" => rust_i18n::t!("Settings.Shortcuts.toggle_right_sidebar").into(),
+        "toggle_quick_commands" => rust_i18n::t!("Settings.Shortcuts.toggle_quick_commands").into(),
+        "open_settings" => rust_i18n::t!("Settings.Shortcuts.open_settings").into(),
+        "zoom_in" => rust_i18n::t!("Settings.Shortcuts.zoom_in").into(),
+        "zoom_out" => rust_i18n::t!("Settings.Shortcuts.zoom_out").into(),
+        "clear_screen" => rust_i18n::t!("Settings.Shortcuts.clear_screen").into(),
+        _ => SharedString::from(action_id.to_string()),
     }
 }
 
@@ -110,6 +133,7 @@ enum SettingsTab {
     Appearance,
     Terminal,
     Security,
+    Shortcuts,
 }
 
 impl SettingsTab {
@@ -119,6 +143,7 @@ impl SettingsTab {
             SettingsTab::Appearance => "Appearance",
             SettingsTab::Terminal => "Terminal",
             SettingsTab::Security => "Security",
+            SettingsTab::Shortcuts => "Shortcuts",
         }
     }
 }
@@ -680,6 +705,93 @@ impl SettingsWindow {
         });
     }
 
+    /// One row: action label, current resolved key (override or
+    /// default), and a Reset button. `Record` (interactive capture) is
+    /// added in a later change to this same function.
+    fn shortcut_row(&self, action_id: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_key =
+            keybindings::effective_key(action_id, &self.draft.keybindings.overrides)
+                .unwrap_or_default();
+
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(div().text_sm().child(shortcut_action_label(action_id)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(current_key),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "settings-shortcut-reset-{action_id}"
+                        )))
+                        .xsmall()
+                        .label(rust_i18n::t!("Settings.Shortcuts.reset_button"))
+                        .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                            this.reset_shortcut(action_id, cx);
+                        })),
+                    ),
+            )
+    }
+
+    fn reset_shortcut(&mut self, action_id: &'static str, cx: &mut Context<Self>) {
+        self.draft.keybindings.overrides.remove(action_id);
+        cx.notify();
+    }
+
+    fn on_click_reset_all_shortcuts(
+        &mut self,
+        _ev: &ClickEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.draft.keybindings.overrides.clear();
+        cx.notify();
+    }
+
+    fn render_shortcuts_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let border = cx.theme().border;
+        let mut rows = div().flex().flex_col().gap_2();
+        for (action_id, _) in keybindings::DEFAULT_KEYBINDINGS {
+            rows = rows.child(self.shortcut_row(action_id, cx));
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(rows)
+            .child(
+                div()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(border)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{}: secondary-1 .. secondary-9",
+                        rust_i18n::t!("Settings.Shortcuts.goto_tab_label")
+                    )),
+            )
+            .child(
+                Button::new("settings-shortcuts-reset-all")
+                    .xsmall()
+                    .label(rust_i18n::t!("Settings.Shortcuts.reset_all_button"))
+                    .on_click(cx.listener(Self::on_click_reset_all_shortcuts)),
+            )
+    }
+
     /// Standard boolean-toggle style for this settings window: a pill switch
     /// (`gpui_component::switch::Switch`), not a text pill button — see the
     /// "UI conventions" note in `docs/superpowers/specs/2026-07-07-settings-page-design.md`.
@@ -700,6 +812,7 @@ impl Render for SettingsWindow {
             SettingsTab::Appearance => self.render_appearance_tab(cx).into_any_element(),
             SettingsTab::Terminal => self.render_terminal_tab(cx).into_any_element(),
             SettingsTab::Security => self.render_security_tab(cx).into_any_element(),
+            SettingsTab::Shortcuts => self.render_shortcuts_tab(cx).into_any_element(),
         };
 
         div()
@@ -724,7 +837,8 @@ impl Render for SettingsWindow {
                             .child(self.tab_button(SettingsTab::General, cx))
                             .child(self.tab_button(SettingsTab::Appearance, cx))
                             .child(self.tab_button(SettingsTab::Terminal, cx))
-                            .child(self.tab_button(SettingsTab::Security, cx)),
+                            .child(self.tab_button(SettingsTab::Security, cx))
+                            .child(self.tab_button(SettingsTab::Shortcuts, cx)),
                     )
                     .child(div().flex_1().p_4().child(content)),
             )
