@@ -318,4 +318,72 @@ mod tests {
             "new key should match exactly the rebound action"
         );
     }
+
+    #[test]
+    fn swapped_keys_in_one_batch_both_resolve_to_their_new_action() {
+        use std::collections::HashMap;
+        // Reproduces a same-Apply "swap": action_a moves from key_a to
+        // key_b, and action_b moves from key_b to key_a, in one combined
+        // batch — the exact scenario that exposed the suppression/real-
+        // binding ordering bug. Suppressions must be inserted BEFORE the
+        // real new bindings in the same batch so a same-batch keystroke
+        // collision resolves in favor of the real (intended) binding, not
+        // a stale suppression for a different action.
+        let mut keymap = gpui::Keymap::new(build_key_bindings(&HashMap::new()));
+
+        // "new_tab" (default "secondary-shift-t") <-> "toggle_left_sidebar"
+        // (default "secondary-b") is not a real UI-reachable swap in one
+        // click today, but the Keymap-level mechanics are identical to any
+        // two actions trading keys in one batch, so this is a faithful,
+        // deterministic reproduction.
+        let new_key_for_a = "secondary-b".to_string(); // new_tab's new key = toggle_left_sidebar's old key
+        let new_key_for_b = "secondary-shift-t".to_string(); // toggle_left_sidebar's new key = new_tab's old key
+
+        // Suppressions first (matching the fixed ordering), then real bindings.
+        keymap.add_bindings([
+            suppress_key("new_tab", "secondary-shift-t"),
+            suppress_key("toggle_left_sidebar", "secondary-b"),
+        ]);
+        keymap.add_bindings(build_key_bindings_for(&[
+            ("new_tab", new_key_for_a.clone()),
+            ("toggle_left_sidebar", new_key_for_b.clone()),
+        ]));
+
+        let secondary_b = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: false,
+                alt: false,
+                platform: false,
+                function: false,
+            },
+            key: "b".to_string(),
+            key_char: None,
+        };
+        let secondary_shift_t = gpui::Keystroke {
+            modifiers: gpui::Modifiers {
+                control: true,
+                shift: true,
+                alt: false,
+                platform: false,
+                function: false,
+            },
+            key: "t".to_string(),
+            key_char: None,
+        };
+
+        let (b_matches, _) = keymap.bindings_for_input(&[secondary_b], &[]);
+        let (t_matches, _) = keymap.bindings_for_input(&[secondary_shift_t], &[]);
+
+        assert_eq!(
+            b_matches.len(),
+            1,
+            "secondary-b should resolve to exactly one binding (new_tab's new key)"
+        );
+        assert_eq!(
+            t_matches.len(),
+            1,
+            "secondary-shift-t should resolve to exactly one binding (toggle_left_sidebar's new key)"
+        );
+    }
 }

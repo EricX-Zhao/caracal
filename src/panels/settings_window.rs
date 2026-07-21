@@ -334,12 +334,11 @@ impl SettingsWindow {
             }
         }
         if !changed.is_empty() || !suppressed.is_empty() {
-            let mut bindings = keybindings::build_key_bindings_for(&changed);
-            bindings.extend(
-                suppressed
-                    .iter()
-                    .map(|(action_id, old_key)| keybindings::suppress_key(action_id, old_key)),
-            );
+            let mut bindings: Vec<gpui::KeyBinding> = suppressed
+                .iter()
+                .map(|(action_id, old_key)| keybindings::suppress_key(action_id, old_key))
+                .collect();
+            bindings.extend(keybindings::build_key_bindings_for(&changed));
             cx.bind_keys(bindings);
         }
 
