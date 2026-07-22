@@ -260,15 +260,13 @@ pub struct Workspace {
     /// by a closed tab rather than growing forever. Populated in `open_ssh`,
     /// released in `handle_ssh_tab_closed`.
     ssh_tab_numbers: HashMap<String, HashSet<u32>>,
-    /// Sequence numbers (the `"N-"` tab-title prefix) currently in use
-    /// across every open terminal tab, workspace-wide — unlike
-    /// `ssh_tab_numbers` above, this single pool is shared by every tab
-    /// kind (local/SSH/Telnet/Serial), not scoped per SSH host. Populated
-    /// in each `open_*` method via `allocate_tab_number`, released
-    /// wherever a `TerminalPanelEvent::Closed` is observed. Not
-    /// recomputed on drag-reorder or on closing a non-last tab — see
+    /// Every currently open `TerminalPanel`, in open order — the source
+    /// of truth for the workspace-wide `"N-"` tab-title sequence number,
+    /// recomputed by live position (not a sticky per-tab id) every time a
+    /// tab opens or closes via `register_tab_panel`/`unregister_tab_panel`.
+    /// Only goes stale after a manual drag-reorder — see
     /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
-    tab_numbers: HashSet<u32>,
+    tab_panels: Vec<Entity<TerminalPanel>>,
     /// Every `TerminalView` this workspace has created, so settings changes
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
@@ -519,7 +517,7 @@ impl Workspace {
             ssh_sessions: HashMap::new(),
             ssh_reconnect_configs: HashMap::new(),
             ssh_tab_numbers: HashMap::new(),
-            tab_numbers: HashSet::new(),
+            tab_panels: Vec::new(),
             terminal_views: Vec::new(),
             tab_count: 0,
             settings_window: None,
@@ -610,12 +608,15 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        let tab_seq = self.allocate_tab_number();
+        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
+        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
+        // wired in here to compute this from the panel's live open-order
+        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+        let tab_seq = 1;
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
         let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
-            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -687,20 +688,26 @@ impl Workspace {
         }
     }
 
-    /// Allocate the lowest unused positive sequence number for a newly
-    /// opened terminal tab (the `"N-"` title prefix), workspace-wide
-    /// across all tab kinds — same reuse-lowest-free-number scheme as
-    /// `allocate_ssh_tab_number`, just not scoped to one SSH host.
-    fn allocate_tab_number(&mut self) -> u32 {
-        let n = Self::lowest_free_number(&self.tab_numbers);
-        self.tab_numbers.insert(n);
-        n
+    /// Append `panel` to the end of the open-tab list and recompute every
+    /// open tab's displayed sequence number from its new position.
+    fn register_tab_panel(&mut self, panel: Entity<TerminalPanel>, cx: &mut Context<Self>) {
+        self.tab_panels.push(panel);
+        self.renumber_tabs(cx);
     }
 
-    /// Release a tab number previously returned by `allocate_tab_number`,
-    /// so the next tab opened anywhere in the workspace can reuse it.
-    fn release_tab_number(&mut self, n: u32) {
-        self.tab_numbers.remove(&n);
+    /// Remove `panel` from the open-tab list (by entity identity) and
+    /// recompute every remaining tab's displayed sequence number.
+    fn unregister_tab_panel(&mut self, panel: &Entity<TerminalPanel>, cx: &mut Context<Self>) {
+        self.tab_panels.retain(|p| p.entity_id() != panel.entity_id());
+        self.renumber_tabs(cx);
+    }
+
+    /// Set every open tab's displayed `"N-"` prefix to its 1-indexed
+    /// position in `tab_panels`.
+    fn renumber_tabs(&mut self, cx: &mut Context<Self>) {
+        for (i, panel) in self.tab_panels.iter().enumerate() {
+            panel.update(cx, |panel, cx| panel.set_tab_number((i + 1) as u32, cx));
+        }
     }
 
     /// Snapshot of the vault's shared SSH keys, for decrypting a
@@ -783,7 +790,12 @@ impl Workspace {
             });
         self._subscriptions.push(reconnect_sub);
 
-        let tab_seq = self.allocate_tab_number();
+        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
+        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
+        // wired in here to compute this from the panel's live open-order
+        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+        // Unrelated to `tab_number` below, the per-host SSH dedup number.
+        let tab_seq = 1;
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
         let closed_config = config.clone();
         let closed_term = term_weak.clone();
@@ -793,7 +805,6 @@ impl Workspace {
             this.tab_count = this.tab_count.saturating_sub(1);
             this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
             this.release_ssh_tab_number(&closed_key, tab_number);
-            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(closed_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -983,12 +994,15 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        let tab_seq = self.allocate_tab_number();
+        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
+        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
+        // wired in here to compute this from the panel's live open-order
+        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+        let tab_seq = 1;
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
         let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
-            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -1010,12 +1024,15 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        let tab_seq = self.allocate_tab_number();
+        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
+        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
+        // wired in here to compute this from the panel's live open-order
+        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+        let tab_seq = 1;
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
         let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
-            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);

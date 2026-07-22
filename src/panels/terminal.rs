@@ -100,10 +100,11 @@ pub struct TerminalPanel {
     /// icon) can remove *this specific* panel regardless of which tab is active.
     tab_panel: Option<WeakEntity<TabPanel>>,
     /// The 1-indexed sequence number rendered as this tab's `"N-"` title
-    /// prefix — assigned once by `Workspace::allocate_tab_number` when the
-    /// tab was opened. Not recomputed if the tab is later drag-reordered
-    /// or if an earlier tab is closed, shifting this one's visual slot
-    /// (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+    /// prefix. Kept in sync by `Workspace::renumber_tabs` (via
+    /// `set_tab_number` below) every time the open-tab set changes — not
+    /// a value this panel manages itself. Only goes stale after a manual
+    /// drag-reorder, which `Workspace` has no way to observe (see
+    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
     tab_number: u32,
     /// Lazily built on first render (`TerminalPanel::new` takes no `cx`, and
     /// the handle needs `self.terminal.read(cx)` to get the shared `Term`).
@@ -118,6 +119,13 @@ impl TerminalPanel {
             tab_number,
             scrollbar_handle: None,
         }
+    }
+
+    /// Overwrite this tab's displayed `"N-"` prefix and repaint. Called by
+    /// `Workspace::renumber_tabs` whenever the open-tab set changes.
+    pub(crate) fn set_tab_number(&mut self, n: u32, cx: &mut Context<Self>) {
+        self.tab_number = n;
+        cx.notify();
     }
 
     fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
