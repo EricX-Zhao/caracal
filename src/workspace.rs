@@ -608,17 +608,16 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
-        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
-        // wired in here to compute this from the panel's live open-order
-        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
-        let tab_seq = 1;
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
-        let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
+        // tab_number (0) is a throwaway placeholder — register_tab_panel's
+        // renumber_tabs call below corrects it before anything renders.
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
+            this.unregister_tab_panel(panel, cx);
         });
         self._subscriptions.push(tab_count_sub);
+        self.register_tab_panel(panel.clone(), cx);
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
@@ -790,23 +789,23 @@ impl Workspace {
             });
         self._subscriptions.push(reconnect_sub);
 
-        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
-        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
-        // wired in here to compute this from the panel's live open-order
-        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
-        // Unrelated to `tab_number` below, the per-host SSH dedup number.
-        let tab_seq = 1;
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
+        // tab_number (0) is a throwaway placeholder — register_tab_panel's
+        // renumber_tabs call below corrects it before anything renders.
+        // (Unrelated to `tab_number` below, the per-host SSH dedup number
+        // used in this method's `"{display_name}:{n}"` title suffix.)
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
         let closed_config = config.clone();
         let closed_term = term_weak.clone();
         let closed_key = key.clone();
-        let closed_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, window, cx| {
+        let closed_sub = cx.subscribe_in(&panel, window, move |this, panel, event, window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
             this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
             this.release_ssh_tab_number(&closed_key, tab_number);
+            this.unregister_tab_panel(panel, cx);
         });
         self._subscriptions.push(closed_sub);
+        self.register_tab_panel(panel.clone(), cx);
         self.add_center(Arc::new(panel), window, cx);
 
         if self.ssh_sessions.contains_key(&key) {
@@ -994,17 +993,16 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
-        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
-        // wired in here to compute this from the panel's live open-order
-        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
-        let tab_seq = 1;
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
-        let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
+        // tab_number (0) is a throwaway placeholder — register_tab_panel's
+        // renumber_tabs call below corrects it before anything renders.
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
+            this.unregister_tab_panel(panel, cx);
         });
         self._subscriptions.push(tab_count_sub);
+        self.register_tab_panel(panel.clone(), cx);
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
@@ -1024,17 +1022,16 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        // TODO(tab-sequence-numbers rework, Task 2): this is a placeholder
-        // until `Workspace::register_tab_panel`/`unregister_tab_panel` are
-        // wired in here to compute this from the panel's live open-order
-        // position (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
-        let tab_seq = 1;
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
-        let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
+        // tab_number (0) is a throwaway placeholder — register_tab_panel's
+        // renumber_tabs call below corrects it before anything renders.
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
+            this.unregister_tab_panel(panel, cx);
         });
         self._subscriptions.push(tab_count_sub);
+        self.register_tab_panel(panel.clone(), cx);
         self.add_center(Arc::new(panel), window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
