@@ -260,6 +260,15 @@ pub struct Workspace {
     /// by a closed tab rather than growing forever. Populated in `open_ssh`,
     /// released in `handle_ssh_tab_closed`.
     ssh_tab_numbers: HashMap<String, HashSet<u32>>,
+    /// Sequence numbers (the `"N-"` tab-title prefix) currently in use
+    /// across every open terminal tab, workspace-wide — unlike
+    /// `ssh_tab_numbers` above, this single pool is shared by every tab
+    /// kind (local/SSH/Telnet/Serial), not scoped per SSH host. Populated
+    /// in each `open_*` method via `allocate_tab_number`, released
+    /// wherever a `TerminalPanelEvent::Closed` is observed. Not
+    /// recomputed on drag-reorder — see
+    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
+    tab_numbers: HashSet<u32>,
     /// Every `TerminalView` this workspace has created, so settings changes
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
@@ -510,6 +519,7 @@ impl Workspace {
             ssh_sessions: HashMap::new(),
             ssh_reconnect_configs: HashMap::new(),
             ssh_tab_numbers: HashMap::new(),
+            tab_numbers: HashSet::new(),
             terminal_views: Vec::new(),
             tab_count: 0,
             settings_window: None,
@@ -673,6 +683,22 @@ impl Workspace {
                 self.ssh_tab_numbers.remove(key);
             }
         }
+    }
+
+    /// Allocate the lowest unused positive sequence number for a newly
+    /// opened terminal tab (the `"N-"` title prefix), workspace-wide
+    /// across all tab kinds — same reuse-lowest-free-number scheme as
+    /// `allocate_ssh_tab_number`, just not scoped to one SSH host.
+    fn allocate_tab_number(&mut self) -> u32 {
+        let n = Self::lowest_free_number(&self.tab_numbers);
+        self.tab_numbers.insert(n);
+        n
+    }
+
+    /// Release a tab number previously returned by `allocate_tab_number`,
+    /// so the next tab opened anywhere in the workspace can reuse it.
+    fn release_tab_number(&mut self, n: u32) {
+        self.tab_numbers.remove(&n);
     }
 
     /// Snapshot of the vault's shared SSH keys, for decrypting a
