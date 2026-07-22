@@ -35,15 +35,26 @@ themselves, which already work.
 `secondary-N` targets whatever tab is currently in the Nth **visual**
 slot of the tab strip — that's existing, tested behavior
 (`goto_tab_index`, [workspace.rs:650](../../../src/workspace.rs#L650)) and
-is correct even after a manual drag-to-reorder, because it operates
-through `DockItem::active_index`, which reads/writes the live `TabPanel`
-entity directly.
+is correct even after the tab strip's visual order changes, because it
+operates through `DockItem::active_index`, which reads/writes the live
+`TabPanel` entity directly.
 
 The printed number on a tab, by contrast, is decided once at creation and
-never recomputed from the tab's live visual position. After a manual
-drag, a tab's printed number may therefore no longer match the slot
-`secondary-N` would need to target it — e.g. drag the 3rd tab to the
-front and it still displays `3-`, even though it's now visually first.
+never recomputed from the tab's live visual position. Whenever the tab
+strip's visual order diverges from strict append/never-close order, a
+tab's printed number can therefore no longer match the slot `secondary-N`
+would need to target it. This isn't limited to manual drag-reorder — it
+happens just as readily from ordinary tab closing:
+
+- **Manual drag-reorder**: drag the 3rd tab to the front and it still
+  displays `3-`, even though it's now visually first.
+- **Closing a tab that isn't the last one**: with tabs open in slots 1,
+  2, 3, closing tab 2 left-shifts tab 3 into visual slot 2 (so
+  `secondary-2` now jumps to it), but tab 3 still displays `3-` since its
+  number was never recomputed. Symmetrically, a newly-opened tab reuses
+  the lowest free number (e.g. `2`) but is always appended at the
+  rightmost visual slot, so `secondary-3` might land on a tab printing
+  `2-`.
 
 This is accepted as-is: doing it properly would require reading
 `gpui-component`'s `TabPanel::panels` field, which is private

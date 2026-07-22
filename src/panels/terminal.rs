@@ -102,6 +102,7 @@ pub struct TerminalPanel {
     /// The 1-indexed sequence number rendered as this tab's `"N-"` title
     /// prefix — assigned once by `Workspace::allocate_tab_number` when the
     /// tab was opened. Not recomputed if the tab is later drag-reordered
+    /// or if an earlier tab is closed, shifting this one's visual slot
     /// (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
     tab_number: u32,
     /// Lazily built on first render (`TerminalPanel::new` takes no `cx`, and

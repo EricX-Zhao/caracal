@@ -266,7 +266,7 @@ pub struct Workspace {
     /// kind (local/SSH/Telnet/Serial), not scoped per SSH host. Populated
     /// in each `open_*` method via `allocate_tab_number`, released
     /// wherever a `TerminalPanelEvent::Closed` is observed. Not
-    /// recomputed on drag-reorder — see
+    /// recomputed on drag-reorder or on closing a non-last tab — see
     /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
     tab_numbers: HashSet<u32>,
     /// Every `TerminalView` this workspace has created, so settings changes
