@@ -610,10 +610,12 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, _panel, event, _window, _cx| {
+        let tab_seq = self.allocate_tab_number();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
+        let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
+            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -781,7 +783,8 @@ impl Workspace {
             });
         self._subscriptions.push(reconnect_sub);
 
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
+        let tab_seq = self.allocate_tab_number();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
         let closed_config = config.clone();
         let closed_term = term_weak.clone();
         let closed_key = key.clone();
@@ -790,6 +793,7 @@ impl Workspace {
             this.tab_count = this.tab_count.saturating_sub(1);
             this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
             this.release_ssh_tab_number(&closed_key, tab_number);
+            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(closed_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -979,10 +983,12 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, _panel, event, _window, _cx| {
+        let tab_seq = self.allocate_tab_number();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
+        let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
+            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);
@@ -1004,10 +1010,12 @@ impl Workspace {
             this.show_monitor_placeholder(window, cx);
         });
         self._subscriptions.push(sub);
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, _panel, event, _window, _cx| {
+        let tab_seq = self.allocate_tab_number();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, tab_seq));
+        let tab_count_sub = cx.subscribe_in(&panel, window, move |this, _panel, event, _window, _cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
+            this.release_tab_number(tab_seq);
         });
         self._subscriptions.push(tab_count_sub);
         self.add_center(Arc::new(panel), window, cx);

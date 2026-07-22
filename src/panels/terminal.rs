@@ -99,16 +99,22 @@ pub struct TerminalPanel {
     /// this gpui-component revision's tab strip has no built-in per-tab close
     /// icon) can remove *this specific* panel regardless of which tab is active.
     tab_panel: Option<WeakEntity<TabPanel>>,
+    /// The 1-indexed sequence number rendered as this tab's `"N-"` title
+    /// prefix — assigned once by `Workspace::allocate_tab_number` when the
+    /// tab was opened. Not recomputed if the tab is later drag-reordered
+    /// (see docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+    tab_number: u32,
     /// Lazily built on first render (`TerminalPanel::new` takes no `cx`, and
     /// the handle needs `self.terminal.read(cx)` to get the shared `Term`).
     scrollbar_handle: Option<TerminalScrollbarHandle>,
 }
 
 impl TerminalPanel {
-    pub fn new(terminal: Entity<TerminalView>) -> Self {
+    pub fn new(terminal: Entity<TerminalView>, tab_number: u32) -> Self {
         Self {
             terminal,
             tab_panel: None,
+            tab_number,
             scrollbar_handle: None,
         }
     }
@@ -239,7 +245,7 @@ impl Panel for TerminalPanel {
     }
 
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.terminal.read(cx).title().to_string();
+        let title = format!("{}-{}", self.tab_number, self.terminal.read(cx).title());
         div()
             .flex()
             .flex_row()
