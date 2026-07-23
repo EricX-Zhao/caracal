@@ -106,6 +106,14 @@ pub struct TerminalPanel {
     /// drag-reorder, which `Workspace` has no way to observe (see
     /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
     tab_number: u32,
+    /// Whether this panel is currently attached to a `TabPanel`. Flipped to
+    /// `false` by `on_removed`, back to `true` by `on_added_to` — the signal
+    /// `on_removed` uses to tell a genuine close apart from gpui-component's
+    /// internal detach-then-reinsert dance for a drag-reorder (both call
+    /// `on_removed` identically; only a real close never calls `on_added_to`
+    /// again afterward). See
+    /// docs/superpowers/specs/2026-07-22-drag-reorder-false-close-design.md.
+    attached: bool,
     /// Lazily built on first render (`TerminalPanel::new` takes no `cx`, and
     /// the handle needs `self.terminal.read(cx)` to get the shared `Term`).
     scrollbar_handle: Option<TerminalScrollbarHandle>,
@@ -117,6 +125,7 @@ impl TerminalPanel {
             terminal,
             tab_panel: None,
             tab_number,
+            attached: true,
             scrollbar_handle: None,
         }
     }
@@ -284,10 +293,27 @@ impl Panel for TerminalPanel {
         _cx: &mut Context<Self>,
     ) {
         self.tab_panel = Some(tab_panel);
+        self.attached = true;
     }
 
-    fn on_removed(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(TerminalPanelEvent::Closed);
+    /// gpui-component's `TabPanel::detach_panel` calls this identically for
+    /// a genuine close AND for every drag-driven reposition (detach, then
+    /// immediately reinsert elsewhere) — it has no way to tell us which.
+    /// Deferring the actual "is this really gone" check by one update cycle
+    /// and rechecking `attached` lets a drag's synchronous reinsert (which
+    /// flips `attached` back to `true` via `on_added_to`, before this
+    /// deferred closure runs) self-heal away a false close. See
+    /// docs/superpowers/specs/2026-07-22-drag-reorder-false-close-design.md.
+    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.attached = false;
+        let weak = cx.entity().downgrade();
+        window.defer(cx, move |_window, cx| {
+            let _ = weak.update(cx, |this, cx| {
+                if !this.attached {
+                    cx.emit(TerminalPanelEvent::Closed);
+                }
+            });
+        });
     }
 }
 
