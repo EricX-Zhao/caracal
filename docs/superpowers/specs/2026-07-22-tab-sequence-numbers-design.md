@@ -13,9 +13,9 @@ tab's title, matching the position the shortcut would jump to.
 ## Scope
 
 All four terminal tab kinds — local shell, SSH, Telnet, Serial — get the
-same numbering. Out of scope: renumbering after a manual drag-reorder of
-tabs (see "Known limitation" below) and any change to the shortcuts
-themselves, which already work.
+same numbering, in a single tab strip (no split panes — see "Known
+limitation" below for why that's the boundary). Out of scope: any change
+to the shortcuts themselves, which already work.
 
 ## Revision history
 
@@ -25,27 +25,34 @@ themselves, which already work.
   tabs' printed numbers out of sync with their real position, causing
   `secondary-N` to appear to "not work" for a tab whose printed label no
   longer matched any real slot.
-- **2026-07-22, revised (this version):** numbers are recomputed from
-  live open order on every open/close, eliminating that whole class of
-  confusion. Manual drag-reorder remains the one unfixable case (see
-  "Known limitation").
+- **2026-07-22, revised:** numbers are recomputed from live open order on
+  every open/close, eliminating that whole class of confusion. Manual
+  drag-reorder remained an accepted, unfixable gap at this point.
+- **2026-07-23, revised (this version):** while fixing an unrelated bug
+  (drag-reorder spuriously firing tab-close cleanup — see
+  [2026-07-22-drag-reorder-false-close-design.md](2026-07-22-drag-reorder-false-close-design.md)),
+  found that `gpui-component` always makes a dropped tab the active one in
+  its `TabPanel`, in every drag-drop path — a fact reachable through
+  `TabPanel::active_ix()`, a public method. That closes the previously
+  "unfixable" drag-reorder gap too, without forking anything, for the
+  single-tab-strip case this feature already assumes.
 
 ## Numbering scheme
 
 - `Workspace` keeps its currently-open `TerminalPanel`s in a single,
-  workspace-wide list, in open order (append on open, remove on close —
-  every tab kind shares the one list, not scoped per SSH host).
-- Every time a tab opens or closes, every remaining open tab's displayed
-  number is recomputed as its 1-indexed position in that list — always
-  exactly `1..=(currently open tab count)`, with no gaps and no stale
-  labels.
-- Because a newly-opened tab is always appended at the visual right end
-  of the tab strip (confirmed: `gpui-component`'s
-  `DockArea::add_panel(Center)` always appends into the existing `Tabs`
-  group rather than creating a new one, absent a manual drag), and a
-  closed tab is removed from the same list it was pushed into, this
-  tracked "open order" always matches the real visual order — as long as
-  no drag has happened.
+  workspace-wide list, in visual order (append on open, remove on close,
+  repositioned on a drag-reorder — see "Drag-reorder keeps numbers in
+  sync" below — every tab kind shares the one list, not scoped per SSH
+  host).
+- Every time the open-tab set changes, every open tab's displayed number
+  is recomputed as its 1-indexed position in that list — always exactly
+  `1..=(currently open tab count)`, with no gaps and no stale labels.
+- A newly-opened tab is always appended at the visual right end of the
+  tab strip (confirmed: `gpui-component`'s `DockArea::add_panel(Center)`
+  always appends into the existing `Tabs` group rather than creating a
+  new one, absent a manual drag), and a closed tab is removed from the
+  same list it was pushed into — so this tracked list stays in sync with
+  the real visual order continuously, including through drags.
 
 ## Known limitation (accepted)
 
@@ -54,30 +61,44 @@ slot of the tab strip — that's existing, tested behavior
 (`goto_tab_index`, [workspace.rs:650](../../../src/workspace.rs#L650)) and
 is correct even after the tab strip's visual order changes, because it
 operates through `DockItem::active_index`, which reads/writes the live
-`TabPanel` entity directly. This part was never broken, in either version
+`TabPanel` entity directly. This part was never broken, in any version
 of this feature.
 
-The printed number, by contrast, is derived from `Workspace`'s own
-tracked open-order list — a list `Workspace` maintains itself, not
-something read live off `gpui-component`. Opening and closing tabs update
-that list correctly (see "Numbering scheme" above), but a **manual
-drag-reorder** changes the tab strip's real visual order through
-`gpui-component`'s own internal, private state, which `Workspace` has no
-way to observe: dropping a tab elsewhere only emits a generic
-`PanelEvent::LayoutChanged` with no position data, and the
-`TabPanel::panels` field that holds the true order is private
-(`pub(crate)`, confirmed by reading
-`~/.cargo/git/checkouts/gpui-component-*/crates/ui/src/dock/tab_panel.rs`).
-So after a drag, a tab's printed number can be wrong until the next open
-or close event recomputes everything from `Workspace`'s (now stale)
-tracked order.
+The printed number is derived from `Workspace`'s own tracked open-order
+list, kept in sync with the real visual order (see "Drag-reorder keeps
+numbers in sync" below) for the one `TabPanel` group this feature has
+ever assumed exists. **Remaining gap:** if tabs are ever split into
+multiple panes (side-by-side, via dragging a tab to a strip edge —
+`gpui-component`'s `TabPanel::split_panel`), this feature has no notion
+of a single, global order across groups — `Workspace::active_tabs_item`
+([workspace.rs:1363](../../../src/workspace.rs#L1363)) only ever resolves
+the *first* `Tabs` group it finds in the dock tree, so `secondary-N`
+navigation itself is already scoped to one group, independent of tab
+numbering. This is a pre-existing boundary of the whole tab-navigation
+feature, not something newly introduced here, and remains out of scope.
 
-This is accepted as-is: the only way to fix it would be forking
-`gpui-component` to add a public accessor for the live order — a
-permanent third-party-fork maintenance cost the user explicitly declined
-for this feature. It is a materially smaller gap than the previous
-version's limitation, though: it now takes an actual drag to desync the
-numbers, rather than the ordinary act of closing any non-last tab.
+## Drag-reorder keeps numbers in sync
+
+Reading `gpui-component`'s `TabPanel::on_drop` (and the three paths it can
+call — `insert_panel_at` for a same-group reorder, `add_panel_with_active`
+for a cross-group drop, and `split_panel`'s `TabPanel::add_panel` for an
+edge-drop that creates a new group) shows that a dropped tab is *always*
+left as the active panel in its (possibly new) `TabPanel` — every call
+site passes `active: true`, or (`insert_panel_at`) sets it unconditionally.
+`TabPanel::active_ix()` is a public method, already used elsewhere in this
+codebase (`Workspace::active_tabs_item`/`set_active_tab_index`).
+
+So `TerminalPanel::on_added_to` — which fires every time gpui-component
+(re)attaches a panel to a `TabPanel`, including the panel's very first
+attach *and* every drag-driven reattach — reads that `TabPanel`'s
+`active_ix()` and asks `Workspace` to reposition this tab to that index in
+its own tracked order, then renumbers. On a tab's first attach this is a
+no-op (it's already at the end, where `register_tab_panel` just put it,
+matching a fresh `TabPanel`'s `active_ix` of "last"); on a drag reattach,
+it's exactly the correction needed. No `gpui-component` fork required —
+this was missed on the previous revision's investigation because it was
+framed as "can we read the whole live order," when only this tab's own
+new index was ever needed.
 
 ## Architecture
 
@@ -165,6 +186,73 @@ fn renumber_tabs(&mut self, cx: &mut Context<Self>) {
   }
   ```
 
+### `TerminalPanel` repositions itself in `Workspace`'s order on every (re)attach
+
+New field, mirroring the existing `WeakEntity<Workspace>` back-reference
+pattern already used by `SftpPanel`/`MonitorPanel` (`TerminalPanel` has
+otherwise stayed decoupled from `Workspace` — this is the one place it
+needs to call back):
+
+```rust
+workspace: WeakEntity<Workspace>,
+```
+
+Passed into `TerminalPanel::new` (a new parameter) by all four `open_*`
+methods, using the same `let workspace_handle = cx.entity().downgrade();`
+idiom `Workspace::new` already uses for `QuickCommandsPanel`
+([workspace.rs:448](../../../src/workspace.rs#L448)).
+
+`on_added_to` becomes:
+
+```rust
+fn on_added_to(
+    &mut self,
+    tab_panel: WeakEntity<TabPanel>,
+    _window: &mut Window,
+    cx: &mut Context<Self>,
+) {
+    self.tab_panel = Some(tab_panel.clone());
+    self.attached = true;
+    let Some(active_ix) = tab_panel.upgrade().map(|tp| tp.read(cx).active_ix()) else {
+        return;
+    };
+    let Some(workspace) = self.workspace.upgrade() else {
+        return;
+    };
+    let this = cx.entity();
+    workspace.update(cx, |workspace, cx| {
+        workspace.reposition_tab_panel(this, active_ix, cx);
+    });
+}
+```
+
+(`_cx` becomes `cx`, now used.)
+
+`Workspace` gains one method, alongside `register_tab_panel`/
+`unregister_tab_panel`:
+
+```rust
+/// Move `panel` to `new_ix` in the open-tab list (removing it from
+/// wherever it currently sits first) and recompute every open tab's
+/// displayed sequence number. Called by `TerminalPanel::on_added_to`
+/// every time gpui-component (re)attaches a panel — including a manual
+/// drag-reorder, whose new position this reads via the dropped panel's
+/// own `TabPanel::active_ix()` (always left pointing at it — see
+/// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+fn reposition_tab_panel(&mut self, panel: Entity<TerminalPanel>, new_ix: usize, cx: &mut Context<Self>) {
+    self.tab_panels.retain(|p| p.entity_id() != panel.entity_id());
+    let ix = new_ix.min(self.tab_panels.len());
+    self.tab_panels.insert(ix, panel);
+    self.renumber_tabs(cx);
+}
+```
+
+`register_tab_panel` is unchanged and still called from all four
+`open_*` methods — `reposition_tab_panel` firing again moments later (via
+the panel's own first `on_added_to`) is a harmless, cheap no-op reshuffle
+in the common case, not a redundancy worth engineering away at this scale
+(tab counts are realistically single digits to a few dozen).
+
 ## Error handling / edge cases
 
 - No behavior change to any shortcut — this is purely a rendering
@@ -178,18 +266,31 @@ fn renumber_tabs(&mut self, cx: &mut Context<Self>) {
   exactly once, via the same `TerminalPanelEvent::Closed` that already
   drives the `tab_count` decrement — but `retain` degrades safely to a
   no-op rather than panicking either way).
+- `reposition_tab_panel`'s `new_ix.min(self.tab_panels.len())` clamp is
+  defensive: in the single-tab-strip case this feature assumes,
+  `active_ix` should never exceed the group's real panel count, but the
+  clamp keeps `Vec::insert` from panicking even if that assumption is
+  ever violated (e.g. a future multi-group scenario).
+- `on_added_to`'s reposition call is a no-op if `self.workspace` has gone
+  away (`upgrade()` returns `None`) — can't happen while the workspace
+  itself is still running, since it's the one holding every `TerminalPanel`
+  alive in the first place, but degrades safely regardless.
 
 ## Testing
 
 No new automated tests: unlike the previous version's `lowest_free_number`
 gap-filling logic (a pure function, unit-tested), this version's entire
 mechanism is live `Entity` manipulation (push/retain/update on real
-`TerminalPanel` entities), which — per this codebase's established
-precedent throughout its keyboard-shortcut and tab-lifecycle features —
-can't be unit-tested without a live `Window`/`DockArea`. Verified instead
-by manual testing in the running app (per prior guidance in this project:
-no screenshot-driven GUI checks): open several tabs and confirm they read
-`1-`, `2-`, `3-...`; close a middle tab and confirm the remaining tabs'
-numbers immediately shift down to stay packed; open a new tab and confirm
-it takes the next number; drag-reorder a tab and confirm numbers go stale
-until the next open/close (the one remaining, accepted gap).
+`TerminalPanel` entities) plus GPUI lifecycle-callback timing
+(`on_added_to`), which — per this codebase's established precedent
+throughout its keyboard-shortcut and tab-lifecycle features — can't be
+unit-tested without a live `Window`/`DockArea` driving real drag input.
+Verified instead by manual testing in the running app (per prior guidance
+in this project: no screenshot-driven GUI checks): open several tabs and
+confirm they read `1-`, `2-`, `3-...`; close a middle tab and confirm the
+remaining tabs' numbers immediately shift down to stay packed; open a new
+tab and confirm it takes the next number; drag-reorder a tab within the
+strip and confirm every tab's number correctly reflects the new order
+immediately (no more staleness); confirm a fresh tab's own first attach
+still lands at the correct next number (the reposition-on-first-attach
+no-op case).
