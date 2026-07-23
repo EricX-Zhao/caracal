@@ -32,6 +32,7 @@ searchable in both languages, without maintaining two parallel documents.
 3. Roadmap
 4. Acknowledgments
 5. License
+6. Closing note on how the project is built
 
 No Building-from-source or Prebuilt-binaries sections — removed per explicit decision, not
 relocated.
@@ -104,6 +105,14 @@ praise:
 ### License
 
 Unchanged: dual MIT / Apache-2.0, same wording as today.
+
+### Closing note on how the project is built
+
+A short, final note (after License, last thing in the file) stating that Caracal is built
+primarily by an engineer with no prior Rust experience, working with Claude as the main coding
+collaborator. Same impersonal/project-voice tone as Acknowledgments — matter-of-fact, not a
+marketing line, one or two sentences, no Chinese fold needed (short enough to read either way,
+consistent with License's treatment).
 
 ## Non-goals
 
