@@ -1127,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "caracal"
-version = "0.10.0"
+version = "0.11s.0"
 dependencies = [
  "aes-gcm 0.10.3",
  "alacritty_terminal",
