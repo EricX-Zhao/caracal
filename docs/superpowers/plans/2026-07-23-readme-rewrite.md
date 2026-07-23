@@ -1,3 +1,39 @@
+# README Rewrite Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace `README.md` with a feature/roadmap-showcase document (bilingual, English primary with Chinese `<details>` folds) that drops all build/install content and gives the WindTerm/NyaTerm tribute real weight, per `docs/superpowers/specs/2026-07-23-readme-rewrite-design.md`.
+
+**Architecture:** Single-file documentation change. No code, no tests in the traditional sense — "correctness" here means the file matches the approved spec structure and every removed/added section is verifiable by direct inspection (grep for headers, absence of removed sections).
+
+**Tech Stack:** Markdown only.
+
+## Global Constraints
+
+- Single file touched: `README.md`. No other files created or modified.
+- Section order: Title/tagline → Features → Roadmap → Acknowledgments → License → closing note. (Per spec §"Section structure".)
+- No Building-from-source or Prebuilt-binaries sections, anywhere in the file. (Per spec §"Scope".)
+- English primary; Features/Roadmap/Acknowledgments each get a trailing `<details><summary>中文</summary>` Chinese translation fold. License and the closing note do not get a fold. (Per spec §"Language format".)
+- Roadmap is self-contained — no link to `docs/reference/nyaterm-gap-roadmap.md` or any other internal doc. (Per spec §"Scope" and §"Roadmap".)
+- No screenshots, no CI/build badges. (Per spec §"Non-goals".)
+- Acknowledgments and the closing note use impersonal/project-voice tone ("Caracal owes a debt...", "Caracal is built..."), never first-person. (Per spec §"Acknowledgments" and §"Closing note".)
+
+---
+
+### Task 1: Rewrite README.md
+
+**Files:**
+- Modify: `README.md` (full replacement of existing content)
+
+**Interfaces:**
+- Consumes: nothing (no other tasks precede this one)
+- Produces: nothing (no other tasks follow this one — this is the entire plan)
+
+- [ ] **Step 1: Replace the full contents of `README.md`**
+
+Write this exact content to `README.md`, overwriting everything currently in the file:
+
+```markdown
 # Caracal
 
 A native, GPU-accelerated terminal / SSH / Telnet / serial client built on
@@ -6,20 +42,19 @@ A native, GPU-accelerated terminal / SSH / Telnet / serial client built on
 
 ## Features
 
-- **Protocols** — local terminal (native PTY), SSH (password, or saved
-  encrypted-key, auth), Telnet (RFC 854 IAC negotiation: terminal type,
+- **Protocols** — local terminal (native PTY), SSH (password or saved,
+  encrypted key auth), Telnet (RFC 854 IAC negotiation: terminal type,
   suppress-go-ahead, echo), and Serial (baud rate, data bits, parity, stop
   bits, flow control).
 - **Saved Connections** — a group tree with drag-and-drop reorder within and
   across groups, search, sort, and TOML import/export.
 - **SFTP File Browser** — a sortable, multi-column file browser sharing the
   same SSH connection (no second dial), with a right-click context menu
-  (rename/properties/delete), a hidden-files toggle, directory history, a
-  transfer queue, and bidirectional working-directory sync with the
-  terminal.
+  (rename/properties/delete), a hidden-files toggle, directory history, and
+  bidirectional working-directory sync with the terminal.
 - **Resource Monitoring** — a live, per-host view of the *remote* machine's
-  CPU, memory, network, and disk usage (Linux remote hosts), gathered over
-  the existing SSH channel.
+  CPU, memory, network, and disk usage, gathered over the existing SSH
+  channel.
 - **Quick Commands** — a command drawer for snippets you run often, sent to
   the active terminal as either an immediate execute or an append.
 - **Fully configurable keyboard shortcuts** — live rebinding, conflict
@@ -43,10 +78,10 @@ A native, GPU-accelerated terminal / SSH / Telnet / serial client built on
 - **已保存的连接** — 支持分组的连接树，可在组内/跨组拖拽排序，支持搜索、排序
   以及 TOML 格式的导入/导出。
 - **SFTP 文件浏览器** — 与 SSH 共用同一条连接(无需二次拨号)的多列可排序文件
-  浏览器，支持右键菜单(重命名/属性/删除)、隐藏文件切换、目录历史、传输队列，
-  以及与终端双向同步当前工作目录。
-- **资源监控** — 通过已有的 SSH 通道实时查看*远程*主机(仅限 Linux)的 CPU、
-  内存、网络与磁盘使用情况(按主机独立展示)。
+  浏览器，支持右键菜单(重命名/属性/删除)、隐藏文件切换、目录历史，以及与
+  终端双向同步当前工作目录。
+- **资源监控** — 通过已有的 SSH 通道实时查看*远程*主机的 CPU、内存、网络与
+  磁盘使用情况(按主机独立展示)。
 - **快捷命令** — 用于存放常用命令的抽屉面板，可选择立即执行或追加到当前终端。
 - **完全可配置的快捷键** — 支持实时重新绑定、冲突检测，以及一键恢复默认值。
 - **安全性** — SSH 私钥在主密码保护下以加密方式静态存储(AES-256-GCM，密钥由
@@ -135,3 +170,51 @@ at your option.
 
 Caracal is built primarily by an engineer with no prior Rust experience,
 working with Claude as the main coding collaborator.
+```
+
+- [ ] **Step 2: Verify removed sections are gone and required sections are present**
+
+Run:
+
+```bash
+grep -n "^## " README.md
+grep -c "Building from source\|Prebuilt binaries" README.md
+```
+
+Expected: the first command lists exactly four `##` headers, in this order —
+`Features`, `Roadmap`, `Acknowledgments`, `License`. The second command
+outputs `0` (no leftover references to the removed sections).
+
+- [ ] **Step 3: Verify bilingual folds are present where required**
+
+Run:
+
+```bash
+grep -c "<summary>中文</summary>" README.md
+```
+
+Expected: `3` (one fold each for Features, Roadmap, Acknowledgments — License
+and the closing note intentionally have none).
+
+- [ ] **Step 4: Verify referenced license files still exist**
+
+Run:
+
+```bash
+ls LICENSE-APACHE LICENSE-MIT
+```
+
+Expected: both files listed, no "No such file" error (confirms the License
+section's relative links aren't broken).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: rewrite README as a feature/roadmap showcase
+
+Reorganizes around Features/Roadmap/Acknowledgments/License, drops the
+build-from-source and prebuilt-binaries sections, adds bilingual
+(English + Chinese detail-folds) content, expands the WindTerm/NyaTerm
+tribute, and adds a closing note on how the project is built."
+```
