@@ -202,31 +202,51 @@ methods, using the same `let workspace_handle = cx.entity().downgrade();`
 idiom `Workspace::new` already uses for `QuickCommandsPanel`
 ([workspace.rs:448](../../../src/workspace.rs#L448)).
 
-`on_added_to` becomes:
+`on_added_to` must **defer** the actual read-and-reposition, for two
+independent reasons confirmed by reading `gpui-component`'s source:
+
+1. Both reinsertion paths (`insert_panel_at`, `add_panel_with_active`)
+   call `on_added_to` **before** they call `set_active_ix` — so reading
+   `active_ix()` synchronously inside `on_added_to` would see the
+   panel's *previous* index, not its real new one.
+2. `on_added_to` typically fires while a `Workspace`-entity update is
+   already on the call stack (e.g. from `Workspace::open_local_with`'s
+   own dispatch, all the way down through `add_center` →
+   `dock_area.add_panel` → this callback) — calling `workspace.update(...)`
+   synchronously from here would be exactly the nested-self-update GPUI
+   panics on.
+
+`window.defer` (the same reentrancy-avoidance pattern already used
+elsewhere in this file) fixes both: it postpones the closure until after
+the *entire* current update cycle finishes, by which point `active_ix`
+has settled to its real value and no `Workspace` update is still on the
+stack.
 
 ```rust
 fn on_added_to(
     &mut self,
     tab_panel: WeakEntity<TabPanel>,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Self>,
 ) {
     self.tab_panel = Some(tab_panel.clone());
     self.attached = true;
-    let Some(active_ix) = tab_panel.upgrade().map(|tp| tp.read(cx).active_ix()) else {
-        return;
-    };
     let Some(workspace) = self.workspace.upgrade() else {
         return;
     };
     let this = cx.entity();
-    workspace.update(cx, |workspace, cx| {
-        workspace.reposition_tab_panel(this, active_ix, cx);
+    window.defer(cx, move |_window, cx| {
+        let Some(active_ix) = tab_panel.upgrade().map(|tp| tp.read(cx).active_ix()) else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.reposition_tab_panel(this, active_ix, cx);
+        });
     });
 }
 ```
 
-(`_cx` becomes `cx`, now used.)
+(`_window` becomes `window`, now used for `window.defer`.)
 
 `Workspace` gains one method, alongside `register_tab_panel`/
 `unregister_tab_panel`:
