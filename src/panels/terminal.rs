@@ -22,6 +22,7 @@ use crate::panels::icons::{AppIcon, icon};
 use crate::terminal::model::SharedTerm;
 use crate::terminal::scrollback;
 use crate::terminal::view::TerminalView;
+use crate::workspace::Workspace;
 
 /// Adapts the terminal's alacritty grid (line-based scrollback) to
 /// gpui-component's pixel-based `ScrollbarHandle` contract. Lives here, not
@@ -114,18 +115,25 @@ pub struct TerminalPanel {
     /// again afterward). See
     /// docs/superpowers/specs/2026-07-22-drag-reorder-false-close-design.md.
     attached: bool,
+    /// Back-reference so `on_added_to` can tell `Workspace` where this tab
+    /// landed after every (re)attach, including a drag-reorder — mirrors
+    /// the same pattern `SftpPanel`/`MonitorPanel` already use to call back
+    /// into `Workspace`. See
+    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
+    workspace: WeakEntity<Workspace>,
     /// Lazily built on first render (`TerminalPanel::new` takes no `cx`, and
     /// the handle needs `self.terminal.read(cx)` to get the shared `Term`).
     scrollbar_handle: Option<TerminalScrollbarHandle>,
 }
 
 impl TerminalPanel {
-    pub fn new(terminal: Entity<TerminalView>, tab_number: u32) -> Self {
+    pub fn new(terminal: Entity<TerminalView>, tab_number: u32, workspace: WeakEntity<Workspace>) -> Self {
         Self {
             terminal,
             tab_panel: None,
             tab_number,
             attached: true,
+            workspace,
             scrollbar_handle: None,
         }
     }
@@ -286,14 +294,40 @@ impl Panel for TerminalPanel {
             )
     }
 
+    /// gpui-component calls `on_added_to` on every (re)attach — including a
+    /// drag-reorder's reinsert — but crucially calls it *before* it sets the
+    /// panel's new `active_ix` (confirmed by reading `TabPanel::insert_panel_at`/
+    /// `add_panel_with_active`: both call `on_added_to` first, `set_active_ix`
+    /// after). Reading `active_ix()` synchronously right here would see the
+    /// *previous* value, not this panel's real new position. Deferring the
+    /// read (via `window.defer`, until after the current update cycle — the
+    /// same reentrancy-avoidance pattern used elsewhere in this file) fixes
+    /// both that staleness *and* a second problem: this callback typically
+    /// fires while a `Workspace`-entity update is already on the call stack
+    /// (e.g. from `Workspace::open_local_with`'s own dispatch), and calling
+    /// `workspace.update(...)` synchronously from in here would be exactly
+    /// the nested-self-update GPUI panics on. See
+    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
     fn on_added_to(
         &mut self,
         tab_panel: WeakEntity<TabPanel>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) {
-        self.tab_panel = Some(tab_panel);
+        self.tab_panel = Some(tab_panel.clone());
         self.attached = true;
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let this = cx.entity();
+        window.defer(cx, move |_window, cx| {
+            let Some(active_ix) = tab_panel.upgrade().map(|tp| tp.read(cx).active_ix()) else {
+                return;
+            };
+            workspace.update(cx, |workspace, cx| {
+                workspace.reposition_tab_panel(this, active_ix, cx);
+            });
+        });
     }
 
     /// gpui-component's `TabPanel::detach_panel` calls this identically for

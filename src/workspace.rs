@@ -610,7 +610,8 @@ impl Workspace {
         self._subscriptions.push(sub);
         // tab_number (0) is a throwaway placeholder — register_tab_panel's
         // renumber_tabs call below corrects it before anything renders.
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let workspace_handle = cx.entity().downgrade();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
         let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
@@ -709,6 +710,20 @@ impl Workspace {
         }
     }
 
+    /// Move `panel` to `new_ix` in the open-tab list (removing it from
+    /// wherever it currently sits first) and recompute every open tab's
+    /// displayed sequence number. Called by `TerminalPanel::on_added_to`
+    /// every time gpui-component (re)attaches a panel — including a manual
+    /// drag-reorder, whose new position this reads via the dropped panel's
+    /// own `TabPanel::active_ix()` (always left pointing at it — see
+    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+    pub(crate) fn reposition_tab_panel(&mut self, panel: Entity<TerminalPanel>, new_ix: usize, cx: &mut Context<Self>) {
+        self.tab_panels.retain(|p| p.entity_id() != panel.entity_id());
+        let ix = new_ix.min(self.tab_panels.len());
+        self.tab_panels.insert(ix, panel);
+        self.renumber_tabs(cx);
+    }
+
     /// Snapshot of the vault's shared SSH keys, for decrypting a
     /// connection's key-file auth at connect time (see `SessionsEvent::Open`).
     fn ssh_keys_snapshot(&self, cx: &App) -> Vec<crate::config::SshKeyEntry> {
@@ -793,7 +808,8 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         // (Unrelated to `tab_number` below, the per-host SSH dedup number
         // used in this method's `"{display_name}:{n}"` title suffix.)
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let workspace_handle = cx.entity().downgrade();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
         let closed_config = config.clone();
         let closed_term = term_weak.clone();
         let closed_key = key.clone();
@@ -995,7 +1011,8 @@ impl Workspace {
         self._subscriptions.push(sub);
         // tab_number (0) is a throwaway placeholder — register_tab_panel's
         // renumber_tabs call below corrects it before anything renders.
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let workspace_handle = cx.entity().downgrade();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
         let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
@@ -1024,7 +1041,8 @@ impl Workspace {
         self._subscriptions.push(sub);
         // tab_number (0) is a throwaway placeholder — register_tab_panel's
         // renumber_tabs call below corrects it before anything renders.
-        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0));
+        let workspace_handle = cx.entity().downgrade();
+        let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
         let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
