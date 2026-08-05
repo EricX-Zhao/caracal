@@ -251,6 +251,10 @@ pub struct SettingsWindow {
     /// flight — disables every backup-tab action button so a second click
     /// can't start an overlapping operation.
     backup_busy: bool,
+    /// Populated by "刷新列表" — empty until the user has fetched at least
+    /// once (not auto-fetched on tab open, since that would silently hit
+    /// the network every time Settings opens).
+    backup_versions: Vec<crate::webdav::BackupVersion>,
     error: Option<SharedString>,
     /// The action-id currently being recorded (`Record` button clicked,
     /// waiting for the next keystroke), or `None` when nothing is being
@@ -312,6 +316,7 @@ impl SettingsWindow {
             webdav_password_input,
             keep_versions_input,
             backup_busy: false,
+            backup_versions: Vec::new(),
             error: None,
             recording: None,
             record_focus: cx.focus_handle(),
@@ -1056,6 +1061,63 @@ impl SettingsWindow {
         .detach();
     }
 
+    fn on_click_refresh_versions(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.current_webdav_config(cx);
+        if config.url.trim().is_empty() {
+            window.push_notification(
+                (NotificationType::Error, rust_i18n::t!("Settings.Backup.url_required")),
+                cx,
+            );
+            return;
+        }
+        self.backup_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let rx = crate::webdav::list_versions(config);
+            let result = rx.recv_async().await;
+            let _ = cx.update(|window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.backup_busy = false;
+                    match result {
+                        Ok(Ok(mut versions)) => {
+                            versions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)); // newest first
+                            this.backup_versions = versions;
+                        }
+                        Ok(Err(e)) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.list_failed", error = e.to_string()),
+                            ),
+                            cx,
+                        ),
+                        Err(_) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.list_failed", error = "worker thread failed"),
+                            ),
+                            cx,
+                        ),
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// One row in the version list: the timestamp, human-formatted. The
+    /// restore action is added to this row in a later round.
+    fn version_row(&self, version: &crate::webdav::BackupVersion, cx: &Context<Self>) -> impl IntoElement {
+        let label = version.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(div().text_sm().text_color(cx.theme().foreground).child(label))
+    }
+
     /// Draft-state credential fields only — the network action buttons
     /// (test/backup/refresh/restore) are added on top of this in later
     /// rounds, following the Security tab's pattern of immediate-action
@@ -1146,6 +1208,46 @@ impl SettingsWindow {
                             .disabled(self.backup_busy)
                             .on_click(cx.listener(Self::on_click_backup_now)),
                     ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(rust_i18n::t!("Settings.Backup.versions_label")),
+                            )
+                            .child(
+                                Button::new("settings-backup-refresh")
+                                    .xsmall()
+                                    .label(rust_i18n::t!("Settings.Backup.refresh_button"))
+                                    .disabled(self.backup_busy)
+                                    .on_click(cx.listener(Self::on_click_refresh_versions)),
+                            ),
+                    )
+                    .child(if self.backup_versions.is_empty() {
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Backup.versions_empty"))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(self.backup_versions.iter().map(|v| self.version_row(v, cx)))
+                            .into_any_element()
+                    }),
             )
     }
 
