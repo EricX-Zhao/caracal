@@ -19,6 +19,8 @@ pub struct AppSettings {
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub keybindings: KeybindingsSettings,
+    #[serde(default)]
+    pub backup: BackupSettings,
 }
 
 /// General application settings, editable from Settings → General.
@@ -165,6 +167,43 @@ pub struct KeybindingsSettings {
     pub overrides: std::collections::HashMap<String, String>,
 }
 
+/// WebDAV backup/restore settings, editable from Settings → Backup & Sync.
+/// See docs/superpowers/specs/2026-08-05-webdav-backup-sync-design.md.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BackupSettings {
+    /// Names the target directory itself, not a server root — a backup
+    /// uploads directly into it. Empty = not configured yet.
+    #[serde(default)]
+    pub webdav_url: String,
+    #[serde(default)]
+    pub webdav_username: String,
+    /// `base64(nonce || ciphertext)`, encrypted with the vault's
+    /// `MasterKey` — same shape `config.rs`'s
+    /// `SavedConnection::encrypted_password` already uses. Empty = no
+    /// password saved yet.
+    #[serde(default)]
+    pub encrypted_webdav_password: String,
+    /// How many timestamped backup archives to keep on the server; older
+    /// ones are pruned after each successful backup.
+    #[serde(default = "default_keep_versions")]
+    pub keep_versions: u32,
+}
+
+fn default_keep_versions() -> u32 {
+    5
+}
+
+impl Default for BackupSettings {
+    fn default() -> Self {
+        Self {
+            webdav_url: String::new(),
+            webdav_username: String::new(),
+            encrypted_webdav_password: String::new(),
+            keep_versions: default_keep_versions(),
+        }
+    }
+}
+
 /// `~/.caracal/settings.toml`.
 pub fn settings_path() -> PathBuf {
     crate::paths::app_dir().join("settings.toml")
@@ -308,6 +347,7 @@ mod tests {
                 font_fallback2: "Symbols Nerd Font".to_string(),
             },
             keybindings: KeybindingsSettings::default(),
+            backup: BackupSettings::default(),
         };
         let text = toml::to_string_pretty(&settings).expect("serialize");
         let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
@@ -419,5 +459,48 @@ mod tests {
         assert_eq!(settings.terminal.font_fallback2, "Sarasa Mono SC");
         assert_eq!(settings.appearance.font_family, "");
         assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
+    }
+
+    #[test]
+    fn default_backup_settings_have_expected_values() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.backup.webdav_url, "");
+        assert_eq!(settings.backup.webdav_username, "");
+        assert_eq!(settings.backup.encrypted_webdav_password, "");
+        assert_eq!(settings.backup.keep_versions, 5);
+    }
+
+    #[test]
+    fn round_trip_preserves_backup_settings() {
+        let settings = AppSettings {
+            backup: BackupSettings {
+                webdav_url: "https://dav.example.com/backups/".to_string(),
+                webdav_username: "alice".to_string(),
+                encrypted_webdav_password: "base64ciphertext".to_string(),
+                keep_versions: 10,
+            },
+            ..AppSettings::default()
+        };
+        let text = toml::to_string_pretty(&settings).expect("serialize");
+        let parsed: AppSettings = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed.backup.webdav_url, "https://dav.example.com/backups/");
+        assert_eq!(parsed.backup.webdav_username, "alice");
+        assert_eq!(parsed.backup.encrypted_webdav_password, "base64ciphertext");
+        assert_eq!(parsed.backup.keep_versions, 10);
+    }
+
+    #[test]
+    fn old_settings_file_without_backup_table_still_deserializes() {
+        // Simulates a settings.toml written before this feature existed:
+        // no [backup] table at all.
+        let toml_text = r#"
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert_eq!(settings.backup.webdav_url, "");
+        assert_eq!(settings.backup.keep_versions, 5);
     }
 }
