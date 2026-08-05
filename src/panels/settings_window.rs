@@ -41,6 +41,18 @@ fn parse_scrollback_lines(text: &str) -> Option<u32> {
     }
 }
 
+/// Parse the Backup tab's keep-versions field. Rejects non-positive and
+/// unreasonably large values — 1 keeps just the latest backup, 100 is a
+/// generous upper bound (more than that is almost certainly a typo).
+fn parse_keep_versions(text: &str) -> Option<u32> {
+    let value: u32 = text.trim().parse().ok()?;
+    if (1..=100).contains(&value) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
 /// Check the 12 configurable shortcuts' *resolved* keys (override or
 /// default, via `keybindings::effective_key`) for a duplicate. Returns
 /// `(key, first_action_id, second_action_id)` for the first collision
@@ -193,6 +205,7 @@ enum SettingsTab {
     Terminal,
     Security,
     Shortcuts,
+    Backup,
 }
 
 impl SettingsTab {
@@ -206,6 +219,7 @@ impl SettingsTab {
             SettingsTab::Terminal => "terminal",
             SettingsTab::Security => "security",
             SettingsTab::Shortcuts => "shortcuts",
+            SettingsTab::Backup => "backup",
         }
     }
 
@@ -216,6 +230,7 @@ impl SettingsTab {
             SettingsTab::Terminal => rust_i18n::t!("Settings.tab_terminal").into(),
             SettingsTab::Security => rust_i18n::t!("Settings.tab_security").into(),
             SettingsTab::Shortcuts => rust_i18n::t!("Settings.tab_shortcuts").into(),
+            SettingsTab::Backup => rust_i18n::t!("Settings.tab_backup").into(),
         }
     }
 }
@@ -228,6 +243,10 @@ pub struct SettingsWindow {
     font_size_input: Entity<InputState>,
     monitor_interval_input: Entity<InputState>,
     scrollback_input: Entity<InputState>,
+    webdav_url_input: Entity<InputState>,
+    webdav_username_input: Entity<InputState>,
+    webdav_password_input: Entity<InputState>,
+    keep_versions_input: Entity<InputState>,
     error: Option<SharedString>,
     /// The action-id currently being recorded (`Record` button clicked,
     /// waiting for the next keystroke), or `None` when nothing is being
@@ -253,6 +272,29 @@ impl SettingsWindow {
             InputState::new(window, cx)
                 .default_value(committed.terminal.scrollback_lines.to_string())
         });
+        let webdav_url_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(committed.backup.webdav_url.clone())
+                .placeholder("https://dav.example.com/remote.php/dav/files/me/caracal-backups/")
+        });
+        let webdav_username_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(committed.backup.webdav_username.clone())
+        });
+        // Decrypt the saved password (if any) to re-populate the field on
+        // open, mirroring how every other draft field seeds from
+        // `committed`. `None` (vault locked, or nothing saved yet, or a
+        // corrupt value) just leaves the field empty rather than erroring
+        // — the user can always re-type it.
+        let initial_webdav_password = cx
+            .try_global::<crate::workspace::VaultKey>()
+            .and_then(|key| key.0.decrypt_str(&committed.backup.encrypted_webdav_password).ok())
+            .unwrap_or_default();
+        let webdav_password_input = cx.new(|cx| {
+            InputState::new(window, cx).masked(true).default_value(initial_webdav_password)
+        });
+        let keep_versions_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(committed.backup.keep_versions.to_string())
+        });
         Self {
             workspace,
             draft: committed.clone(),
@@ -261,6 +303,10 @@ impl SettingsWindow {
             font_size_input,
             monitor_interval_input,
             scrollback_input,
+            webdav_url_input,
+            webdav_username_input,
+            webdav_password_input,
+            keep_versions_input,
             error: None,
             recording: None,
             record_focus: cx.focus_handle(),
@@ -291,6 +337,33 @@ impl SettingsWindow {
             return false;
         };
         self.draft.terminal.scrollback_lines = scrollback_lines;
+
+        self.draft.backup.webdav_url = self.webdav_url_input.read(cx).value().to_string();
+        self.draft.backup.webdav_username = self.webdav_username_input.read(cx).value().to_string();
+
+        // Leaving the password field empty keeps whatever was already
+        // saved (a freshly-decrypted field is legitimately empty when
+        // nothing's been configured yet, or when the vault is locked —
+        // that must not silently wipe a previously-saved password).
+        let webdav_password_text = self.webdav_password_input.read(cx).value().to_string();
+        if !webdav_password_text.is_empty() {
+            match cx.try_global::<crate::workspace::VaultKey>() {
+                Some(key) => {
+                    self.draft.backup.encrypted_webdav_password = key.0.encrypt_str(&webdav_password_text);
+                }
+                None => {
+                    self.error = Some(rust_i18n::t!("Settings.Backup.vault_locked_error").into());
+                    return false;
+                }
+            }
+        }
+
+        let keep_versions_text = self.keep_versions_input.read(cx).value();
+        let Some(keep_versions) = parse_keep_versions(&keep_versions_text) else {
+            self.error = Some(rust_i18n::t!("Settings.Backup.keep_versions_invalid").into());
+            return false;
+        };
+        self.draft.backup.keep_versions = keep_versions;
 
         self.error = None;
         true
@@ -839,6 +912,79 @@ impl SettingsWindow {
         });
     }
 
+    /// Draft-state credential fields only — the network action buttons
+    /// (test/backup/refresh/restore) are added on top of this in later
+    /// rounds, following the Security tab's pattern of immediate-action
+    /// buttons coexisting with a tab's draft fields.
+    fn render_backup_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let vault_unlocked = cx.try_global::<crate::workspace::VaultKey>().is_some();
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .when(!vault_unlocked, |el| {
+                el.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(rust_i18n::t!("Settings.Backup.vault_locked_notice")),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Backup.webdav_url_label")),
+                    )
+                    .child(Input::new(&self.webdav_url_input)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Backup.webdav_username_label")),
+                    )
+                    .child(Input::new(&self.webdav_username_input)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Backup.webdav_password_label")),
+                    )
+                    .child(Input::new(&self.webdav_password_input)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.Backup.keep_versions_label")),
+                    )
+                    .child(Input::new(&self.keep_versions_input)),
+            )
+    }
+
     /// One row: action label, current resolved key (override or default) —
     /// or the recording prompt while this row is being captured — plus
     /// Record and Reset buttons.
@@ -1008,6 +1154,7 @@ impl Render for SettingsWindow {
             SettingsTab::Terminal => self.render_terminal_tab(cx).into_any_element(),
             SettingsTab::Security => self.render_security_tab(cx).into_any_element(),
             SettingsTab::Shortcuts => self.render_shortcuts_tab(cx).into_any_element(),
+            SettingsTab::Backup => self.render_backup_tab(cx).into_any_element(),
         };
 
         div()
@@ -1033,7 +1180,8 @@ impl Render for SettingsWindow {
                             .child(self.tab_button(SettingsTab::Appearance, cx))
                             .child(self.tab_button(SettingsTab::Terminal, cx))
                             .child(self.tab_button(SettingsTab::Security, cx))
-                            .child(self.tab_button(SettingsTab::Shortcuts, cx)),
+                            .child(self.tab_button(SettingsTab::Shortcuts, cx))
+                            .child(self.tab_button(SettingsTab::Backup, cx)),
                     )
                     .child(div().flex_1().p_4().child(content)),
             )
