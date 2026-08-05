@@ -8,6 +8,7 @@
 use std::io::{Read, Write};
 
 use anyhow::{Result, anyhow};
+use chrono::NaiveDateTime;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -21,6 +22,45 @@ pub(crate) struct UnpackedArchive {
     pub connections: Vec<u8>,
     pub settings: Vec<u8>,
     pub quick_commands: Vec<u8>,
+}
+
+/// One backup archive that exists on the server, discovered via
+/// `list_versions`. `filename` alone (joined onto the configured WebDAV
+/// URL) is the full path — see the design spec's "Versioning" decision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BackupVersion {
+    pub filename: String,
+    pub timestamp: NaiveDateTime,
+}
+
+const FILENAME_FORMAT: &str = "%Y%m%d-%H%M%S";
+
+/// Filename for a backup taken right now, e.g. `20260805-153421.tar.gz`.
+fn new_backup_filename() -> String {
+    format!("{}.tar.gz", chrono::Utc::now().naive_utc().format(FILENAME_FORMAT))
+}
+
+/// Parses a filename like `20260805-153421.tar.gz` back into its
+/// timestamp. `None` for anything that doesn't match this exact shape
+/// (e.g. a file the user dropped into the same directory by hand) — such
+/// entries are silently skipped by version listing/pruning rather than
+/// erroring the whole operation.
+fn parse_backup_filename(filename: &str) -> Option<NaiveDateTime> {
+    let stem = filename.strip_suffix(".tar.gz")?;
+    NaiveDateTime::parse_from_str(stem, FILENAME_FORMAT).ok()
+}
+
+/// Given every version currently on the server (any order) and how many
+/// to keep, returns the ones to delete — the oldest, beyond `keep`. Empty
+/// if there are `keep` or fewer versions.
+fn versions_to_prune(mut versions: Vec<BackupVersion>, keep: u32) -> Vec<BackupVersion> {
+    versions.sort_by_key(|v| v.timestamp);
+    let keep = keep as usize;
+    if versions.len() <= keep {
+        return Vec::new();
+    }
+    let cut = versions.len() - keep;
+    versions.drain(..cut).collect()
 }
 
 /// Packs the 3 local config files' raw bytes into an in-memory `.tar.gz`
@@ -115,5 +155,53 @@ mod tests {
     fn unpack_archive_rejects_garbage_bytes() {
         let result = unpack_archive(b"not a real gzip stream");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_backup_filename_matches_the_expected_shape() {
+        let name = new_backup_filename();
+        assert!(name.ends_with(".tar.gz"), "got {name:?}");
+        assert_eq!(name.len(), "20260805-153421.tar.gz".len());
+    }
+
+    #[test]
+    fn parse_backup_filename_round_trips_a_generated_name() {
+        let name = new_backup_filename();
+        assert!(parse_backup_filename(&name).is_some());
+    }
+
+    #[test]
+    fn parse_backup_filename_rejects_unrelated_files() {
+        assert!(parse_backup_filename("readme.txt").is_none());
+        assert!(parse_backup_filename("not-a-timestamp.tar.gz").is_none());
+        assert!(parse_backup_filename("20260805-153421.zip").is_none());
+    }
+
+    #[test]
+    fn versions_to_prune_keeps_the_newest_n_and_prunes_the_rest() {
+        let ts = |s: &str| NaiveDateTime::parse_from_str(s, FILENAME_FORMAT).unwrap();
+        let versions = vec![
+            BackupVersion { filename: "a".to_string(), timestamp: ts("20260801-000000") },
+            BackupVersion { filename: "b".to_string(), timestamp: ts("20260803-000000") },
+            BackupVersion { filename: "c".to_string(), timestamp: ts("20260802-000000") },
+            BackupVersion { filename: "d".to_string(), timestamp: ts("20260805-000000") },
+        ];
+        let pruned = versions_to_prune(versions, 2);
+        let mut pruned_filenames: Vec<&str> = pruned.iter().map(|v| v.filename.as_str()).collect();
+        pruned_filenames.sort();
+        assert_eq!(
+            pruned_filenames,
+            vec!["a", "c"],
+            "must prune the 2 oldest (a, c), keeping the 2 newest (b, d)"
+        );
+    }
+
+    #[test]
+    fn versions_to_prune_is_empty_when_under_the_keep_limit() {
+        let versions = vec![BackupVersion {
+            filename: "a".to_string(),
+            timestamp: NaiveDateTime::parse_from_str("20260801-000000", FILENAME_FORMAT).unwrap(),
+        }];
+        assert!(versions_to_prune(versions, 5).is_empty());
     }
 }
