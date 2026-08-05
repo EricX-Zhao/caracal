@@ -6,6 +6,7 @@
 //! See docs/superpowers/specs/2026-08-05-webdav-backup-sync-design.md.
 
 use std::io::{Read, Write};
+use std::thread;
 
 use anyhow::{Result, anyhow};
 use chrono::NaiveDateTime;
@@ -15,6 +16,7 @@ use flate2::write::GzEncoder;
 use quick_xml::events::Event;
 use quick_xml::name::LocalName;
 use quick_xml::reader::Reader;
+use reqwest::{Method, StatusCode};
 
 const MEMBER_CONNECTIONS: &str = "connections.toml";
 const MEMBER_SETTINGS: &str = "settings.toml";
@@ -31,7 +33,7 @@ pub(crate) struct UnpackedArchive {
 /// `list_versions`. `filename` alone (joined onto the configured WebDAV
 /// URL) is the full path — see the design spec's "Versioning" decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BackupVersion {
+pub struct BackupVersion {
     pub filename: String,
     pub timestamp: NaiveDateTime,
 }
@@ -166,6 +168,212 @@ pub(crate) fn unpack_archive(bytes: &[u8]) -> Result<UnpackedArchive> {
         quick_commands: quick_commands
             .ok_or_else(|| anyhow!("archive is missing {MEMBER_QUICK_COMMANDS}"))?,
     })
+}
+
+/// WebDAV server connection details. `url` names the target directory
+/// itself (not a server root) — every backup uploads directly into it, no
+/// per-backup subdirectory. See the design spec's "Versioning" decision.
+#[derive(Clone, Debug)]
+pub struct WebDavConfig {
+    pub url: String,
+    pub username: String,
+    pub password: String,
+}
+
+/// The 3 files downloaded and unpacked by a successful [`restore`], ready
+/// for the caller to write to disk.
+pub struct RestoredFiles {
+    pub connections: Vec<u8>,
+    pub settings: Vec<u8>,
+    pub quick_commands: Vec<u8>,
+}
+
+fn build_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .build()
+        .map_err(|e| anyhow!("failed to build HTTP client: {e}"))
+}
+
+fn join_url(base: &str, filename: &str) -> String {
+    if base.ends_with('/') {
+        format!("{base}{filename}")
+    } else {
+        format!("{base}/{filename}")
+    }
+}
+
+async fn do_test_connection(config: WebDavConfig) -> Result<()> {
+    let client = build_client()?;
+    let resp = client
+        .request(Method::from_bytes(b"PROPFIND").expect("valid HTTP method"), &config.url)
+        .basic_auth(&config.username, Some(&config.password))
+        .header("Depth", "0")
+        .send()
+        .await
+        .map_err(|e| anyhow!("request failed: {e}"))?;
+    if resp.status().is_success() || resp.status() == StatusCode::MULTI_STATUS {
+        Ok(())
+    } else {
+        Err(anyhow!("server returned {}", resp.status()))
+    }
+}
+
+/// Idempotent: a 405 (Method Not Allowed) or 409 (Conflict) response —
+/// both of which real WebDAV servers return for "this directory already
+/// exists" — is treated as success, not an error.
+async fn ensure_directory(client: &reqwest::Client, config: &WebDavConfig) -> Result<()> {
+    let resp = client
+        .request(Method::from_bytes(b"MKCOL").expect("valid HTTP method"), &config.url)
+        .basic_auth(&config.username, Some(&config.password))
+        .send()
+        .await
+        .map_err(|e| anyhow!("MKCOL request failed: {e}"))?;
+    let status = resp.status();
+    if status.is_success() || status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::CONFLICT {
+        Ok(())
+    } else {
+        Err(anyhow!("failed to create backup directory: server returned {status}"))
+    }
+}
+
+async fn do_list_versions(config: WebDavConfig) -> Result<Vec<BackupVersion>> {
+    let client = build_client()?;
+    let resp = client
+        .request(Method::from_bytes(b"PROPFIND").expect("valid HTTP method"), &config.url)
+        .basic_auth(&config.username, Some(&config.password))
+        .header("Depth", "1")
+        .send()
+        .await
+        .map_err(|e| anyhow!("PROPFIND request failed: {e}"))?;
+    if !(resp.status().is_success() || resp.status() == StatusCode::MULTI_STATUS) {
+        return Err(anyhow!("server returned {}", resp.status()));
+    }
+    let body = resp.text().await.map_err(|e| anyhow!("failed to read response body: {e}"))?;
+    Ok(versions_from_hrefs(&parse_propfind_hrefs(&body)))
+}
+
+async fn do_backup_now(
+    config: WebDavConfig,
+    keep_versions: u32,
+    connections: Vec<u8>,
+    settings: Vec<u8>,
+    quick_commands: Vec<u8>,
+) -> Result<String> {
+    let client = build_client()?;
+    ensure_directory(&client, &config).await?;
+
+    let archive = pack_archive(&connections, &settings, &quick_commands)?;
+    let filename = new_backup_filename();
+    let target = join_url(&config.url, &filename);
+    let resp = client
+        .put(&target)
+        .basic_auth(&config.username, Some(&config.password))
+        .body(archive)
+        .send()
+        .await
+        .map_err(|e| anyhow!("upload failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("upload failed: server returned {}", resp.status()));
+    }
+
+    // Prune old versions, best-effort — a pruning failure must never undo
+    // an already-successful backup.
+    if let Ok(versions) = do_list_versions(config.clone()).await {
+        for old in versions_to_prune(versions, keep_versions) {
+            let old_target = join_url(&config.url, &old.filename);
+            let _ = client
+                .delete(&old_target)
+                .basic_auth(&config.username, Some(&config.password))
+                .send()
+                .await;
+        }
+    }
+
+    Ok(filename)
+}
+
+async fn do_restore(config: WebDavConfig, version: BackupVersion) -> Result<RestoredFiles> {
+    let client = build_client()?;
+    let target = join_url(&config.url, &version.filename);
+    let resp = client
+        .get(&target)
+        .basic_auth(&config.username, Some(&config.password))
+        .send()
+        .await
+        .map_err(|e| anyhow!("download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("download failed: server returned {}", resp.status()));
+    }
+    let bytes = resp.bytes().await.map_err(|e| anyhow!("failed to read response body: {e}"))?;
+    let unpacked = unpack_archive(&bytes)?;
+    Ok(RestoredFiles {
+        connections: unpacked.connections,
+        settings: unpacked.settings,
+        quick_commands: unpacked.quick_commands,
+    })
+}
+
+/// Runs `fut` to completion on a fresh, dedicated OS thread with its own
+/// single-threaded tokio runtime — mirrors `SshSession::connect`'s
+/// thread-per-connection pattern (`terminal/ssh.rs`), but one-shot: the
+/// thread exits once `fut` resolves, there's no persistent command loop.
+/// Returns a receiver immediately (non-blocking to call); the result
+/// arrives once the thread finishes.
+fn spawn_worker<T, F>(fut: F) -> flume::Receiver<Result<T>>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    let (tx, rx) = flume::bounded(1);
+    let spawned = thread::Builder::new().name("caracal-webdav".into()).spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                let _ = tx.send(Err(anyhow!("failed to start webdav runtime: {e}")));
+                return;
+            }
+        };
+        let result = rt.block_on(fut);
+        let _ = tx.send(result);
+    });
+    if let Err(e) = spawned {
+        let (tx2, rx2) = flume::bounded(1);
+        let _ = tx2.send(Err(anyhow!("failed to spawn webdav worker thread: {e}")));
+        return rx2;
+    }
+    rx
+}
+
+/// Checks that `config` can reach the server and authenticate, without
+/// uploading or changing anything (`PROPFIND`, `Depth: 0`).
+pub fn test_connection(config: WebDavConfig) -> flume::Receiver<Result<()>> {
+    spawn_worker(async move { do_test_connection(config).await })
+}
+
+/// Lists every backup archive currently on the server, in no particular
+/// order (callers sort as needed).
+pub fn list_versions(config: WebDavConfig) -> flume::Receiver<Result<Vec<BackupVersion>>> {
+    spawn_worker(async move { do_list_versions(config).await })
+}
+
+/// Bundles the 3 given files' raw bytes into one archive, uploads it as a
+/// new timestamped version, then prunes old versions beyond
+/// `keep_versions`. Returns the new archive's filename on success.
+pub fn backup_now(
+    config: WebDavConfig,
+    keep_versions: u32,
+    connections: Vec<u8>,
+    settings: Vec<u8>,
+    quick_commands: Vec<u8>,
+) -> flume::Receiver<Result<String>> {
+    spawn_worker(async move { do_backup_now(config, keep_versions, connections, settings, quick_commands).await })
+}
+
+/// Downloads and unpacks the given version. Does **not** write anything to
+/// disk — the caller decides where the 3 restored files go (see the
+/// design spec's "Restore requires an app restart" decision).
+pub fn restore(config: WebDavConfig, version: BackupVersion) -> flume::Receiver<Result<RestoredFiles>> {
+    spawn_worker(async move { do_restore(config, version).await })
 }
 
 #[cfg(test)]
