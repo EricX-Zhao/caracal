@@ -83,7 +83,7 @@ Configuring/using backup requires the vault to already be unlocked — always tr
 running session, so no new unlock flow is needed. Basic Auth only (username + password); no
 OAuth/Bearer WebDAV servers in scope.
 
-### Restore requires an app restart
+### Restore requires an app restart, confirmed by a warning dialog (no re-auth)
 
 The restored `connections.toml` almost certainly needs a different vault-unlock password than
 whatever the current session's `VaultKey` was derived from (it's from a different point in
@@ -91,6 +91,26 @@ time, possibly a different machine's vault entirely). Rather than build in-memor
 machinery, a successful restore writes the 3 files to disk, then shows a "restart required"
 notice — the next launch naturally re-prompts for the vault password against the newly-
 restored `connections.toml`, reusing the app's existing startup unlock flow unchanged.
+
+Clicking "恢复此版本" goes through the same double-confirmation `AlertDialog` pattern as
+`reset_vault` ([settings_window.rs:806](../../../src/panels/settings_window.rs)) — but does
+**not** additionally require re-typing the current session's master password. Re-entering the
+*current* password would verify nothing about the backup actually being restored (it could be
+protected by a completely different password), so it would add friction without adding real
+safety. Instead, the confirmation dialog's copy explicitly warns: *"恢复后需重启，并需输入这份
+备份创建时的主密码（可能与当前密码不同）。若忘记该密码，将无法进入应用"* ("after restoring
+you'll need to restart and enter **that backup's own** master password, which may differ from
+your current one — if you don't remember it, you won't be able to get back into the app").
+
+This surfaces a real pre-existing gap: [workspace.rs](../../../src/workspace.rs)'s startup
+unlock dialog (`show_unlock_dialog`) has no "forgot password / reset vault" escape hatch — that
+only exists in Settings → Security ([settings_window.rs:806](../../../src/panels/settings_window.rs)),
+unreachable while locked out. A wrong password there just keeps the dialog open with an inline
+error, indefinitely, with no way back in short of manually deleting `~/.caracal` outside the
+app (which would discard the just-restored data, though the WebDAV backup itself survives
+untouched for another attempt). This feature makes that scenario meaningfully more likely
+(restoring an old backup under a since-changed password) but fixing the startup dialog itself
+is explicitly out of scope for this spec — see Non-goals.
 
 ### HTTP client: `reqwest` with `rustls-tls`
 
@@ -160,3 +180,10 @@ methods; `MKCOL`/`PROPFIND` are WebDAV-specific and go through
 - No support for restoring a backup created by a different (incompatible) version of Caracal's
   config schema — the existing `#[serde(default)]` forward-compat fields on each struct are
   the only safety net, same as local upgrades already rely on today.
+- No "forgot password / reset vault" option added to the startup unlock dialog
+  (`workspace.rs`'s `show_unlock_dialog`) — the pre-existing gap this feature makes more
+  likely to surface (see "Restore requires an app restart" above) is handled with a warning in
+  the restore confirmation dialog only, not a fix to the unlock flow itself.
+- No re-entry of the current session's master password as a restore confirmation step — the
+  existing double-confirmation `AlertDialog` (matching `reset_vault`'s pattern) plus the
+  warning copy above is the only gate before a restore proceeds.
