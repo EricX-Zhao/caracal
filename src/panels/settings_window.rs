@@ -76,6 +76,29 @@ fn find_keybinding_conflict(
     None
 }
 
+/// Writes the 3 restored files to their real paths. Each file is written
+/// to a `.restore-tmp` sibling first and only renamed into place once
+/// every temp write has succeeded — a rename is atomic within one
+/// filesystem, so a failure partway through never leaves one file
+/// restored and the other two untouched.
+fn write_restored_files(files: &crate::webdav::RestoredFiles) -> anyhow::Result<()> {
+    let targets = [
+        (crate::config::config_path(), &files.connections),
+        (crate::settings::settings_path(), &files.settings),
+        (crate::quick_commands::quick_commands_path(), &files.quick_commands),
+    ];
+    let mut temp_paths = Vec::with_capacity(targets.len());
+    for (path, content) in &targets {
+        let temp_path = path.with_extension("restore-tmp");
+        std::fs::write(&temp_path, content)?;
+        temp_paths.push(temp_path);
+    }
+    for ((path, _), temp_path) in targets.iter().zip(temp_paths.iter()) {
+        std::fs::rename(temp_path, path)?;
+    }
+    Ok(())
+}
+
 use gpui::{
     App, AppContext, ClickEvent, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
     KeyDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
@@ -1105,10 +1128,115 @@ impl SettingsWindow {
         .detach();
     }
 
-    /// One row in the version list: the timestamp, human-formatted. The
-    /// restore action is added to this row in a later round.
+    fn perform_restore(
+        &mut self,
+        config: crate::webdav::WebDavConfig,
+        version: crate::webdav::BackupVersion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.backup_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let rx = crate::webdav::restore(config, version);
+            let result = rx.recv_async().await;
+            let _ = cx.update(|window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.backup_busy = false;
+                    match result {
+                        Ok(Ok(files)) => match write_restored_files(&files) {
+                            Ok(()) => window.push_notification(
+                                (
+                                    NotificationType::Warning,
+                                    rust_i18n::t!("Settings.Backup.restore_success_restart_required"),
+                                ),
+                                cx,
+                            ),
+                            Err(e) => window.push_notification(
+                                (
+                                    NotificationType::Error,
+                                    rust_i18n::t!("Settings.Backup.restore_write_failed", error = e.to_string()),
+                                ),
+                                cx,
+                            ),
+                        },
+                        Ok(Err(e)) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.restore_failed", error = e.to_string()),
+                            ),
+                            cx,
+                        ),
+                        Err(_) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.restore_failed", error = "worker thread failed"),
+                            ),
+                            cx,
+                        ),
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// Double-confirmation, mirroring `reset_vault`'s exact pattern
+    /// (destructive, permanent, two-step-confirm) — see the design spec's
+    /// "Restore requires an app restart" decision for why the second
+    /// dialog's copy warns about the backup's own master password instead
+    /// of asking the user to re-type their current one.
+    fn on_click_restore(
+        &mut self,
+        version: crate::webdav::BackupVersion,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let config = self.current_webdav_config(cx);
+        let weak = cx.entity().downgrade();
+        let filename = version.filename.clone();
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            let weak = weak.clone();
+            let config = config.clone();
+            let version = version.clone();
+            let filename = filename.clone();
+            alert
+                .title(rust_i18n::t!("Settings.Backup.restore_confirm_title"))
+                .description(rust_i18n::t!("Settings.Backup.restore_confirm_body", filename = filename))
+                .confirm()
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    let weak = weak.clone();
+                    let config = config.clone();
+                    let version = version.clone();
+                    window.open_alert_dialog(cx, move |alert, _window, _cx| {
+                        let weak = weak.clone();
+                        let config = config.clone();
+                        let version = version.clone();
+                        alert
+                            .title(rust_i18n::t!("Settings.Backup.restore_confirm_title_2"))
+                            .description(rust_i18n::t!("Settings.Backup.restore_confirm_body_2"))
+                            .confirm()
+                            .on_ok(move |_, window, cx| {
+                                window.close_dialog(cx);
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.perform_restore(config.clone(), version.clone(), window, cx);
+                                });
+                                true
+                            })
+                    });
+                    true
+                })
+        });
+    }
+
+    /// One row in the version list: the timestamp, human-formatted, plus
+    /// a restore action.
     fn version_row(&self, version: &crate::webdav::BackupVersion, cx: &Context<Self>) -> impl IntoElement {
         let label = version.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+        let weak = cx.entity().downgrade();
+        let version_for_click = version.clone();
         div()
             .flex()
             .flex_row()
@@ -1116,12 +1244,26 @@ impl SettingsWindow {
             .justify_between()
             .gap_2()
             .child(div().text_sm().text_color(cx.theme().foreground).child(label))
+            .child(
+                Button::new(SharedString::from(format!("settings-backup-restore-{}", version.filename)))
+                    .xsmall()
+                    .danger()
+                    .label(rust_i18n::t!("Settings.Backup.restore_button"))
+                    .disabled(self.backup_busy)
+                    .on_click(move |_ev, window, cx| {
+                        let version = version_for_click.clone();
+                        let _ = weak.update(cx, |this, cx| {
+                            this.on_click_restore(version, window, cx);
+                        });
+                    }),
+            )
     }
 
-    /// Draft-state credential fields only — the network action buttons
-    /// (test/backup/refresh/restore) are added on top of this in later
-    /// rounds, following the Security tab's pattern of immediate-action
-    /// buttons coexisting with a tab's draft fields.
+    /// Draft-state credential fields (URL/username/password/keep-versions)
+    /// plus the test/backup/refresh/restore action buttons, which act
+    /// immediately rather than through Apply/Confirm — following the
+    /// Security tab's pattern of immediate-action buttons coexisting with
+    /// a tab's draft fields.
     fn render_backup_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let vault_unlocked = cx.try_global::<crate::workspace::VaultKey>().is_some();
 
