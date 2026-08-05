@@ -247,6 +247,10 @@ pub struct SettingsWindow {
     webdav_username_input: Entity<InputState>,
     webdav_password_input: Entity<InputState>,
     keep_versions_input: Entity<InputState>,
+    /// True while any WebDAV action (test/backup/refresh/restore) is in
+    /// flight — disables every backup-tab action button so a second click
+    /// can't start an overlapping operation.
+    backup_busy: bool,
     error: Option<SharedString>,
     /// The action-id currently being recorded (`Record` button clicked,
     /// waiting for the next keystroke), or `None` when nothing is being
@@ -307,6 +311,7 @@ impl SettingsWindow {
             webdav_username_input,
             webdav_password_input,
             keep_versions_input,
+            backup_busy: false,
             error: None,
             recording: None,
             record_focus: cx.focus_handle(),
@@ -912,6 +917,145 @@ impl SettingsWindow {
         });
     }
 
+    /// Builds a `WebDavConfig` straight from whatever's currently typed in
+    /// the 3 credential fields — every backup action button acts on the
+    /// live draft, not on `committed`/`self.draft.backup`, so the user
+    /// never has to hit Apply first just to test or use what they just
+    /// typed.
+    fn current_webdav_config(&self, cx: &Context<Self>) -> crate::webdav::WebDavConfig {
+        crate::webdav::WebDavConfig {
+            url: self.webdav_url_input.read(cx).value().to_string(),
+            username: self.webdav_username_input.read(cx).value().to_string(),
+            password: self.webdav_password_input.read(cx).value().to_string(),
+        }
+    }
+
+    fn on_click_test_connection(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.current_webdav_config(cx);
+        if config.url.trim().is_empty() {
+            window.push_notification(
+                (NotificationType::Error, rust_i18n::t!("Settings.Backup.url_required")),
+                cx,
+            );
+            return;
+        }
+        self.backup_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let rx = crate::webdav::test_connection(config);
+            let result = rx.recv_async().await;
+            let _ = cx.update(|window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.backup_busy = false;
+                    match result {
+                        Ok(Ok(())) => window.push_notification(
+                            (NotificationType::Success, rust_i18n::t!("Settings.Backup.test_success")),
+                            cx,
+                        ),
+                        Ok(Err(e)) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.test_failed", error = e.to_string()),
+                            ),
+                            cx,
+                        ),
+                        Err(_) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.test_failed", error = "worker thread failed"),
+                            ),
+                            cx,
+                        ),
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn on_click_backup_now(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let config = self.current_webdav_config(cx);
+        if config.url.trim().is_empty() {
+            window.push_notification(
+                (NotificationType::Error, rust_i18n::t!("Settings.Backup.url_required")),
+                cx,
+            );
+            return;
+        }
+        let keep_versions =
+            parse_keep_versions(&self.keep_versions_input.read(cx).value()).unwrap_or(5);
+
+        let connections = match std::fs::read(crate::config::config_path()) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                window.push_notification(
+                    (
+                        NotificationType::Error,
+                        rust_i18n::t!("Settings.Backup.read_local_failed", error = e.to_string()),
+                    ),
+                    cx,
+                );
+                return;
+            }
+        };
+        let settings_bytes = match std::fs::read(crate::settings::settings_path()) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                window.push_notification(
+                    (
+                        NotificationType::Error,
+                        rust_i18n::t!("Settings.Backup.read_local_failed", error = e.to_string()),
+                    ),
+                    cx,
+                );
+                return;
+            }
+        };
+        // A missing quick_commands.toml is normal (it's never created
+        // until the user adds their first quick command) — an empty
+        // member unpacks fine later, since `QuickCommandsFile`'s
+        // `commands` field is `#[serde(default)]`.
+        let quick_commands_bytes = std::fs::read(crate::quick_commands::quick_commands_path()).unwrap_or_default();
+
+        self.backup_busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let rx = crate::webdav::backup_now(config, keep_versions, connections, settings_bytes, quick_commands_bytes);
+            let result = rx.recv_async().await;
+            let _ = cx.update(|window, cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.backup_busy = false;
+                    match result {
+                        Ok(Ok(filename)) => window.push_notification(
+                            (
+                                NotificationType::Success,
+                                rust_i18n::t!("Settings.Backup.backup_success", filename = filename),
+                            ),
+                            cx,
+                        ),
+                        Ok(Err(e)) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.backup_failed", error = e.to_string()),
+                            ),
+                            cx,
+                        ),
+                        Err(_) => window.push_notification(
+                            (
+                                NotificationType::Error,
+                                rust_i18n::t!("Settings.Backup.backup_failed", error = "worker thread failed"),
+                            ),
+                            cx,
+                        ),
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
     /// Draft-state credential fields only — the network action buttons
     /// (test/backup/refresh/restore) are added on top of this in later
     /// rounds, following the Security tab's pattern of immediate-action
@@ -982,6 +1126,26 @@ impl SettingsWindow {
                             .child(rust_i18n::t!("Settings.Backup.keep_versions_label")),
                     )
                     .child(Input::new(&self.keep_versions_input)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        Button::new("settings-backup-test")
+                            .xsmall()
+                            .label(rust_i18n::t!("Settings.Backup.test_button"))
+                            .disabled(self.backup_busy)
+                            .on_click(cx.listener(Self::on_click_test_connection)),
+                    )
+                    .child(
+                        Button::new("settings-backup-now")
+                            .xsmall()
+                            .label(rust_i18n::t!("Settings.Backup.backup_now_button"))
+                            .disabled(self.backup_busy)
+                            .on_click(cx.listener(Self::on_click_backup_now)),
+                    ),
             )
     }
 
