@@ -12,6 +12,9 @@ use chrono::NaiveDateTime;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use quick_xml::events::Event;
+use quick_xml::name::LocalName;
+use quick_xml::reader::Reader;
 
 const MEMBER_CONNECTIONS: &str = "connections.toml";
 const MEMBER_SETTINGS: &str = "settings.toml";
@@ -61,6 +64,54 @@ fn versions_to_prune(mut versions: Vec<BackupVersion>, keep: u32) -> Vec<BackupV
     }
     let cut = versions.len() - keep;
     versions.drain(..cut).collect()
+}
+
+/// Parses a WebDAV `PROPFIND` `multistatus` XML response, extracting every
+/// `<href>` value's text content. Tolerant of namespace prefixes
+/// (`d:href`, `D:href`, a bare `href`) since WebDAV server implementations
+/// vary here — matches on local name only. Never panics: malformed XML
+/// just yields whatever was successfully parsed before the error (possibly
+/// empty), never an `Err` the caller has to handle.
+fn parse_propfind_hrefs(xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut hrefs = Vec::new();
+    let mut in_href = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if local_name_is(e.local_name(), "href") => in_href = true,
+            Ok(Event::End(e)) if local_name_is(e.local_name(), "href") => in_href = false,
+            Ok(Event::Text(t)) if in_href => {
+                if let Ok(text) = t.decode() {
+                    hrefs.push(text.into_owned());
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+    }
+    hrefs
+}
+
+fn local_name_is(name: LocalName<'_>, expected: &str) -> bool {
+    name.as_ref() == expected.as_bytes()
+}
+
+/// Converts raw `PROPFIND` hrefs into [`BackupVersion`]s: takes the last
+/// path segment of each href as a filename, keeping only the ones that
+/// match the `new_backup_filename` timestamp shape — this is what silently
+/// drops the directory's own self-referencing href (and anything a user
+/// dropped into the same directory by hand) from the version list.
+fn versions_from_hrefs(hrefs: &[String]) -> Vec<BackupVersion> {
+    hrefs
+        .iter()
+        .filter_map(|href| {
+            let filename = href.trim_end_matches('/').rsplit('/').next()?.to_string();
+            let timestamp = parse_backup_filename(&filename)?;
+            Some(BackupVersion { filename, timestamp })
+        })
+        .collect()
 }
 
 /// Packs the 3 local config files' raw bytes into an in-memory `.tar.gz`
@@ -203,5 +254,60 @@ mod tests {
             timestamp: NaiveDateTime::parse_from_str("20260801-000000", FILENAME_FORMAT).unwrap(),
         }];
         assert!(versions_to_prune(versions, 5).is_empty());
+    }
+
+    #[test]
+    fn parse_propfind_hrefs_extracts_namespaced_hrefs() {
+        let xml = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:">
+  <d:response>
+    <d:href>/caracal-backups/20260801-120000.tar.gz</d:href>
+  </d:response>
+  <d:response>
+    <d:href>/caracal-backups/20260802-120000.tar.gz</d:href>
+  </d:response>
+</d:multistatus>"#;
+        let hrefs = parse_propfind_hrefs(xml);
+        assert_eq!(
+            hrefs,
+            vec![
+                "/caracal-backups/20260801-120000.tar.gz".to_string(),
+                "/caracal-backups/20260802-120000.tar.gz".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_propfind_hrefs_tolerates_bare_href_with_no_namespace_prefix() {
+        let xml = r#"<multistatus><response><href>/backups/x.tar.gz</href></response></multistatus>"#;
+        let hrefs = parse_propfind_hrefs(xml);
+        assert_eq!(hrefs, vec!["/backups/x.tar.gz".to_string()]);
+    }
+
+    #[test]
+    fn parse_propfind_hrefs_returns_empty_for_an_empty_directory_listing() {
+        // Only the directory's own self-referencing entry, no backup files.
+        let xml = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/caracal-backups/</d:href></d:response></d:multistatus>"#;
+        let hrefs = parse_propfind_hrefs(xml);
+        assert_eq!(hrefs, vec!["/caracal-backups/".to_string()]);
+    }
+
+    #[test]
+    fn parse_propfind_hrefs_does_not_panic_on_malformed_xml() {
+        let hrefs = parse_propfind_hrefs("<not even close to valid xml");
+        assert!(hrefs.is_empty());
+    }
+
+    #[test]
+    fn versions_from_hrefs_filters_out_non_backup_entries() {
+        // The directory's own href (no filename matching the timestamp
+        // shape) must be silently dropped, not error the whole listing.
+        let hrefs = vec![
+            "/caracal-backups/".to_string(),
+            "/caracal-backups/20260801-120000.tar.gz".to_string(),
+        ];
+        let versions = versions_from_hrefs(&hrefs);
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].filename, "20260801-120000.tar.gz");
     }
 }
