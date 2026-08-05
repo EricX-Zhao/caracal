@@ -74,6 +74,21 @@ log = "0.4"
 # run` for verbose output).
 env_logger = "0.11"
 
+# Cloud backup & sync (WebDAV) — see
+# docs/superpowers/specs/2026-08-05-webdav-backup-sync-design.md.
+# rustls (not the default native-tls) to avoid a C OpenSSL build
+# dependency, matching this project's existing no-C-toolchain posture.
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+tar = "0.4"
+# rust_backend (miniz_oxide), not the default C zlib backend — same
+# no-C-toolchain reasoning as reqwest above.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Parses WebDAV PROPFIND multistatus XML responses.
+quick-xml = "0.41"
+# Timestamped backup filenames (`20260805-153421.tar.gz`) and parsing them
+# back for sorting/pruning.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
