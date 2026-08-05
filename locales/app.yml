@@ -19,6 +19,9 @@ Settings:
   tab_shortcuts:
     zh-CN: "快捷键"
     en: "Shortcuts"
+  tab_backup:
+    zh-CN: "备份与同步"
+    en: "Backup & Sync"
   General:
     language_label:
       zh-CN: "语言"
@@ -94,6 +97,88 @@ Settings:
     conflict_error:
       zh-CN: "%{key} 已被\"%{action}\"占用"
       en: "%{key} is already used by \"%{action}\""
+  Backup:
+    vault_locked_notice:
+      zh-CN: "密码库已锁定，无法配置或使用备份功能"
+      en: "The vault is locked — backup can't be configured or used right now"
+    webdav_url_label:
+      zh-CN: "WebDAV 目录地址"
+      en: "WebDAV directory URL"
+    webdav_username_label:
+      zh-CN: "用户名"
+      en: "Username"
+    webdav_password_label:
+      zh-CN: "密码"
+      en: "Password"
+    keep_versions_label:
+      zh-CN: "保留版本数"
+      en: "Versions to keep"
+    keep_versions_invalid:
+      zh-CN: "保留版本数必须是 1-100 之间的整数"
+      en: "Versions to keep must be an integer between 1 and 100"
+    vault_locked_error:
+      zh-CN: "密码库已锁定，无法保存密码"
+      en: "The vault is locked — can't save the password"
+    url_required:
+      zh-CN: "请先填写 WebDAV 目录地址"
+      en: "Enter a WebDAV directory URL first"
+    test_button:
+      zh-CN: "测试连接"
+      en: "Test Connection"
+    test_success:
+      zh-CN: "连接成功"
+      en: "Connection succeeded"
+    test_failed:
+      zh-CN: "连接失败：%{error}"
+      en: "Connection failed: %{error}"
+    backup_now_button:
+      zh-CN: "立即备份"
+      en: "Backup Now"
+    backup_success:
+      zh-CN: "备份成功：%{filename}"
+      en: "Backup succeeded: %{filename}"
+    backup_failed:
+      zh-CN: "备份失败：%{error}"
+      en: "Backup failed: %{error}"
+    read_local_failed:
+      zh-CN: "读取本地配置文件失败：%{error}"
+      en: "Failed to read local config file: %{error}"
+    versions_label:
+      zh-CN: "服务器上的备份版本"
+      en: "Backups on the server"
+    refresh_button:
+      zh-CN: "刷新列表"
+      en: "Refresh"
+    versions_empty:
+      zh-CN: "尚未获取到任何备份版本，点击\"刷新列表\"查看"
+      en: "No versions loaded yet — click Refresh to check"
+    list_failed:
+      zh-CN: "获取备份列表失败：%{error}"
+      en: "Failed to list backups: %{error}"
+    restore_button:
+      zh-CN: "恢复此版本"
+      en: "Restore"
+    restore_confirm_title:
+      zh-CN: "恢复此版本？"
+      en: "Restore this version?"
+    restore_confirm_body:
+      zh-CN: "这将用 %{filename} 覆盖本机的连接、设置与快捷命令配置。"
+      en: "This will overwrite this device's connections, settings, and quick commands with %{filename}."
+    restore_confirm_title_2:
+      zh-CN: "确认恢复"
+      en: "Confirm restore"
+    restore_confirm_body_2:
+      zh-CN: "恢复后需重启，并需输入这份备份创建时的主密码（可能与当前密码不同）。若忘记该密码，将无法进入应用。"
+      en: "A restart is required after restoring, and you'll need to enter that backup's own master password (which may differ from your current one). If you don't remember it, you won't be able to get back into the app."
+    restore_success_restart_required:
+      zh-CN: "恢复成功，请重启应用以生效"
+      en: "Restore succeeded — restart the app for it to take effect"
+    restore_failed:
+      zh-CN: "恢复失败：%{error}"
+      en: "Restore failed: %{error}"
+    restore_write_failed:
+      zh-CN: "写入本地文件失败：%{error}"
+      en: "Failed to write local files: %{error}"
   theme_label:
     zh-CN: "主题"
     en: "Theme"
