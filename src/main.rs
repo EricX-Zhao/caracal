@@ -23,6 +23,7 @@ mod quick_commands;
 mod settings;
 mod terminal;
 mod vault;
+mod webdav;
 mod workspace;
 
 use std::borrow::Cow;
