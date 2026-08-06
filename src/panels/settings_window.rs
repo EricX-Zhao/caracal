@@ -1270,6 +1270,8 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h(px(0.0))
             .gap_3()
             .when(!vault_unlocked, |el| {
                 el.child(
@@ -1355,6 +1357,8 @@ impl SettingsWindow {
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h(px(0.0))
                     .gap_2()
                     .child(
                         div()
@@ -1384,9 +1388,13 @@ impl SettingsWindow {
                             .into_any_element()
                     } else {
                         div()
+                            .id("settings-backup-versions")
                             .flex()
                             .flex_col()
+                            .flex_1()
+                            .min_h(px(0.0))
                             .gap_1()
+                            .overflow_y_scroll()
                             .children(self.backup_versions.iter().map(|v| self.version_row(v, cx)))
                             .into_any_element()
                     }),
@@ -1554,7 +1562,7 @@ impl SettingsWindow {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let content = match self.active_tab {
             SettingsTab::General => self.render_general_tab(cx).into_any_element(),
@@ -1591,7 +1599,9 @@ impl Render for SettingsWindow {
                             .child(self.tab_button(SettingsTab::Shortcuts, cx))
                             .child(self.tab_button(SettingsTab::Backup, cx)),
                     )
-                    .child(div().flex_1().p_4().child(content)),
+                    .child(
+                        div().flex().flex_col().flex_1().min_h(px(0.0)).p_4().child(content),
+                    ),
             )
             .child(
                 div()
@@ -1644,6 +1654,16 @@ impl Render for SettingsWindow {
                             .on_click(cx.listener(Self::on_click_confirm)),
                     ),
             )
+            // Without these, `window.push_notification`/`window.open_alert_dialog`
+            // calls made from anywhere in this window (including the pre-
+            // existing Security tab's reset_vault/forget_unlock, not just
+            // this feature's new Backup tab actions) silently update state
+            // with nothing in this window's own render tree to display it —
+            // `Root`'s own `Render` impl does not include these layers
+            // automatically, each window's content must render them itself
+            // (see `workspace.rs`'s identical pair for the main window).
+            .children(gpui_component::Root::render_notification_layer(window, cx))
+            .children(gpui_component::Root::render_dialog_layer(window, cx))
     }
 }
 
