@@ -940,7 +940,14 @@ impl SettingsWindow {
                                 true
                             })
                     });
-                    true
+                    // Must be `false`, not `true` — see the identical note
+                    // on `on_click_restore`'s outer `on_ok`. Returning
+                    // `true` here made gpui_component auto-close the
+                    // *second* dialog (opened just above) immediately
+                    // after this callback, before it could ever render —
+                    // meaning this dialog's actual `vault::reset` call was
+                    // never reachable at all.
+                    false
                 })
         });
     }
@@ -1226,7 +1233,15 @@ impl SettingsWindow {
                                 true
                             })
                     });
-                    true
+                    // Must be `false`, not `true`: returning `true` tells
+                    // gpui_component's `Dialog` to auto-close "the current
+                    // dialog" right after this callback returns — but by
+                    // then `open_alert_dialog` above has already made the
+                    // *second* dialog current, so a `true` here would
+                    // immediately close it before it's ever seen. We
+                    // already closed the first dialog ourselves, so the
+                    // framework has nothing left to do here.
+                    false
                 })
         });
     }
