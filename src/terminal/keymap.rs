@@ -36,6 +36,30 @@ fn ctrl_byte(c: char) -> Option<u8> {
     }
 }
 
+/// xterm "modified cursor key" modifier code (CSI `1;<code><final>`), per
+/// `ctlseqs.txt`: 2=Shift, 3=Alt, 4=Shift+Alt, 5=Ctrl, 6=Shift+Ctrl,
+/// 7=Alt+Ctrl, 8=Shift+Alt+Ctrl. `None` when no relevant modifier is held,
+/// meaning the plain (unmodified) encoding should be used instead.
+fn xterm_modifier_code(m: &gpui::Modifiers) -> Option<u8> {
+    if !(m.shift || m.alt || m.control) {
+        return None;
+    }
+    Some(1 + m.shift as u8 + 2 * (m.alt as u8) + 4 * (m.control as u8))
+}
+
+/// Cursor / Home / End keys, modifier-aware: with Shift/Alt/Ctrl held, xterm
+/// always emits `ESC [ 1 ; <code> <final>` (parameterized CSI, regardless of
+/// DECCKM) since SS3 has no room for a modifier parameter. Ctrl+Left/Right in
+/// particular is what shell readline (bash/zsh) binds to backward-word /
+/// forward-word -- without this, Ctrl+arrow was indistinguishable from a
+/// plain arrow key and only moved the cursor by one character.
+fn modified_cursor_key(final_byte: u8, m: &gpui::Modifiers, app_cursor: bool) -> Vec<u8> {
+    match xterm_modifier_code(m) {
+        Some(code) => format!("\x1b[1;{code}{}", final_byte as char).into_bytes(),
+        None => cursor_key(final_byte, app_cursor),
+    }
+}
+
 /// Encode a keystroke into the bytes to send to the backend. Returns `None` for
 /// keys that produce no output (bare modifiers, unhandled keys).
 pub fn encode_key(ks: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
@@ -62,12 +86,12 @@ pub fn encode_key(ks: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
         }
         "escape" => return Some(vec![0x1b]),
         "space" if m.control => return Some(vec![0x00]),
-        "left" => return Some(cursor_key(b'D', app_cursor)),
-        "right" => return Some(cursor_key(b'C', app_cursor)),
-        "up" => return Some(cursor_key(b'A', app_cursor)),
-        "down" => return Some(cursor_key(b'B', app_cursor)),
-        "home" => return Some(cursor_key(b'H', app_cursor)),
-        "end" => return Some(cursor_key(b'F', app_cursor)),
+        "left" => return Some(modified_cursor_key(b'D', m, app_cursor)),
+        "right" => return Some(modified_cursor_key(b'C', m, app_cursor)),
+        "up" => return Some(modified_cursor_key(b'A', m, app_cursor)),
+        "down" => return Some(modified_cursor_key(b'B', m, app_cursor)),
+        "home" => return Some(modified_cursor_key(b'H', m, app_cursor)),
+        "end" => return Some(modified_cursor_key(b'F', m, app_cursor)),
         "pageup" => return Some(b"\x1b[5~".to_vec()),
         "pagedown" => return Some(b"\x1b[6~".to_vec()),
         "delete" => return Some(b"\x1b[3~".to_vec()),
@@ -183,6 +207,88 @@ pub fn encode_paste(text: &str, mode: TermMode, _src: PastePayload) -> Option<Ve
         let mut out = Vec::with_capacity(normalised.len());
         out.extend_from_slice(normalised.as_bytes());
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use gpui::{Keystroke, Modifiers};
+
+    fn keystroke(key: &str, modifiers: Modifiers) -> Keystroke {
+        Keystroke {
+            modifiers,
+            key: key.to_string(),
+            key_char: None,
+        }
+    }
+
+    #[test]
+    fn plain_left_is_unmodified_csi() {
+        let ks = keystroke("left", Modifiers::default());
+        assert_eq!(encode_key(&ks, TermMode::empty()).unwrap(), b"\x1b[D");
+    }
+
+    #[test]
+    fn ctrl_left_is_modified_csi_for_readline_backward_word() {
+        let ks = keystroke(
+            "left",
+            Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            encode_key(&ks, TermMode::empty()).unwrap(),
+            b"\x1b[1;5D"
+        );
+    }
+
+    #[test]
+    fn ctrl_right_is_modified_csi_for_readline_forward_word() {
+        let ks = keystroke(
+            "right",
+            Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            encode_key(&ks, TermMode::empty()).unwrap(),
+            b"\x1b[1;5C"
+        );
+    }
+
+    #[test]
+    fn ctrl_left_ignores_app_cursor_mode() {
+        // Modified sequences are always CSI, never SS3, since SS3 has no
+        // room for a modifier parameter (xterm ctlseqs.txt).
+        let ks = keystroke(
+            "left",
+            Modifiers {
+                control: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            encode_key(&ks, TermMode::APP_CURSOR).unwrap(),
+            b"\x1b[1;5D"
+        );
+    }
+
+    #[test]
+    fn shift_home_is_modified_csi() {
+        let ks = keystroke(
+            "home",
+            Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            encode_key(&ks, TermMode::empty()).unwrap(),
+            b"\x1b[1;2H"
+        );
     }
 }
 
