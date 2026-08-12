@@ -1641,7 +1641,15 @@ impl Render for SettingsWindow {
                             .child(self.tab_button(SettingsTab::Backup, cx)),
                     )
                     .child(
-                        div().flex().flex_col().flex_1().min_h(px(0.0)).p_4().child(content),
+                        div()
+                            .id("settings-tab-content")
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .overflow_y_scroll()
+                            .p_4()
+                            .child(content),
                     ),
             )
             .child(
