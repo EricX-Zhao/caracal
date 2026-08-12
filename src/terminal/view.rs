@@ -584,6 +584,11 @@ impl TerminalView {
         &self.title
     }
 
+    #[allow(dead_code)] // consumed by CommandHistoryPanel wiring in workspace.rs
+    pub fn history_key(&self) -> &str {
+        &self.history_key
+    }
+
     pub fn mark_exited(&mut self) {
         self.exited = true;
     }
