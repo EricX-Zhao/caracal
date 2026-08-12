@@ -209,6 +209,9 @@ Settings:
   scrollback_lines:
     zh-CN: "回滚行数"
     en: "Scrollback Lines"
+  command_suggestions:
+    zh-CN: "命令历史建议"
+    en: "Command History Suggestions"
   font_size_invalid:
     zh-CN: "字号必须是 6-96 之间的数字"
     en: "Font size must be a number between 6 and 96"

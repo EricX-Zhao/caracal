@@ -531,6 +531,11 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    fn toggle_command_suggestions_enabled(&mut self, cx: &mut Context<Self>) {
+        self.draft.terminal.command_suggestions_enabled = !self.draft.terminal.command_suggestions_enabled;
+        cx.notify();
+    }
+
     fn font_slot_value(&self, slot: FontSlot) -> &str {
         match slot {
             FontSlot::TerminalPrimary => &self.draft.terminal.font_family,
@@ -840,6 +845,19 @@ impl SettingsWindow {
                             .child(rust_i18n::t!("Settings.scrollback_lines")),
                     )
                     .child(Input::new(&self.scrollback_input)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(rust_i18n::t!("Settings.command_suggestions")),
+                    )
+                    .child(self.command_suggestions_enabled_switch(cx)),
             )
     }
 
@@ -1572,6 +1590,14 @@ impl SettingsWindow {
             .checked(self.draft.terminal.monitor_basic_enabled)
             .on_click(cx.listener(|this, _checked: &bool, _window, cx| {
                 this.toggle_monitor_enabled(cx);
+            }))
+    }
+
+    fn command_suggestions_enabled_switch(&self, cx: &Context<Self>) -> impl IntoElement {
+        Switch::new("settings-command-suggestions-enabled")
+            .checked(self.draft.terminal.command_suggestions_enabled)
+            .on_click(cx.listener(|this, _checked: &bool, _window, cx| {
+                this.toggle_command_suggestions_enabled(cx);
             }))
     }
 }
