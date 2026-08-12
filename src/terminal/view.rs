@@ -1194,6 +1194,36 @@ impl Render for TerminalView {
                         .child(text),
                 )
             })
+            .when(!self.suggestions.is_empty(), |el| {
+                let (row, col) = self.cursor_position();
+                let x = self.last_origin_x + col as f32 * self.last_cell_w;
+                let y = self.last_origin_y + (row as f32 + 1.0) * self.last_cell_h;
+                let selected = self.selected_index;
+                el.child(
+                    div()
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .flex()
+                        .flex_col()
+                        .bg(hsla(0.0, 0.0, 0.12, 0.97))
+                        .border_1()
+                        .border_color(hsla(0.0, 0.0, 0.35, 1.0))
+                        .rounded_sm()
+                        .py_0p5()
+                        .children(self.suggestions.iter().enumerate().map(|(i, s)| {
+                            let is_selected = selected == Some(i);
+                            div()
+                                .px_2()
+                                .py_0p5()
+                                .text_color(hsla(0.0, 0.0, 0.9, 1.0))
+                                .when(is_selected, |row_el| {
+                                    row_el.bg(hsla(210.0, 0.7, 0.45, 0.35))
+                                })
+                                .child(s.clone())
+                        })),
+                )
+            })
     }
 }
 
