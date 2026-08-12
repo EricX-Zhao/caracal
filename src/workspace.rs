@@ -1013,11 +1013,15 @@ impl Workspace {
         self.ssh_sessions.remove(&key);
         self.sftp_panels.remove(&key);
         self.monitor_panels.remove(&key);
+        self.history_panels.remove(&key);
         if self.active_sftp.as_deref() == Some(key.as_str()) {
             self.show_sftp_placeholder(window, cx);
         }
         if self.active_monitor.as_deref() == Some(key.as_str()) {
             self.show_monitor_placeholder(window, cx);
+        }
+        if self.active_history.as_deref() == Some(key.as_str()) {
+            self.active_history = None;
         }
         cx.notify();
     }
