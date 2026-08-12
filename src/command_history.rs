@@ -65,7 +65,12 @@ pub fn save(hosts: &HashMap<String, Vec<String>>) -> anyhow::Result<()> {
 /// empty line or a line identical to the most recent entry (no back-to-
 /// back duplicate spam), otherwise appends and truncates to the oldest
 /// `MAX_ENTRIES_PER_HOST` dropped.
-fn record_into(entries: &mut Vec<String>, line: &str) {
+///
+/// `pub(crate)` so `TerminalView` can apply exactly these rules to its own
+/// in-memory `history_cache` synchronously while the matching disk write
+/// (`record`, which applies the same rules to the on-disk copy) runs on a
+/// background thread — see that field's doc comment.
+pub(crate) fn record_into(entries: &mut Vec<String>, line: &str) {
     if line.is_empty() {
         return;
     }
@@ -80,10 +85,14 @@ fn record_into(entries: &mut Vec<String>, line: &str) {
 }
 
 /// I/O convenience: load the whole file, record `line` into `key`'s list,
-/// save, and return that key's updated list — so the caller (`TerminalView`)
-/// can refresh its own in-memory cache without a second read. A no-op
-/// (empty/duplicate) still returns the unchanged list, but skips the
-/// `save()` write entirely.
+/// save, and return that key's updated list. A no-op (empty/duplicate)
+/// still returns the unchanged list, but skips the `save()` write entirely.
+///
+/// This does blocking disk I/O (read + parse + serialize + write), so it
+/// must **not** be called on the foreground/render thread —
+/// `TerminalView` dispatches it to `cx.background_spawn` and keeps its own
+/// in-memory cache current with `record_into` instead of using the
+/// returned list.
 pub fn record(key: &str, line: &str) -> anyhow::Result<Vec<String>> {
     let mut hosts = load();
     let entries = hosts.entry(key.to_string()).or_default();

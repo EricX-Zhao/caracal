@@ -133,9 +133,11 @@ impl QuickCommandsPanel {
         cx.notify();
     }
 
-    fn send(&self, cmd: &QuickCommand, cx: &App) {
+    fn send(&self, cmd: &QuickCommand, cx: &mut App) {
         let execute = matches!(cmd.execution_mode, ExecutionMode::Execute);
-        let _ = self.workspace.read_with(cx, |ws, cx| {
+        // `update`, not `read_with`: sending text now mutates the terminal
+        // entity (it invalidates that terminal's input tracking).
+        let _ = self.workspace.update(cx, |ws, cx| {
             ws.send_to_focused_terminal(&cmd.command, execute, cx);
         });
     }

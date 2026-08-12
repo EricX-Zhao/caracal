@@ -10,7 +10,7 @@ use alacritty_terminal::event::Event;
 use alacritty_terminal::selection::SelectionType;
 use alacritty_terminal::term::TermMode;
 use gpui::{
-    ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font, FontFallbacks,
+    AppContext, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, Font, FontFallbacks,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString,
     Styled, Task, Window, div, font, hsla, prelude::FluentBuilder, px,
@@ -500,7 +500,16 @@ impl TerminalView {
     ) -> Self {
         let settings = settings::load();
         let suggestions_enabled = settings.terminal.command_suggestions_enabled;
-        let history_cache = crate::command_history::load_for(&history_key);
+        // Only read the history file when the feature is actually on — with
+        // the toggle off nothing ever reads `history_cache`, and every new
+        // tab was otherwise paying for a full read+parse of
+        // `command_history.toml` (final review finding 11). The settings
+        // read above is unavoidable: it's what tells us the flag's value.
+        let history_cache = if suggestions_enabled {
+            crate::command_history::load_for(&history_key)
+        } else {
+            Vec::new()
+        };
         Self {
             term,
             backend,
@@ -653,6 +662,11 @@ impl TerminalView {
         self.backend = backend;
         self._disconnect_watch = disconnect_watch;
         self.banner = None;
+        // The reconnected shell starts with an empty input line, so anything
+        // we believed about the pre-disconnect line (a half-typed buffer, a
+        // desync flag, an open dropdown) is stale and would mis-record the
+        // next Enter (final review finding 6).
+        self.reset_tracking(cx);
         cx.notify();
     }
 
@@ -662,13 +676,23 @@ impl TerminalView {
     /// payload. Used by the quick-commands panel to inject saved command
     /// snippets. No-op for empty `text` (matches `encode_paste`'s own
     /// empty-string `None` behavior).
-    pub fn send_text(&self, text: &str, execute: bool) {
+    ///
+    /// Takes `&mut self` because injecting text mutates the real input line
+    /// without going through `on_key_down`'s per-character tracking, so
+    /// local tracking has to be invalidated (final review finding 4).
+    pub fn send_text(&mut self, text: &str, execute: bool, cx: &mut Context<Self>) {
         let mode: TermMode = *self.term.lock().mode();
         let Some(mut bytes) = encode_paste(text, mode, PastePayload::Clipboard) else {
             return;
         };
         if execute {
             bytes.push(b'\r');
+            // A trailing Enter submits the line, so the shell's input line
+            // is empty afterwards — tracking can resume clean, same as the
+            // Ctrl+C / Enter reset paths.
+            self.reset_tracking(cx);
+        } else {
+            self.desync_tracking(cx);
         }
         self.backend.write(&bytes);
         self.term
@@ -856,7 +880,26 @@ impl TerminalView {
             }
         }
 
-        if self.suggestions_enabled && !self.suggestions.is_empty() {
+        // Read the terminal mode once, up front: it gates command-history
+        // tracking (alt screen, below) and is also what `encode_key` needs
+        // at the bottom of this method.
+        let mode: TermMode = *self.term.lock().mode();
+        // Full-screen programs (vim, less, htop, …) run in the alternate
+        // screen buffer. What's typed there is editor/pager input, not a
+        // shell command line, and is often not echoed at all — so never
+        // track, record, or suggest while it's active (final review
+        // finding 1b). Anything tracked before the switch is stale.
+        let alt_screen = mode.contains(TermMode::ALT_SCREEN);
+        if alt_screen
+            && (!self.input_buffer.is_empty()
+                || !self.suggestions.is_empty()
+                || self.tracking_desynced)
+        {
+            self.reset_tracking(cx);
+        }
+        let tracking_active = self.suggestions_enabled && !alt_screen;
+
+        if tracking_active && !self.suggestions.is_empty() {
             let key = ev.keystroke.key.as_str();
             match key {
                 "up" => {
@@ -870,13 +913,28 @@ impl TerminalView {
                     return;
                 }
                 "escape" => {
+                    // Escape closes the dropdown either way, but only
+                    // *swallows* the byte when it's cancelling an actual
+                    // ↑/↓ selection. With nothing selected the dropdown is
+                    // merely on screen (a typed prefix happened to match
+                    // history), and Escape still has its normal terminal
+                    // meaning — e.g. leaving vim insert mode inside a REPL
+                    // — so it falls through to encode_key below (final
+                    // review finding 7).
+                    let had_selection = self.selected_index.is_some();
                     self.suggestions.clear();
                     self.selected_index = None;
                     cx.notify();
-                    return;
+                    if had_selection {
+                        return;
+                    }
                 }
-                "tab" | "enter" if self.selected_index.is_some() => {
-                    self.accept_selected_suggestion();
+                // Tab is deliberately absent: it never reaches a key
+                // listener (Root's binding is reclaimed as the `SendTab`
+                // action, dispatched first), so accepting-with-Tab lives in
+                // `on_send_tab` (final review finding 3).
+                "enter" if self.selected_index.is_some() => {
+                    self.accept_selected_suggestion(cx);
                     cx.notify();
                     return;
                 }
@@ -884,30 +942,44 @@ impl TerminalView {
             }
         }
 
-        if self.suggestions_enabled {
+        if tracking_active {
             let key = ev.keystroke.key.as_str();
             if key == "enter" {
-                if !self.tracking_desynced && !self.input_buffer.is_empty() {
-                    match crate::command_history::record(&self.history_key, &self.input_buffer) {
-                        Ok(updated) => self.history_cache = updated,
-                        Err(e) => log::warn!(
-                            "failed to save command history for {}: {e}",
-                            self.history_key
-                        ),
-                    }
+                if !self.tracking_desynced
+                    && !self.input_buffer.is_empty()
+                    && self.input_buffer_is_echoed()
+                {
+                    let line = self.input_buffer.clone();
+                    // In-memory cache first, synchronously, so the very next
+                    // keystroke can already match this command…
+                    crate::command_history::record_into(&mut self.history_cache, &line);
+                    // …while the load+parse+serialize+write round-trip goes
+                    // to a background thread instead of blocking the render
+                    // thread on every submitted command (final review
+                    // finding 8).
+                    let history_key = self.history_key.clone();
+                    cx.background_spawn(async move {
+                        if let Err(e) = crate::command_history::record(&history_key, &line) {
+                            log::warn!("failed to save command history for {history_key}: {e}");
+                        }
+                    })
+                    .detach();
                 }
-                self.input_buffer.clear();
-                self.tracking_desynced = false;
-                self.suggestions.clear();
-                self.selected_index = None;
-                cx.notify();
+                self.reset_tracking(cx);
                 // Deliberately no `return` here — Enter must still reach
                 // the PTY via the normal encode_key/send_input path below.
             } else if !self.tracking_desynced {
+                // Control characters are excluded explicitly: some platforms
+                // report a `key_char` for keys like Escape (`\x1b`), which is
+                // not typed text and must never land in `input_buffer` — it
+                // matters more now that Escape can fall through to here with
+                // the dropdown open (final review finding 7).
                 let is_plain_char = !m.control
                     && !m.alt
                     && !m.platform
-                    && ev.keystroke.key_char.as_deref().is_some_and(|s| !s.is_empty());
+                    && ev.keystroke.key_char.as_deref().is_some_and(|s| {
+                        !s.is_empty() && !s.chars().any(char::is_control)
+                    });
                 if is_plain_char {
                     self.input_buffer.push_str(ev.keystroke.key_char.as_deref().unwrap());
                     self.suggestions = crate::command_history::matching_suggestions(
@@ -917,6 +989,13 @@ impl TerminalView {
                     self.selected_index = None;
                     cx.notify();
                 } else if key == "backspace" && !m.control && !m.alt {
+                    // No `!m.platform` check on purpose: `encode_key`
+                    // (terminal/keymap.rs) encodes Backspace as 0x7f for
+                    // everything except Alt (0x1b 0x7f), ignoring
+                    // Ctrl/Shift/platform entirely — so e.g. Cmd+Backspace
+                    // really does delete exactly one character on the wire
+                    // and must stay tracked, not desynced (final review
+                    // finding 9: this guard is already correct as written).
                     self.input_buffer.pop();
                     self.suggestions = crate::command_history::matching_suggestions(
                         &self.history_cache,
@@ -925,15 +1004,11 @@ impl TerminalView {
                     self.selected_index = None;
                     cx.notify();
                 } else {
-                    self.tracking_desynced = true;
-                    self.suggestions.clear();
-                    self.selected_index = None;
-                    cx.notify();
+                    self.desync_tracking(cx);
                 }
             }
         }
 
-        let mode: TermMode = *self.term.lock().mode();
         if let Some(bytes) = encode_key(&ev.keystroke, mode) {
             self.send_input(&bytes);
         }
@@ -946,6 +1021,53 @@ impl TerminalView {
         self.term
             .lock()
             .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
+    /// Local input tracking can no longer be trusted to match the shell's
+    /// real input line (an untracked key, a paste, shell tab-completion, a
+    /// back-tab, …): keep whatever `input_buffer` holds but stop believing
+    /// it — no suggestions, no recording — until the next Enter resets it.
+    /// The single place that "invalidate tracking" is expressed, shared by
+    /// `on_key_down`'s untracked-key branch and by every action handler /
+    /// text-injection path that mutates the line behind `on_key_down`'s back
+    /// (final review findings 3 and 4).
+    fn desync_tracking(&mut self, cx: &mut Context<Self>) {
+        if !self.suggestions_enabled {
+            return;
+        }
+        self.tracking_desynced = true;
+        self.suggestions.clear();
+        self.selected_index = None;
+        cx.notify();
+    }
+
+    /// Back to a clean slate: the shell's input line is known to be empty
+    /// (Enter submitted it, Ctrl+C discarded it, or a reconnect replaced the
+    /// shell), so tracking resumes trusted rather than desynced.
+    fn reset_tracking(&mut self, cx: &mut Context<Self>) {
+        self.input_buffer.clear();
+        self.tracking_desynced = false;
+        self.suggestions.clear();
+        self.selected_index = None;
+        cx.notify();
+    }
+
+    /// Whether the text we think has been typed is actually visible on the
+    /// cursor's row. Caracal tracks keystrokes blind — it has no idea
+    /// whether the PTY is echoing them — so a `sudo`/`ssh`/`mysql -p`
+    /// password prompt (echo off) would otherwise get the typed secret
+    /// recorded verbatim into `command_history.toml` and later offered as
+    /// an on-screen suggestion. Reading the row back (`line_text`, the same
+    /// helper the SFTP cwd-sync screen-scrape uses) and requiring
+    /// `input_buffer` to appear in it makes a non-echoed prompt fail the
+    /// check, so nothing is recorded (final review finding 1a).
+    ///
+    /// Best-effort by construction: an input line that wrapped across rows,
+    /// or a prompt that rewrites the line (some fancy zsh setups), also
+    /// fails the check — a missed recording, which is the safe direction.
+    fn input_buffer_is_echoed(&self) -> bool {
+        let (row, _col) = self.cursor_position();
+        self.line_text(row).contains(&self.input_buffer)
     }
 
     /// Moves `selected_index` through `suggestions` — `None` -> index 0
@@ -971,13 +1093,20 @@ impl TerminalView {
     /// backspacing is ever needed to correct what's already typed. Does
     /// **not** send Enter — accepting only fills the line (see the design
     /// spec's "Accepting a suggestion" decision).
-    fn accept_selected_suggestion(&mut self) {
+    fn accept_selected_suggestion(&mut self, cx: &mut Context<Self>) {
         let Some(idx) = self.selected_index else { return };
         let Some(full) = self.suggestions.get(idx).cloned() else { return };
-        if let Some(suffix) = full.strip_prefix(&self.input_buffer) {
-            if !suffix.is_empty() {
-                self.send_input(suffix.as_bytes());
-            }
+        // A miss shouldn't be reachable (suggestions are prefix-filtered),
+        // but the paths that can make `input_buffer` diverge from the real
+        // line are real — so treat it as exactly what it is, a desync,
+        // rather than silently claiming a line we never sent (final review
+        // finding 10).
+        let Some(suffix) = full.strip_prefix(&self.input_buffer) else {
+            self.desync_tracking(cx);
+            return;
+        };
+        if !suffix.is_empty() {
+            self.send_input(suffix.as_bytes());
         }
         self.input_buffer = full;
         self.suggestions.clear();
@@ -988,17 +1117,42 @@ impl TerminalView {
 
     /// Ctrl+C → interrupt (0x03 / SIGINT), not the Root "Copy" action. Use
     /// Ctrl+Shift+C to copy a selection.
-    fn on_interrupt(&mut self, _: &Interrupt, _window: &mut Window, _cx: &mut Context<Self>) {
+    ///
+    /// Ctrl+C genuinely discards the shell's pending input line, so this is
+    /// a full tracking *reset* (empty buffer, trusted again), not a desync —
+    /// same end state a plain Enter leaves behind (final review finding 3).
+    fn on_interrupt(&mut self, _: &Interrupt, _window: &mut Window, cx: &mut Context<Self>) {
+        self.reset_tracking(cx);
         self.send_input(&[0x03]);
     }
 
-    /// Tab → send a literal tab (shell completion), not Root focus navigation.
-    fn on_send_tab(&mut self, _: &SendTab, _window: &mut Window, _cx: &mut Context<Self>) {
+    /// Tab → accept the highlighted suggestion if there is one, otherwise
+    /// send a literal tab (shell completion), not Root focus navigation.
+    ///
+    /// The accept lives here rather than in `on_key_down` because Tab is
+    /// dispatched as this bound action *before* any key listener runs (see
+    /// this file's top-of-file comment), so a `"tab"` arm in `on_key_down`
+    /// would be dead code. A tab that does reach the shell runs its
+    /// completion, arbitrarily rewriting the line, so it desyncs tracking
+    /// (final review finding 3).
+    fn on_send_tab(&mut self, _: &SendTab, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.suggestions_enabled
+            && !self.suggestions.is_empty()
+            && self.selected_index.is_some()
+        {
+            self.accept_selected_suggestion(cx);
+            cx.notify();
+            return;
+        }
+        self.desync_tracking(cx);
         self.send_input(b"\t");
     }
 
-    /// Shift+Tab → CSI Z (back-tab), not Root focus navigation.
-    fn on_send_back_tab(&mut self, _: &SendBackTab, _window: &mut Window, _cx: &mut Context<Self>) {
+    /// Shift+Tab → CSI Z (back-tab), not Root focus navigation. Whatever the
+    /// program does with it, it isn't something `on_key_down`'s character
+    /// tracking observed, so tracking desyncs (final review finding 3).
+    fn on_send_back_tab(&mut self, _: &SendBackTab, _window: &mut Window, cx: &mut Context<Self>) {
+        self.desync_tracking(cx);
         self.send_input(b"\x1b[Z");
     }
 
@@ -1007,9 +1161,14 @@ impl TerminalView {
     /// plain `Ctrl+L` (still passed through as a raw byte to the
     /// shell/remote program, which already binds it to clear-screen via
     /// readline in almost every shell).
+    ///
+    /// Erasing the viewport takes the echoed input line off screen with it,
+    /// so the `input_buffer_is_echoed` check could no longer confirm what's
+    /// typed — tracking desyncs (final review finding 3).
     fn on_clear_screen(&mut self, _: &ClearScreen, _window: &mut Window, cx: &mut Context<Self>) {
         use alacritty_terminal::vte::ansi::{ClearMode, Handler};
         self.term.lock().clear_screen(ClearMode::All);
+        self.desync_tracking(cx);
         cx.notify();
     }
 
@@ -1177,7 +1336,11 @@ impl TerminalView {
     /// `ESC[200~…ESC[201~`. `pub(crate)`: called directly by
     /// `TerminalPanel`'s right-click context menu, not just the in-view
     /// Ctrl+Shift+V shortcut.
-    pub(crate) fn paste_from_clipboard(&self, cx: &mut Context<Self>) {
+    ///
+    /// `&mut self`: a paste drops arbitrary text onto the real input line
+    /// without `on_key_down` seeing a single character of it, so local
+    /// tracking is invalidated (final review finding 4).
+    pub(crate) fn paste_from_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(item) = cx.read_from_clipboard() else {
             return;
         };
@@ -1186,6 +1349,7 @@ impl TerminalView {
         };
         let mode: TermMode = *self.term.lock().mode();
         if let Some(bytes) = encode_paste(&text, mode, PastePayload::Clipboard) {
+            self.desync_tracking(cx);
             self.backend.write(&bytes);
             // Snapping the viewport on paste is consistent with
             // on_key_down's behaviour; the user is now interacting
@@ -1208,6 +1372,12 @@ impl Focusable for TerminalView {
 /// cell width does, so the vertical side uses a smaller count to match).
 const EDGE_PADDING_COLS: f32 = 2.0;
 const EDGE_PADDING_ROWS: f32 = 1.0;
+
+/// Widest the suggestion dropdown is allowed to get, in pixels; longer
+/// entries are truncated with an ellipsis. Also clamped to the grid's own
+/// width at render time, so a narrow terminal never gets a popup wider than
+/// itself (see the popup block in `render`).
+const SUGGESTION_POPUP_MAX_WIDTH: f32 = 520.0;
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1258,18 +1428,58 @@ impl Render for TerminalView {
                         .child(text),
                 )
             })
+            // Suggestion dropdown, anchored to the cursor cell. Positions are
+            // *parent-relative*, exactly like the banner overlay above (whose
+            // `.inset_0()` is parent-relative by construction): an
+            // `.absolute()` child of this `.relative()` div resolves its
+            // insets against this div's own box, not the window. The cached
+            // `last_origin_x/y` are the canvas's *window*-absolute origin
+            // (what the mouse handlers subtract from window-space event
+            // positions), so using them here double-counted however far this
+            // terminal element sits from the window's top-left — header,
+            // sidebar and all (final review finding 2). The correct
+            // parent-relative offset of the canvas's (0,0) cell is simply
+            // this div's own padding, computed right here from the same
+            // `metrics` the `.px()`/`.py()` above use.
             .when(!self.suggestions.is_empty(), |el| {
+                let pad_x = metrics.width * EDGE_PADDING_COLS;
+                let pad_y = metrics.height * EDGE_PADDING_ROWS;
                 let (row, col) = self.cursor_position();
-                let x = self.last_origin_x + col as f32 * self.last_cell_w;
-                let y = self.last_origin_y + (row as f32 + 1.0) * self.last_cell_h;
+                let count = self.suggestions.len();
+                // Cap the width so a long historical command can't spill past
+                // the terminal's right edge, and pull the popup left when the
+                // cursor sits too close to that edge (final review finding 5).
+                let grid_w = self.last_cols as f32 * self.last_cell_w;
+                let max_w = SUGGESTION_POPUP_MAX_WIDTH.min(grid_w.max(1.0));
+                let x = (col as f32 * self.last_cell_w).min((grid_w - max_w).max(0.0));
+                // One row below the cursor when the whole list fits inside the
+                // visible rows; otherwise flip above it — at the bottom of the
+                // screen (where prompts usually are) a downward list would
+                // render off the end of the terminal.
+                let fits_below = self.last_rows == 0 || row + 1 + count <= self.last_rows;
                 let selected = self.selected_index;
                 el.child(
                     div()
                         .absolute()
-                        .left(px(x))
-                        .top(px(y))
+                        .left(pad_x + px(x))
+                        .map(|d| {
+                            if fits_below {
+                                d.top(pad_y + px((row + 1) as f32 * self.last_cell_h))
+                            } else {
+                                // `bottom` is measured from this div's bottom
+                                // edge: (rows - row) rows of grid sit below the
+                                // cursor row's top, plus one row of slack so
+                                // the popup never covers the cursor row itself
+                                // (the canvas height isn't an exact multiple of
+                                // the cell height), plus the bottom padding.
+                                let rows_below = self.last_rows.saturating_sub(row) + 1;
+                                d.bottom(pad_y + px(rows_below as f32 * self.last_cell_h))
+                            }
+                        })
                         .flex()
                         .flex_col()
+                        .max_w(px(max_w))
+                        .overflow_hidden()
                         .bg(hsla(0.0, 0.0, 0.12, 0.97))
                         .border_1()
                         .border_color(hsla(0.0, 0.0, 0.35, 1.0))
@@ -1280,6 +1490,7 @@ impl Render for TerminalView {
                             div()
                                 .px_2()
                                 .py_0p5()
+                                .truncate()
                                 .text_color(hsla(0.0, 0.0, 0.9, 1.0))
                                 .when(is_selected, |row_el| {
                                     row_el.bg(hsla(210.0, 0.7, 0.45, 0.35))

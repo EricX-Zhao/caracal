@@ -1264,9 +1264,11 @@ impl SftpPanel {
         cx.write_to_clipboard(ClipboardItem::new_string(self.path.clone()));
     }
 
-    fn send_path_to_terminal(&self, cx: &Context<Self>) {
+    fn send_path_to_terminal(&self, cx: &mut Context<Self>) {
         let cmd = format!("cd '{}'", self.path.replace('\'', "'\\''"));
-        let _ = self.workspace.read_with(cx, |ws, cx| {
+        // `update`, not `read_with`: sending text now mutates the terminal
+        // entity (it invalidates that terminal's input tracking).
+        let _ = self.workspace.update(cx, |ws, cx| {
             ws.send_to_focused_terminal(&cmd, true, cx);
         });
     }

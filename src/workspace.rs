@@ -1258,11 +1258,14 @@ impl Workspace {
     /// Send `text` to the currently-focused terminal tab, if any, per
     /// `execute`. No-op if no terminal is focused or its weak ref has died.
     /// Called by [`crate::panels::quick_commands_panel::QuickCommandsPanel`].
-    pub fn send_to_focused_terminal(&self, text: &str, execute: bool, cx: &App) {
+    /// Takes `&mut App` (not `&App`) because `send_text` now mutates the
+    /// terminal — injecting text invalidates its local command-history
+    /// input tracking.
+    pub fn send_to_focused_terminal(&self, text: &str, execute: bool, cx: &mut App) {
         let Some(terminal) = self.focused_terminal.as_ref().and_then(|w| w.upgrade()) else {
             return;
         };
-        terminal.read(cx).send_text(text, execute);
+        terminal.update(cx, |term, cx| term.send_text(text, execute, cx));
     }
 
     /// Best-effort: ask the currently-focused terminal what directory it's
@@ -1277,7 +1280,7 @@ impl Workspace {
             return Task::ready(None);
         };
         let start_row = terminal.read(cx).cursor_position().0;
-        terminal.read(cx).send_text("pwd", true);
+        terminal.update(cx, |term, cx| term.send_text("pwd", true, cx));
         cx.spawn(async move |_this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(400))
