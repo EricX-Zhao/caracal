@@ -2025,6 +2025,12 @@ impl SftpPanel {
                         human_size(t.total),
                         human_speed(t.speed_bytes_per_sec())
                     ),
+                    TransferStatus::Paused => format!(
+                        "{} / {} · {}",
+                        human_size(t.transferred),
+                        human_size(t.total),
+                        rust_i18n::t!("Sftp.transfer_paused")
+                    ),
                     TransferStatus::Done => {
                         rust_i18n::t!("Sftp.transfer_done", size = human_size(t.transferred)).to_string()
                     }
