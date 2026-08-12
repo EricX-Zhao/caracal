@@ -140,6 +140,24 @@ pub fn matching_suggestions(entries: &[String], prefix: &str) -> Vec<String> {
     out
 }
 
+/// Pure: substring-filters `entries` (case-insensitive) and returns them
+/// newest-first — `entries` itself is oldest-first (matching `load_for`'s
+/// on-disk order), so this reverses as it filters. An empty `query` matches
+/// everything (unlike `matching_suggestions`'s empty-prefix-matches-nothing
+/// rule, which exists so an empty *typed* input line doesn't show every
+/// historical command as a live "suggestion" — this is the History panel's
+/// manual-browsing search box, where showing the full list by default is
+/// the useful behavior, not noise).
+pub fn filter_entries(entries: &[String], query: &str) -> Vec<String> {
+    let query = query.trim().to_lowercase();
+    entries
+        .iter()
+        .rev()
+        .filter(|entry| query.is_empty() || entry.to_lowercase().contains(&query))
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +240,40 @@ mod tests {
         let result = matching_suggestions(&entries, "git");
         assert_eq!(result.len(), MAX_SUGGESTIONS);
         assert_eq!(result[0], "git cmd19", "most recent match must come first");
+    }
+
+    #[test]
+    fn filter_entries_empty_query_returns_all_newest_first() {
+        let entries = vec!["ls".to_string(), "git status".to_string(), "pwd".to_string()];
+        assert_eq!(
+            filter_entries(&entries, ""),
+            vec!["pwd".to_string(), "git status".to_string(), "ls".to_string()]
+        );
+    }
+
+    #[test]
+    fn filter_entries_matches_by_case_insensitive_substring() {
+        let entries = vec!["git status".to_string(), "ls -la".to_string(), "GIT PUSH".to_string()];
+        assert_eq!(
+            filter_entries(&entries, "git"),
+            vec!["GIT PUSH".to_string(), "git status".to_string()]
+        );
+    }
+
+    #[test]
+    fn filter_entries_no_match_returns_empty() {
+        let entries = vec!["ls".to_string(), "pwd".to_string()];
+        assert!(filter_entries(&entries, "docker").is_empty());
+    }
+
+    #[test]
+    fn filter_entries_preserves_non_consecutive_duplicates() {
+        // Non-consecutive duplicate entries are allowed by `record_into` (see
+        // `record_into_allows_a_non_consecutive_repeat` above) — this is
+        // manual browsing, not the suggestion dropdown's deduped
+        // `matching_suggestions`, so both copies must appear.
+        let entries = vec!["ls".to_string(), "git status".to_string(), "ls".to_string()];
+        assert_eq!(filter_entries(&entries, "ls"), vec!["ls".to_string(), "ls".to_string()]);
     }
 
     #[test]
