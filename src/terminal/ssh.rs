@@ -103,6 +103,11 @@ enum SftpRequest {
         cancel: Arc<AtomicBool>,
         /// Shared map of cancel flags; cleaned up after the terminal event.
         cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+        /// Pause flag; when set, the streaming loop stops doing I/O (without
+        /// closing any file handle) until cleared.
+        paused: Arc<AtomicBool>,
+        /// Shared map of pause flags; cleaned up after the terminal event.
+        pauses: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     },
     Upload {
         local: PathBuf,
@@ -111,6 +116,8 @@ enum SftpRequest {
         id: u64,
         cancel: Arc<AtomicBool>,
         cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+        paused: Arc<AtomicBool>,
+        pauses: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     },
     /// Recursively download every file under `remote` into `local`,
     /// creating matching subdirectories as needed. One `TransferHandle` /
@@ -122,6 +129,8 @@ enum SftpRequest {
         id: u64,
         cancel: Arc<AtomicBool>,
         cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+        paused: Arc<AtomicBool>,
+        pauses: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     },
     /// Recursively upload every file under `local` into `remote`. Mirrors
     /// `DownloadDir`.
@@ -132,6 +141,8 @@ enum SftpRequest {
         id: u64,
         cancel: Arc<AtomicBool>,
         cancels: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
+        paused: Arc<AtomicBool>,
+        pauses: Arc<std::sync::Mutex<HashMap<u64, Arc<AtomicBool>>>>,
     },
     /// Create a directory on the remote.
     Mkdir {
@@ -257,6 +268,9 @@ pub struct SshSession {
     /// is emitted. Wrapped in Mutex so the public `sftp_cancel` API can set
     /// the flag from the panel's async task.
     cancels: Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<std::sync::atomic::AtomicBool>>>>,
+    /// Pause flags keyed by transfer id. Mirrors `cancels` exactly — same
+    /// allocation/cleanup lifecycle, set from `sftp_pause`/`sftp_resume`.
+    pauses: Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<std::sync::atomic::AtomicBool>>>>,
     _thread: thread::JoinHandle<()>,
 }
 
@@ -304,6 +318,7 @@ impl SshSession {
                 cmd_tx,
                 next_id,
                 cancels: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                pauses: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 _thread: thread,
             })),
             Ok(Err(e)) => Err(e),
@@ -360,6 +375,8 @@ impl SshSession {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancels.lock().unwrap().insert(id, cancel.clone());
+        let paused = Arc::new(AtomicBool::new(false));
+        self.pauses.lock().unwrap().insert(id, paused.clone());
         let (reply, rx) = flume::bounded(1);
         let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::Download {
             remote,
@@ -368,6 +385,8 @@ impl SshSession {
             id,
             cancel,
             cancels: self.cancels.clone(),
+            paused,
+            pauses: self.pauses.clone(),
         }));
         rx
     }
@@ -378,6 +397,8 @@ impl SshSession {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancels.lock().unwrap().insert(id, cancel.clone());
+        let paused = Arc::new(AtomicBool::new(false));
+        self.pauses.lock().unwrap().insert(id, paused.clone());
         let (reply, rx) = flume::bounded(1);
         let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::Upload {
             local,
@@ -386,6 +407,8 @@ impl SshSession {
             id,
             cancel,
             cancels: self.cancels.clone(),
+            paused,
+            pauses: self.pauses.clone(),
         }));
         rx
     }
@@ -399,6 +422,8 @@ impl SshSession {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancels.lock().unwrap().insert(id, cancel.clone());
+        let paused = Arc::new(AtomicBool::new(false));
+        self.pauses.lock().unwrap().insert(id, paused.clone());
         let (reply, rx) = flume::bounded(1);
         let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::DownloadDir {
             remote,
@@ -407,6 +432,8 @@ impl SshSession {
             id,
             cancel,
             cancels: self.cancels.clone(),
+            paused,
+            pauses: self.pauses.clone(),
         }));
         rx
     }
@@ -417,6 +444,8 @@ impl SshSession {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let cancel = Arc::new(AtomicBool::new(false));
         self.cancels.lock().unwrap().insert(id, cancel.clone());
+        let paused = Arc::new(AtomicBool::new(false));
+        self.pauses.lock().unwrap().insert(id, paused.clone());
         let (reply, rx) = flume::bounded(1);
         let _ = self.cmd_tx.send(SessionCmd::Sftp(SftpRequest::UploadDir {
             local,
@@ -425,6 +454,8 @@ impl SshSession {
             id,
             cancel,
             cancels: self.cancels.clone(),
+            paused,
+            pauses: self.pauses.clone(),
         }));
         rx
     }
@@ -435,6 +466,30 @@ impl SshSession {
     pub fn sftp_cancel(&self, id: u64) -> bool {
         if let Some(flag) = self.cancels.lock().unwrap().get(&id).cloned() {
             flag.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Pause an in-flight transfer. Returns true if the id was found and a
+    /// pause was issued. The streaming loop stops doing I/O (leaving its
+    /// file handles open) until `sftp_resume` clears the flag, or
+    /// `sftp_cancel` aborts it while paused.
+    pub fn sftp_pause(&self, id: u64) -> bool {
+        if let Some(flag) = self.pauses.lock().unwrap().get(&id).cloned() {
+            flag.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resume a paused transfer. Returns true if the id was found and a
+    /// resume was issued.
+    pub fn sftp_resume(&self, id: u64) -> bool {
+        if let Some(flag) = self.pauses.lock().unwrap().get(&id).cloned() {
+            flag.store(false, Ordering::Relaxed);
             true
         } else {
             false
@@ -826,6 +881,8 @@ async fn service_sftp(
             id,
             cancel,
             cancels,
+            paused,
+            pauses,
         } => {
             // Spawn the download on a background task. The reply goes back
             // to the panel immediately with the TransferHandle so the UI
@@ -845,6 +902,7 @@ async fn service_sftp(
                                 error: "sftp session not initialized".into(),
                             });
                             cancels.lock().unwrap().remove(&id);
+                            pauses.lock().unwrap().remove(&id);
                             return;
                         }
                     }
@@ -856,6 +914,7 @@ async fn service_sftp(
                             error: format!("open {remote:?}: {e}"),
                         });
                         cancels.lock().unwrap().remove(&id);
+                        pauses.lock().unwrap().remove(&id);
                         return;
                     }
                 };
@@ -866,11 +925,14 @@ async fn service_sftp(
                             error: format!("stat {remote:?}: {e}"),
                         });
                         cancels.lock().unwrap().remove(&id);
+                        pauses.lock().unwrap().remove(&id);
                         return;
                     }
                 };
                 let _ = events_tx.send(TransferEvent::Started { total });
-                let outcome = sftp_download_streaming(&sftp, &remote, &local, total, &events_tx, &cancel).await;
+                let outcome =
+                    sftp_download_streaming(&sftp, &remote, &local, total, &events_tx, &cancel, &paused)
+                        .await;
                 match outcome {
                     Ok(StreamingOutcome::Completed(transferred)) => {
                         let _ = events_tx.send(TransferEvent::Done { transferred });
@@ -886,6 +948,7 @@ async fn service_sftp(
                     }
                 }
                 cancels.lock().unwrap().remove(&id);
+                pauses.lock().unwrap().remove(&id);
             });
         }
         SftpRequest::Upload {
@@ -895,6 +958,8 @@ async fn service_sftp(
             id,
             cancel,
             cancels,
+            paused,
+            pauses,
         } => {
             let (events_tx, events_rx) = flume::unbounded::<TransferEvent>();
             let _ = reply.send(TransferHandle { id, events: events_rx });
@@ -909,6 +974,7 @@ async fn service_sftp(
                                 error: "sftp session not initialized".into(),
                             });
                             cancels.lock().unwrap().remove(&id);
+                            pauses.lock().unwrap().remove(&id);
                             return;
                         }
                     }
@@ -921,11 +987,13 @@ async fn service_sftp(
                             error: format!("stat {local:?}: {e}"),
                         });
                         cancels.lock().unwrap().remove(&id);
+                        pauses.lock().unwrap().remove(&id);
                         return;
                     }
                 };
                 let _ = events_tx.send(TransferEvent::Started { total });
-                let outcome = sftp_upload_streaming(&sftp, &local, &remote, total, &events_tx, &cancel).await;
+                let outcome =
+                    sftp_upload_streaming(&sftp, &local, &remote, total, &events_tx, &cancel, &paused).await;
                 match outcome {
                     Ok(StreamingOutcome::Completed(transferred)) => {
                         let _ = events_tx.send(TransferEvent::Done { transferred });
@@ -941,6 +1009,7 @@ async fn service_sftp(
                     }
                 }
                 cancels.lock().unwrap().remove(&id);
+                pauses.lock().unwrap().remove(&id);
             });
         }
         SftpRequest::DownloadDir {
@@ -950,6 +1019,8 @@ async fn service_sftp(
             id,
             cancel,
             cancels,
+            paused,
+            pauses,
         } => {
             let (events_tx, events_rx) = flume::unbounded::<TransferEvent>();
             let _ = reply.send(TransferHandle { id, events: events_rx });
@@ -964,6 +1035,7 @@ async fn service_sftp(
                                 error: "sftp session not initialized".into(),
                             });
                             cancels.lock().unwrap().remove(&id);
+                            pauses.lock().unwrap().remove(&id);
                             return;
                         }
                     }
@@ -976,11 +1048,13 @@ async fn service_sftp(
                             error: format!("{e:#}"),
                         });
                         cancels.lock().unwrap().remove(&id);
+                        pauses.lock().unwrap().remove(&id);
                         return;
                     }
                 };
-                run_download_dir(&sftp, items, &events_tx, &cancel).await;
+                run_download_dir(&sftp, items, &events_tx, &cancel, &paused).await;
                 cancels.lock().unwrap().remove(&id);
+                pauses.lock().unwrap().remove(&id);
             });
         }
         SftpRequest::UploadDir {
@@ -990,6 +1064,8 @@ async fn service_sftp(
             id,
             cancel,
             cancels,
+            paused,
+            pauses,
         } => {
             let (events_tx, events_rx) = flume::unbounded::<TransferEvent>();
             let _ = reply.send(TransferHandle { id, events: events_rx });
@@ -1004,6 +1080,7 @@ async fn service_sftp(
                                 error: "sftp session not initialized".into(),
                             });
                             cancels.lock().unwrap().remove(&id);
+                            pauses.lock().unwrap().remove(&id);
                             return;
                         }
                     }
@@ -1016,11 +1093,13 @@ async fn service_sftp(
                             error: format!("{e:#}"),
                         });
                         cancels.lock().unwrap().remove(&id);
+                        pauses.lock().unwrap().remove(&id);
                         return;
                     }
                 };
-                run_upload_dir(&sftp, items, &events_tx, &cancel).await;
+                run_upload_dir(&sftp, items, &events_tx, &cancel, &paused).await;
                 cancels.lock().unwrap().remove(&id);
+                pauses.lock().unwrap().remove(&id);
             });
         }
         SftpRequest::Mkdir { path, reply } => {
@@ -1337,8 +1416,17 @@ async fn download_one_file(
     remote: &str,
     local: &PathBuf,
     cancel: &AtomicBool,
+    paused: &AtomicBool,
 ) -> Result<StreamingOutcome> {
     const CHUNK: usize = 32 * 1024;
+    // Checked before touching the filesystem at all, not just inside the
+    // read/write loop below — otherwise pausing right as a directory job
+    // moves to its next file would still create that file's empty local
+    // placeholder immediately, even though nothing should happen until
+    // resumed.
+    if wait_while_paused(paused, cancel).await {
+        return Ok(StreamingOutcome::Cancelled(0));
+    }
     if let Some(parent) = local.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
@@ -1350,6 +1438,9 @@ async fn download_one_file(
     let mut transferred: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
+            return Ok(StreamingOutcome::Cancelled(transferred));
+        }
+        if wait_while_paused(paused, cancel).await {
             return Ok(StreamingOutcome::Cancelled(transferred));
         }
         let n = remote_file.read(&mut buf).await.map_err(|e| anyhow!("read {remote:?}: {e}"))?;
@@ -1373,8 +1464,12 @@ async fn upload_one_file(
     local: &PathBuf,
     remote: &str,
     cancel: &AtomicBool,
+    paused: &AtomicBool,
 ) -> Result<StreamingOutcome> {
     const CHUNK: usize = 32 * 1024;
+    if wait_while_paused(paused, cancel).await {
+        return Ok(StreamingOutcome::Cancelled(0));
+    }
     let mut local_file = tokio::fs::File::open(local).await.map_err(|e| anyhow!("open {local:?}: {e}"))?;
     let mut remote_file = sftp
         .open_with_flags(remote, OpenFlags::CREATE | OpenFlags::WRITE | OpenFlags::TRUNCATE)
@@ -1384,6 +1479,9 @@ async fn upload_one_file(
     let mut transferred: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
+            return Ok(StreamingOutcome::Cancelled(transferred));
+        }
+        if wait_while_paused(paused, cancel).await {
             return Ok(StreamingOutcome::Cancelled(transferred));
         }
         let n = local_file.read(&mut buf).await.map_err(|e| anyhow!("read {local:?}: {e}"))?;
@@ -1410,6 +1508,7 @@ async fn run_download_dir(
     items: Vec<DirTransferItem>,
     events: &flume::Sender<TransferEvent>,
     cancel: &AtomicBool,
+    paused: &AtomicBool,
 ) {
     let total: u64 = items.iter().map(|i| i.size).sum();
     let _ = events.send(TransferEvent::Started { total });
@@ -1423,7 +1522,7 @@ async fn run_download_dir(
             cancelled = true;
             break;
         }
-        match download_one_file(sftp, &item.remote, &item.local, cancel).await {
+        match download_one_file(sftp, &item.remote, &item.local, cancel, paused).await {
             Ok(StreamingOutcome::Completed(n)) => {
                 transferred += n;
                 let _ = events.send(TransferEvent::Progress { transferred });
@@ -1455,6 +1554,7 @@ async fn run_upload_dir(
     items: Vec<DirTransferItem>,
     events: &flume::Sender<TransferEvent>,
     cancel: &AtomicBool,
+    paused: &AtomicBool,
 ) {
     let total: u64 = items.iter().map(|i| i.size).sum();
     let _ = events.send(TransferEvent::Started { total });
@@ -1468,7 +1568,7 @@ async fn run_upload_dir(
             cancelled = true;
             break;
         }
-        match upload_one_file(sftp, &item.local, &item.remote, cancel).await {
+        match upload_one_file(sftp, &item.local, &item.remote, cancel, paused).await {
             Ok(StreamingOutcome::Completed(n)) => {
                 transferred += n;
                 let _ = events.send(TransferEvent::Progress { transferred });
@@ -1494,6 +1594,22 @@ async fn run_upload_dir(
     }
 }
 
+/// Blocks while `paused` is set, rechecking every 100ms so a concurrent
+/// `cancel` still takes effect promptly (a paused transfer can still be
+/// cancelled). Returns `true` if `cancel` became set while waiting (the
+/// caller should abort as cancelled), `false` once `paused` cleared
+/// normally (the caller should proceed). Never closes or reopens any file
+/// handle — the caller's already-open handles just sit idle.
+async fn wait_while_paused(paused: &AtomicBool, cancel: &AtomicBool) -> bool {
+    while paused.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    false
+}
+
 /// Outcome of a streaming transfer — distinguishes a clean completion from
 /// a user-initiated cancel. Both carry the number of bytes that were already
 /// written when the loop ended.
@@ -1514,10 +1630,14 @@ async fn sftp_download_streaming(
     _total: u64,
     events: &flume::Sender<TransferEvent>,
     cancel: &AtomicBool,
+    paused: &AtomicBool,
 ) -> Result<StreamingOutcome> {
     const CHUNK: usize = 32 * 1024;
     const PROGRESS_INTERVAL: u64 = 64 * 1024;
 
+    if wait_while_paused(paused, cancel).await {
+        return Ok(StreamingOutcome::Cancelled(0));
+    }
     let mut remote_file = sftp
         .open(remote)
         .await
@@ -1528,6 +1648,9 @@ async fn sftp_download_streaming(
     let mut last_progress_at: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
+            return Ok(StreamingOutcome::Cancelled(transferred));
+        }
+        if wait_while_paused(paused, cancel).await {
             return Ok(StreamingOutcome::Cancelled(transferred));
         }
         let n = remote_file
@@ -1562,12 +1685,16 @@ async fn sftp_upload_streaming(
     _total: u64,
     events: &flume::Sender<TransferEvent>,
     cancel: &AtomicBool,
+    paused: &AtomicBool,
 ) -> Result<StreamingOutcome> {
     use tokio::io::AsyncReadExt;
 
     const CHUNK: usize = 32 * 1024;
     const PROGRESS_INTERVAL: u64 = 64 * 1024;
 
+    if wait_while_paused(paused, cancel).await {
+        return Ok(StreamingOutcome::Cancelled(0));
+    }
     let mut local_file = tokio::fs::File::open(local).await?;
     let mut remote_file = sftp
         .open_with_flags(
@@ -1581,6 +1708,9 @@ async fn sftp_upload_streaming(
     let mut last_progress_at: u64 = 0;
     loop {
         if cancel.load(Ordering::Relaxed) {
+            return Ok(StreamingOutcome::Cancelled(transferred));
+        }
+        if wait_while_paused(paused, cancel).await {
             return Ok(StreamingOutcome::Cancelled(transferred));
         }
         let n = local_file
