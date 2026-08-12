@@ -352,6 +352,22 @@ Monitor:
   no_ssh_host:
     zh-CN: "未连接 SSH 主机"
     en: "No SSH host connected"
+CommandHistory:
+  title:
+    zh-CN: "命令历史: %{label}"
+    en: "Command History: %{label}"
+  search_placeholder:
+    zh-CN: "搜索历史命令..."
+    en: "Search command history..."
+  refresh_tooltip:
+    zh-CN: "刷新"
+    en: "Refresh"
+  empty_state:
+    zh-CN: "暂无匹配的历史命令"
+    en: "No matching command history"
+  no_terminal_focused:
+    zh-CN: "未聚焦任何终端"
+    en: "No terminal focused"
 Terminal:
   connecting:
     zh-CN: "正在连接 %{host}…"
