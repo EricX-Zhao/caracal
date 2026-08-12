@@ -101,6 +101,11 @@ pub struct TerminalSettings {
     /// glyph slot.
     #[serde(default = "default_font_fallback2")]
     pub font_fallback2: String,
+    /// Whether the terminal shows a dropdown of matching historical
+    /// commands as the user types. On by default — see
+    /// docs/superpowers/specs/2026-08-06-command-history-suggestions-design.md.
+    #[serde(default = "default_true")]
+    pub command_suggestions_enabled: bool,
 }
 
 fn default_font_size() -> f32 {
@@ -121,6 +126,10 @@ fn default_font_fallback1() -> String {
 
 fn default_font_fallback2() -> String {
     "Sarasa Mono SC".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_appearance_font_fallback() -> String {
@@ -151,6 +160,7 @@ impl Default for TerminalSettings {
             scrollback_lines: default_scrollback_lines(),
             font_fallback1: default_font_fallback1(),
             font_fallback2: default_font_fallback2(),
+            command_suggestions_enabled: default_true(),
         }
     }
 }
@@ -284,6 +294,7 @@ mod tests {
         assert_eq!(settings.terminal.scrollback_lines, 10_000);
         assert_eq!(settings.terminal.font_fallback1, "Symbols Nerd Font");
         assert_eq!(settings.terminal.font_fallback2, "Sarasa Mono SC");
+        assert!(settings.terminal.command_suggestions_enabled);
         assert_eq!(settings.appearance.theme_name, "Default Dark");
         assert_eq!(settings.appearance.font_family, "");
         assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
@@ -345,6 +356,7 @@ mod tests {
                 scrollback_lines: 20_000,
                 font_fallback1: "JetBrains Mono".to_string(),
                 font_fallback2: "Symbols Nerd Font".to_string(),
+                command_suggestions_enabled: false,
             },
             keybindings: KeybindingsSettings::default(),
             backup: BackupSettings::default(),
@@ -358,6 +370,7 @@ mod tests {
         assert_eq!(parsed.terminal.scrollback_lines, 20_000);
         assert_eq!(parsed.terminal.font_fallback1, "JetBrains Mono");
         assert_eq!(parsed.terminal.font_fallback2, "Symbols Nerd Font");
+        assert!(!parsed.terminal.command_suggestions_enabled);
         assert_eq!(parsed.appearance.theme_name, "Ayu Light");
         assert_eq!(parsed.appearance.font_family, "JetBrains Mono");
         assert_eq!(parsed.appearance.font_fallback, "Symbols Nerd Font");
@@ -459,6 +472,19 @@ mod tests {
         assert_eq!(settings.terminal.font_fallback2, "Sarasa Mono SC");
         assert_eq!(settings.appearance.font_family, "");
         assert_eq!(settings.appearance.font_fallback, "Sarasa Mono SC");
+    }
+
+    #[test]
+    fn old_settings_file_without_command_suggestions_field_still_deserializes() {
+        // Simulates a settings.toml written before this field existed.
+        let toml_text = r#"
+            [terminal]
+            font_family = "Consolas"
+            font_size = 16.0
+        "#;
+        let settings: AppSettings =
+            toml::from_str(toml_text).expect("old-format settings must still parse");
+        assert!(settings.terminal.command_suggestions_enabled);
     }
 
     #[test]
