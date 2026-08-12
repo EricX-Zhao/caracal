@@ -27,7 +27,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use gpui::{
     App, AppContext, AsyncApp, ClipboardItem, Context, CursorStyle, Entity, FocusHandle,
@@ -55,6 +55,11 @@ use crate::terminal::ssh::{
 enum TransferStatus {
     Queued,
     Active,
+    /// User-paused: the streaming loop stopped doing I/O but its file
+    /// handles are still open (see `SshSession::sftp_pause`). Set locally
+    /// by `pause_transfer`/cleared by `resume_transfer` — no backend
+    /// round-trip event exists for this transition.
+    Paused,
     Done,
     /// A directory transfer completed but skipped one or more files
     /// (`TransferEvent::DoneWithFailures`) — carries their remote paths for
@@ -73,6 +78,16 @@ struct Transfer {
     transferred: u64,
     status: TransferStatus,
     started_at: Instant,
+    /// Cumulative time this transfer has spent `Paused`, excluding any
+    /// currently-ongoing pause (see `paused_since`) — added there instead.
+    /// Kept out of `speed_bytes_per_sec`'s elapsed-time denominator so a
+    /// paused transfer's average speed doesn't permanently understate
+    /// itself after resuming.
+    paused_duration: Duration,
+    /// `Some(when this pause began)` while `status == Paused`, `None`
+    /// otherwise. `resume_transfer` folds the elapsed time into
+    /// `paused_duration` and clears this back to `None`.
+    paused_since: Option<Instant>,
     /// The local-disk path of this transfer (download destination or upload
     /// source) — powers the completed-transfer context menu's "open
     /// file"/"open folder"/"delete"/"properties" actions, all of which are
@@ -96,17 +111,28 @@ impl Transfer {
         }
     }
 
-    /// Average transfer rate since the transfer started, in bytes/sec.
-    /// Averaged over the whole elapsed duration (not a rolling window) —
-    /// simple, needs no extra tracked state, and re-derives itself from
+    /// Average transfer rate since the transfer started, in bytes/sec,
+    /// excluding any time spent `Paused` (both completed pauses, in
+    /// `paused_duration`, and a currently-ongoing one via `paused_since`).
+    /// Averaged over the whole (pause-adjusted) elapsed duration — simple,
+    /// needs no extra polling, and re-derives itself from
     /// `transferred`/`started_at` on every render as new progress events
-    /// arrive, so it stays live without a separate poll loop. `elapsed` is
-    /// floored at 50ms so a transfer whose first render already has a
-    /// large `transferred` (a fast local disk, or a big first chunk
-    /// arriving before much wall-clock time has passed) doesn't produce a
-    /// spuriously huge rate from dividing by a near-zero duration.
+    /// arrive. `elapsed` is floored at 50ms so a transfer whose first
+    /// render already has a large `transferred` (a fast local disk, or a
+    /// big first chunk arriving before much wall-clock time has passed)
+    /// doesn't produce a spuriously huge rate from dividing by a
+    /// near-zero duration.
     fn speed_bytes_per_sec(&self) -> f64 {
-        let elapsed = self.started_at.elapsed().as_secs_f64().max(0.05);
+        let mut paused = self.paused_duration;
+        if let Some(since) = self.paused_since {
+            paused += since.elapsed();
+        }
+        let elapsed = self
+            .started_at
+            .elapsed()
+            .saturating_sub(paused)
+            .as_secs_f64()
+            .max(0.05);
         self.transferred as f64 / elapsed
     }
 }
@@ -581,6 +607,8 @@ impl SftpPanel {
             transferred: 0,
             status: TransferStatus::Queued,
             started_at: Instant::now(),
+            paused_duration: Duration::ZERO,
+            paused_since: None,
             local_path: local.clone(),
         });
         cx.notify();
@@ -667,6 +695,8 @@ impl SftpPanel {
             transferred: 0,
             status: TransferStatus::Queued,
             started_at: Instant::now(),
+            paused_duration: Duration::ZERO,
+            paused_since: None,
             local_path: local.clone(),
         });
         cx.notify();
@@ -724,6 +754,8 @@ impl SftpPanel {
             transferred: 0,
             status: TransferStatus::Queued,
             started_at: Instant::now(),
+            paused_duration: Duration::ZERO,
+            paused_since: None,
             local_path: PathBuf::new(),
         });
         cx.notify();
@@ -811,6 +843,8 @@ impl SftpPanel {
             transferred: 0,
             status: TransferStatus::Queued,
             started_at: Instant::now(),
+            paused_duration: Duration::ZERO,
+            paused_since: None,
             local_path: PathBuf::new(),
         });
         cx.notify();
@@ -1110,14 +1144,56 @@ impl SftpPanel {
         self.session.sftp_cancel(id);
     }
 
+    /// Pauses an Active transfer: flips its status locally and tells the
+    /// backend to stop doing I/O on that transfer id (see
+    /// `SshSession::sftp_pause`). No-op if the transfer isn't currently
+    /// Active (e.g. already Paused, or already finished).
+    fn pause_transfer(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+            if matches!(t.status, TransferStatus::Active) {
+                t.status = TransferStatus::Paused;
+                t.paused_since = Some(Instant::now());
+                self.session.sftp_pause(id);
+                cx.notify();
+            }
+        }
+    }
+
+    /// Resumes a Paused transfer: folds the just-ended pause into
+    /// `paused_duration`, flips status back to Active, and tells the
+    /// backend to resume I/O on that transfer id.
+    fn resume_transfer(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
+            if let Some(since) = t.paused_since.take() {
+                t.paused_duration += since.elapsed();
+            }
+            t.status = TransferStatus::Active;
+            self.session.sftp_resume(id);
+            cx.notify();
+        }
+    }
+
+    /// Removes a transfer row from the list without touching any local
+    /// file — pure list bookkeeping, no confirmation (matches
+    /// `clear_completed_transfers`'s existing no-confirm convention).
+    fn remove_transfer(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.transfers.retain(|t| t.id != id);
+        cx.notify();
+    }
+
     /// Drops every transfer whose status is terminal (`Done`,
     /// `DoneWithFailures`, `Failed`, or `Cancelled`) — success, partial
     /// failure, hard failure, and user-cancelled all count as "completed"
-    /// for clearing purposes. In-flight transfers (`Queued`/`Active`) are
-    /// untouched.
+    /// for clearing purposes. In-flight transfers (`Queued`/`Active`/
+    /// `Paused`) are untouched — a paused transfer is still in flight, not
+    /// completed.
     fn clear_completed_transfers(&mut self, cx: &mut Context<Self>) {
-        self.transfers
-            .retain(|t| matches!(t.status, TransferStatus::Queued | TransferStatus::Active));
+        self.transfers.retain(|t| {
+            matches!(
+                t.status,
+                TransferStatus::Queued | TransferStatus::Active | TransferStatus::Paused
+            )
+        });
         cx.notify();
     }
 
@@ -2311,6 +2387,8 @@ mod transfer_progress_tests {
             transferred,
             status,
             started_at: Instant::now(),
+            paused_duration: Duration::ZERO,
+            paused_since: None,
             local_path: PathBuf::new(),
         }
     }
@@ -2332,6 +2410,28 @@ mod transfer_progress_tests {
         let t = transfer_with(TransferStatus::Active, 1_000_000, 100_000);
         let speed = t.speed_bytes_per_sec();
         assert!(speed <= 100_000.0 / 0.05, "expected a floored rate, got {speed}");
+    }
+
+    #[test]
+    fn speed_bytes_per_sec_excludes_completed_paused_duration() {
+        let mut t = transfer_with(TransferStatus::Paused, 1_000_000, 500_000);
+        // Started 3s ago, but 1s of that was spent paused — only 2s should
+        // count, same expected rate as the "computes_average_rate" test.
+        t.started_at = Instant::now() - Duration::from_secs(3);
+        t.paused_duration = Duration::from_secs(1);
+        let speed = t.speed_bytes_per_sec();
+        assert!((speed - 250_000.0).abs() < 5_000.0, "expected ~250000 B/s, got {speed}");
+    }
+
+    #[test]
+    fn speed_bytes_per_sec_excludes_an_ongoing_pause() {
+        let mut t = transfer_with(TransferStatus::Paused, 1_000_000, 500_000);
+        // Started 3s ago; still paused, and became paused 1s ago — same
+        // pause-adjusted 2s of real transfer time as the test above.
+        t.started_at = Instant::now() - Duration::from_secs(3);
+        t.paused_since = Some(Instant::now() - Duration::from_secs(1));
+        let speed = t.speed_bytes_per_sec();
+        assert!((speed - 250_000.0).abs() < 5_000.0, "expected ~250000 B/s, got {speed}");
     }
 
     #[test]
@@ -2357,13 +2457,19 @@ mod transfer_progress_tests {
         let mut transfers = vec![
             transfer_with(TransferStatus::Queued, 100, 0),
             transfer_with(TransferStatus::Active, 100, 50),
+            transfer_with(TransferStatus::Paused, 100, 50),
             transfer_with(TransferStatus::Done, 100, 100),
             transfer_with(TransferStatus::DoneWithFailures(vec!["a".into()]), 100, 90),
             transfer_with(TransferStatus::Failed("boom".into()), 100, 0),
             transfer_with(TransferStatus::Cancelled, 100, 10),
         ];
-        transfers.retain(|t| matches!(t.status, TransferStatus::Queued | TransferStatus::Active));
-        assert_eq!(transfers.len(), 2);
+        transfers.retain(|t| {
+            matches!(
+                t.status,
+                TransferStatus::Queued | TransferStatus::Active | TransferStatus::Paused
+            )
+        });
+        assert_eq!(transfers.len(), 3);
     }
 }
 
