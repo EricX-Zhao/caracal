@@ -50,6 +50,7 @@ use crate::panels::sessions::{SessionsEvent, SessionsPanel};
 use crate::panels::settings_window::SettingsWindow;
 use crate::panels::side_region::side_region_content;
 use crate::panels::sftp::{SftpPanel, SftpPlaceholder};
+use crate::panels::command_history_panel::{CommandHistoryPanel, CommandHistoryPlaceholder};
 use crate::panels::monitor::{MonitorPanel, MonitorPlaceholder};
 use crate::panels::security_auth::SecurityAuthPanel;
 use crate::panels::stub::StubPanel;
@@ -324,6 +325,16 @@ pub struct Workspace {
     /// user manually clicks the Monitor activity-bar icon; only *which
     /// host's data* is shown follows focus automatically.
     active_monitor: Option<String>,
+    /// One 命令历史 panel per connection key (created on first use, reused
+    /// after) — mirrors `monitor_panels` field-for-field. Unlike Monitor,
+    /// not SSH-only: `history_key` covers all 4 connection types.
+    history_panels: HashMap<String, AnyView>,
+    /// Shown in the History slot before any terminal has ever been focused.
+    history_placeholder: AnyView,
+    /// Connection key whose history panel the `PanelId::History` slot
+    /// resolves to. Like `active_monitor` (not `active_sftp`), updating
+    /// this does NOT force `right_active` to switch to `PanelId::History`.
+    active_history: Option<String>,
 
     // --- active slots (one per side) ----------------------------------------
     left_active: Option<PanelId>,
@@ -499,11 +510,12 @@ impl Workspace {
 
         let sftp_placeholder: AnyView = cx.new(|cx| SftpPlaceholder::new(cx)).into();
         let monitor_placeholder: AnyView = cx.new(MonitorPlaceholder::new).into();
+        let history_placeholder: AnyView = cx.new(CommandHistoryPlaceholder::new).into();
 
         // One stub panel per not-yet-implemented category. Security has a
         // real panel now (see `resolve`'s dedicated match arm below).
         let mut stub_panels: HashMap<PanelId, AnyView> = HashMap::new();
-        for pid in [PanelId::Network, PanelId::History] {
+        for pid in [PanelId::Network] {
             let view: AnyView = cx.new(|cx| StubPanel::new(pid, cx)).into();
             stub_panels.insert(pid, view);
         }
@@ -537,6 +549,9 @@ impl Workspace {
             monitor_panels: HashMap::new(),
             monitor_placeholder,
             active_monitor: None,
+            history_panels: HashMap::new(),
+            history_placeholder,
+            active_history: None,
             // Defaults: left panel closed until an SSH terminal is focused (see
             // `show_sftp`) or the user opens it manually; saved connections on the right.
             left_active: None,
@@ -606,6 +621,11 @@ impl Workspace {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
             this.show_monitor_placeholder(window, cx);
+            if let Some(t) = term_weak.upgrade() {
+                let key = t.read(cx).history_key().to_string();
+                let label = t.read(cx).title().to_string();
+                this.show_history(key, label, window, cx);
+            }
         });
         self._subscriptions.push(sub);
         // tab_number (0) is a throwaway placeholder — register_tab_panel's
@@ -789,6 +809,14 @@ impl Workspace {
                 } else {
                     this.show_sftp_placeholder(window, cx);
                     this.show_monitor_placeholder(window, cx);
+                }
+                // Unlike SFTP/Monitor, History doesn't need a cached SSH
+                // session — the connection's own key/title are known
+                // immediately, connecting or not.
+                if let Some(t) = term_weak.upgrade() {
+                    let key = t.read(cx).history_key().to_string();
+                    let label = t.read(cx).title().to_string();
+                    this.show_history(key, label, window, cx);
                 }
             }
         });
@@ -1007,6 +1035,11 @@ impl Workspace {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
             this.show_monitor_placeholder(window, cx);
+            if let Some(t) = term_weak.upgrade() {
+                let key = t.read(cx).history_key().to_string();
+                let label = t.read(cx).title().to_string();
+                this.show_history(key, label, window, cx);
+            }
         });
         self._subscriptions.push(sub);
         // tab_number (0) is a throwaway placeholder — register_tab_panel's
@@ -1037,6 +1070,11 @@ impl Workspace {
             this.set_active_title_from(&term_weak, cx);
             this.show_sftp_placeholder(window, cx);
             this.show_monitor_placeholder(window, cx);
+            if let Some(t) = term_weak.upgrade() {
+                let key = t.read(cx).history_key().to_string();
+                let label = t.read(cx).title().to_string();
+                this.show_history(key, label, window, cx);
+            }
         });
         self._subscriptions.push(sub);
         // tab_number (0) is a throwaway placeholder — register_tab_panel's
@@ -1351,6 +1389,33 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Bind the History slot to `key`'s connection (creating the panel once
+    /// if needed, reusing it after). Mirrors `show_monitor`: does NOT force
+    /// `right_active` — see the `active_history` field's doc comment.
+    /// `label` is only used the first time `key`'s panel is created (see
+    /// `CommandHistoryPanel.label`'s doc comment) — a later call with a
+    /// different `label` for an already-cached `key` (e.g. a second SSH tab
+    /// to the same host, with a different tab number in its title) is a
+    /// no-op on the label, same limitation `MonitorPanel.label` already has.
+    fn show_history(&mut self, key: String, label: String, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.history_panels.contains_key(&key) {
+            let workspace = cx.entity().downgrade();
+            let panel: AnyView = cx
+                .new(|cx| CommandHistoryPanel::new(key.clone(), label.into(), workspace, window, cx))
+                .into();
+            self.history_panels.insert(key.clone(), panel);
+        }
+        self.active_history = Some(key);
+        cx.notify();
+    }
+
+    /// Detach the History slot from any connection so it resolves to the
+    /// "no terminal focused" placeholder. Mirrors `show_monitor_placeholder`.
+    fn show_history_placeholder(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.active_history = None;
+        cx.notify();
+    }
+
     fn add_center(
         &mut self,
         panel: Arc<dyn gpui_component::dock::PanelView>,
@@ -1545,6 +1610,12 @@ impl Workspace {
                     .as_ref()
                     .and_then(|k| self.monitor_panels.get(k).cloned())
                     .unwrap_or_else(|| self.monitor_placeholder.clone()),
+            ),
+            PanelId::History => Some(
+                self.active_history
+                    .as_ref()
+                    .and_then(|k| self.history_panels.get(k).cloned())
+                    .unwrap_or_else(|| self.history_placeholder.clone()),
             ),
             PanelId::Sessions => Some(self.sessions_panel.clone()),
             PanelId::Security => Some(self.security_auth_panel.clone()),
