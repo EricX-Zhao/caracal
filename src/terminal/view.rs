@@ -215,6 +215,35 @@ pub struct TerminalView {
     /// (including across a `reconnect_with` reconnect — it's still the
     /// same connection). See the design spec's "Component structure".
     history_key: String,
+    /// Whether command-history tracking/suggestions are active for this
+    /// tab at all — read once from `TerminalSettings.command_suggestions_enabled`
+    /// at construction, same "read once, changes affect tabs opened
+    /// afterward" convention `scrollback_lines` already uses (not live-
+    /// reloaded).
+    suggestions_enabled: bool,
+    /// This connection's command history, loaded once at construction and
+    /// kept in sync with what's on disk as this tab itself records new
+    /// entries (via `record`'s returned updated list) — avoids a disk
+    /// read on every keystroke. Doesn't pick up entries recorded by other
+    /// tabs to the same connection in real time; an accepted limitation.
+    history_cache: Vec<String>,
+    /// Characters typed (plain printable keys + Backspace) since the last
+    /// Enter — Caracal's own best-effort approximation of "what's on the
+    /// current input line", since it has no way to read that back from
+    /// the shell. See the design spec's "Input tracking" decision.
+    input_buffer: String,
+    /// True once a key we can't safely track (arrows, Ctrl+A/E/U, Home/
+    /// End, etc.) has been pressed since the last Enter — `input_buffer`
+    /// may no longer match the real line, so suggestions stay hidden
+    /// until the next Enter resets everything, even if the user resumes
+    /// plain typing before then.
+    tracking_desynced: bool,
+    /// Currently-matching history entries for `input_buffer`, most-
+    /// recent-first — empty means no dropdown is shown.
+    suggestions: Vec<String>,
+    /// Index into `suggestions` the user has navigated to via ↑/↓, or
+    /// `None` if nothing's been explicitly selected yet.
+    selected_index: Option<usize>,
     /// `Some` while a non-live state (connecting or dead) should be shown
     /// as a full-terminal overlay; `None` means the backend is live. Only
     /// ever `Some` when `remote_reconnect` is true. Set by
@@ -469,6 +498,9 @@ impl TerminalView {
         title: String,
         history_key: String,
     ) -> Self {
+        let settings = settings::load();
+        let suggestions_enabled = settings.terminal.command_suggestions_enabled;
+        let history_cache = crate::command_history::load_for(&history_key);
         Self {
             term,
             backend,
@@ -487,6 +519,12 @@ impl TerminalView {
             remote_reconnect,
             host_label,
             history_key,
+            suggestions_enabled,
+            history_cache,
+            input_buffer: String::new(),
+            tracking_desynced: false,
+            suggestions: Vec::new(),
+            selected_index: None,
             banner,
             _drain_task: drain_task,
             _disconnect_watch: disconnect_watch,
@@ -815,6 +853,55 @@ impl TerminalView {
                 self.term.lock().scroll_display(s);
                 cx.notify();
                 return;
+            }
+        }
+
+        if self.suggestions_enabled {
+            let key = ev.keystroke.key.as_str();
+            if key == "enter" {
+                if !self.tracking_desynced && !self.input_buffer.is_empty() {
+                    match crate::command_history::record(&self.history_key, &self.input_buffer) {
+                        Ok(updated) => self.history_cache = updated,
+                        Err(e) => log::warn!(
+                            "failed to save command history for {}: {e}",
+                            self.history_key
+                        ),
+                    }
+                }
+                self.input_buffer.clear();
+                self.tracking_desynced = false;
+                self.suggestions.clear();
+                self.selected_index = None;
+                cx.notify();
+                // Deliberately no `return` here — Enter must still reach
+                // the PTY via the normal encode_key/send_input path below.
+            } else if !self.tracking_desynced {
+                let is_plain_char = !m.control
+                    && !m.alt
+                    && !m.platform
+                    && ev.keystroke.key_char.as_deref().is_some_and(|s| !s.is_empty());
+                if is_plain_char {
+                    self.input_buffer.push_str(ev.keystroke.key_char.as_deref().unwrap());
+                    self.suggestions = crate::command_history::matching_suggestions(
+                        &self.history_cache,
+                        &self.input_buffer,
+                    );
+                    self.selected_index = None;
+                    cx.notify();
+                } else if key == "backspace" && !m.control && !m.alt {
+                    self.input_buffer.pop();
+                    self.suggestions = crate::command_history::matching_suggestions(
+                        &self.history_cache,
+                        &self.input_buffer,
+                    );
+                    self.selected_index = None;
+                    cx.notify();
+                } else {
+                    self.tracking_desynced = true;
+                    self.suggestions.clear();
+                    self.selected_index = None;
+                    cx.notify();
+                }
             }
         }
 
