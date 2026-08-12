@@ -141,19 +141,25 @@ pub fn matching_suggestions(entries: &[String], prefix: &str) -> Vec<String> {
 }
 
 /// Pure: substring-filters `entries` (case-insensitive) and returns them
-/// newest-first — `entries` itself is oldest-first (matching `load_for`'s
-/// on-disk order), so this reverses as it filters. An empty `query` matches
-/// everything (unlike `matching_suggestions`'s empty-prefix-matches-nothing
-/// rule, which exists so an empty *typed* input line doesn't show every
-/// historical command as a live "suggestion" — this is the History panel's
-/// manual-browsing search box, where showing the full list by default is
-/// the useful behavior, not noise).
+/// newest-first, deduped (each distinct string appears once, at its most
+/// recent position) — same dedup convention as `matching_suggestions`, so a
+/// command run repeatedly across a long-lived session doesn't fill the
+/// panel with visual noise. `entries` itself is oldest-first (matching
+/// `load_for`'s on-disk order), so this reverses as it filters. An empty
+/// `query` matches everything (unlike `matching_suggestions`'s
+/// empty-prefix-matches-nothing rule, which exists so an empty *typed*
+/// input line doesn't show every historical command as a live
+/// "suggestion" — this is the History panel's manual-browsing search box,
+/// where showing the full list by default is the useful behavior, not
+/// noise).
 pub fn filter_entries(entries: &[String], query: &str) -> Vec<String> {
     let query = query.trim().to_lowercase();
+    let mut seen = std::collections::HashSet::new();
     entries
         .iter()
         .rev()
         .filter(|entry| query.is_empty() || entry.to_lowercase().contains(&query))
+        .filter(|entry| seen.insert(entry.as_str()))
         .cloned()
         .collect()
 }
@@ -267,13 +273,28 @@ mod tests {
     }
 
     #[test]
-    fn filter_entries_preserves_non_consecutive_duplicates() {
+    fn filter_entries_dedups_keeping_the_most_recent_position() {
         // Non-consecutive duplicate entries are allowed by `record_into` (see
-        // `record_into_allows_a_non_consecutive_repeat` above) — this is
-        // manual browsing, not the suggestion dropdown's deduped
-        // `matching_suggestions`, so both copies must appear.
+        // `record_into_allows_a_non_consecutive_repeat` above), but the
+        // History panel is a display of "what have I run", not a raw log —
+        // each distinct command should appear once, at its most recent
+        // position, same as `matching_suggestions`.
         let entries = vec!["ls".to_string(), "git status".to_string(), "ls".to_string()];
-        assert_eq!(filter_entries(&entries, "ls"), vec!["ls".to_string(), "ls".to_string()]);
+        assert_eq!(filter_entries(&entries, "ls"), vec!["ls".to_string()]);
+    }
+
+    #[test]
+    fn filter_entries_dedup_does_not_cross_contaminate_distinct_commands() {
+        let entries = vec![
+            "ls".to_string(),
+            "git status".to_string(),
+            "ls".to_string(),
+            "git status".to_string(),
+        ];
+        assert_eq!(
+            filter_entries(&entries, ""),
+            vec!["git status".to_string(), "ls".to_string()]
+        );
     }
 
     #[test]
