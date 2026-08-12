@@ -2049,15 +2049,26 @@ impl SftpPanel {
                     TransferStatus::Done => cx.theme().success,
                     TransferStatus::DoneWithFailures(_) => cx.theme().warning,
                     TransferStatus::Cancelled => cx.theme().muted_foreground,
+                    TransferStatus::Paused => cx.theme().warning,
                     _ => cx.theme().primary,
                 };
+                // Every `TransferStatus` variant is either still in flight
+                // (`is_running`) or in a terminal state (`is_finished`) —
+                // these two groupings are exhaustive and mutually exclusive.
                 let is_running = matches!(
                     t.status,
-                    TransferStatus::Queued | TransferStatus::Active
+                    TransferStatus::Queued | TransferStatus::Active | TransferStatus::Paused
                 );
                 let is_done = matches!(
                     t.status,
                     TransferStatus::Done | TransferStatus::DoneWithFailures(_)
+                );
+                let is_finished = matches!(
+                    t.status,
+                    TransferStatus::Done
+                        | TransferStatus::DoneWithFailures(_)
+                        | TransferStatus::Failed(_)
+                        | TransferStatus::Cancelled
                 );
                 let transfer_id = t.id;
                 let row = div()
@@ -2141,11 +2152,17 @@ impl SftpPanel {
                             ),
                     );
 
-                if is_done {
+                if is_finished {
+                    // Every finished row (Done/DoneWithFailures/Failed/
+                    // Cancelled) gets a menu; only Done/DoneWithFailures
+                    // (`is_done`) additionally gets open-file/open-folder/
+                    // properties — a Failed/Cancelled transfer's local file
+                    // is likely partial or was never created.
                     let panel_open = weak_panel.clone();
                     let panel_open_folder = weak_panel.clone();
                     let panel_properties = weak_panel.clone();
-                    let panel_delete = weak_panel.clone();
+                    let panel_remove = weak_panel.clone();
+                    let panel_delete_file = weak_panel.clone();
                     row.context_menu(move |menu, _window, _cx| {
                         // `context_menu`'s builder is an `Fn` (invoked on every render of
                         // the menu), so it must not move its captures — clone into locals
@@ -2154,38 +2171,99 @@ impl SftpPanel {
                         let panel_open = panel_open.clone();
                         let panel_open_folder = panel_open_folder.clone();
                         let panel_properties = panel_properties.clone();
-                        let panel_delete = panel_delete.clone();
-                        menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.open_file")).on_click(
-                            move |_ev, window, cx| {
-                                let _ = panel_open.update(cx, |panel, cx| {
-                                    panel.open_transfer_file(transfer_id, window, cx)
+                        let panel_remove = panel_remove.clone();
+                        let panel_delete_file = panel_delete_file.clone();
+                        let mut menu = menu;
+                        if is_done {
+                            menu = menu
+                                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.open_file")).on_click(
+                                    move |_ev, window, cx| {
+                                        let _ = panel_open.update(cx, |panel, cx| {
+                                            panel.open_transfer_file(transfer_id, window, cx)
+                                        });
+                                    },
+                                ))
+                                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.open_folder")).on_click(
+                                    move |_ev, window, cx| {
+                                        let _ = panel_open_folder.update(cx, |panel, cx| {
+                                            panel.open_transfer_folder(transfer_id, window, cx)
+                                        });
+                                    },
+                                ))
+                                .item(PopupMenuItem::new(rust_i18n::t!("Sftp.properties")).on_click(
+                                    move |_ev, window, cx| {
+                                        let _ = panel_properties.update(cx, |panel, cx| {
+                                            panel.show_transfer_properties(transfer_id, window, cx)
+                                        });
+                                    },
+                                ));
+                        }
+                        menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.remove_transfer")).on_click(
+                            move |_ev, _window, cx| {
+                                let _ = panel_remove.update(cx, |panel, cx| {
+                                    panel.remove_transfer(transfer_id, cx)
                                 });
                             },
                         ))
-                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.open_folder")).on_click(
+                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.delete_local_file")).on_click(
                             move |_ev, window, cx| {
-                                let _ = panel_open_folder.update(cx, |panel, cx| {
-                                    panel.open_transfer_folder(transfer_id, window, cx)
-                                });
-                            },
-                        ))
-                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.properties")).on_click(
-                            move |_ev, window, cx| {
-                                let _ = panel_properties.update(cx, |panel, cx| {
-                                    panel.show_transfer_properties(transfer_id, window, cx)
-                                });
-                            },
-                        ))
-                        .item(PopupMenuItem::new(rust_i18n::t!("Sftp.delete")).on_click(
-                            move |_ev, window, cx| {
-                                let _ = panel_delete.update(cx, |panel, cx| {
+                                let _ = panel_delete_file.update(cx, |panel, cx| {
                                     panel.delete_transfer_file(transfer_id, window, cx)
                                 });
                             },
                         ))
                     })
                     .into_any_element()
+                } else if is_running {
+                    // Queued/Active/Paused. Pause only shown while Active;
+                    // Resume only shown while Paused; Cancel always shown
+                    // (matches the inline "✕" button's own `is_running`
+                    // condition — this menu is additive to it, not a
+                    // replacement).
+                    let status_for_menu = t.status.clone();
+                    let panel_pause = weak_panel.clone();
+                    let panel_resume = weak_panel.clone();
+                    let panel_cancel = weak_panel.clone();
+                    row.context_menu(move |menu, _window, _cx| {
+                        let panel_pause = panel_pause.clone();
+                        let panel_resume = panel_resume.clone();
+                        let panel_cancel = panel_cancel.clone();
+                        let mut menu = menu;
+                        if matches!(status_for_menu, TransferStatus::Active) {
+                            menu = menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.pause")).on_click(
+                                move |_ev, _window, cx| {
+                                    let _ = panel_pause.update(cx, |panel, cx| {
+                                        panel.pause_transfer(transfer_id, cx)
+                                    });
+                                },
+                            ));
+                        }
+                        if matches!(status_for_menu, TransferStatus::Paused) {
+                            menu = menu.item(PopupMenuItem::new(rust_i18n::t!("Sftp.resume")).on_click(
+                                move |_ev, _window, cx| {
+                                    let _ = panel_resume.update(cx, |panel, cx| {
+                                        panel.resume_transfer(transfer_id, cx)
+                                    });
+                                },
+                            ));
+                        }
+                        menu.item(
+                            PopupMenuItem::new(rust_i18n::t!("Sftp.cancel_transfer_tooltip")).on_click(
+                                move |_ev, _window, cx| {
+                                    let _ = panel_cancel.update(cx, |panel, _cx| {
+                                        panel.cancel_transfer(transfer_id)
+                                    });
+                                },
+                            ),
+                        )
+                    })
+                    .into_any_element()
                 } else {
+                    // Unreachable today (is_finished/is_running are
+                    // exhaustive over every TransferStatus variant) — kept
+                    // as a defensive fallback rather than a `match` that
+                    // would panic if a future variant is added and this
+                    // grouping isn't updated to match.
                     row.into_any_element()
                 }
             });
