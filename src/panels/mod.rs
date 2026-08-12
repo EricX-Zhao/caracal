@@ -4,6 +4,7 @@
 //! logic lives here (CLAUDE.md §1).
 
 pub mod activity_bar;
+pub mod command_history_panel;
 pub mod header;
 pub mod icons;
 pub mod keybindings;
