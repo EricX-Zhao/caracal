@@ -856,6 +856,34 @@ impl TerminalView {
             }
         }
 
+        if self.suggestions_enabled && !self.suggestions.is_empty() {
+            let key = ev.keystroke.key.as_str();
+            match key {
+                "up" => {
+                    self.move_suggestion_selection(false);
+                    cx.notify();
+                    return;
+                }
+                "down" => {
+                    self.move_suggestion_selection(true);
+                    cx.notify();
+                    return;
+                }
+                "escape" => {
+                    self.suggestions.clear();
+                    self.selected_index = None;
+                    cx.notify();
+                    return;
+                }
+                "tab" | "enter" if self.selected_index.is_some() => {
+                    self.accept_selected_suggestion();
+                    cx.notify();
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         if self.suggestions_enabled {
             let key = ev.keystroke.key.as_str();
             if key == "enter" {
@@ -918,6 +946,42 @@ impl TerminalView {
         self.term
             .lock()
             .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
+    /// Moves `selected_index` through `suggestions` — `None` -> index 0
+    /// regardless of direction (first press always lands on the top
+    /// suggestion), then wraps in the given direction. No-op if there are
+    /// no suggestions to select.
+    fn move_suggestion_selection(&mut self, down: bool) {
+        if self.suggestions.is_empty() {
+            return;
+        }
+        let len = self.suggestions.len();
+        self.selected_index = Some(match self.selected_index {
+            None => 0,
+            Some(i) if down => (i + 1) % len,
+            Some(i) => (i + len - 1) % len,
+        });
+    }
+
+    /// Fills `input_buffer`/the input line with the currently-selected
+    /// suggestion by sending only the unmatched suffix — `input_buffer`
+    /// is always a prefix of every entry in `suggestions` by construction
+    /// (`matching_suggestions` only returns prefix matches), so no
+    /// backspacing is ever needed to correct what's already typed. Does
+    /// **not** send Enter — accepting only fills the line (see the design
+    /// spec's "Accepting a suggestion" decision).
+    fn accept_selected_suggestion(&mut self) {
+        let Some(idx) = self.selected_index else { return };
+        let Some(full) = self.suggestions.get(idx).cloned() else { return };
+        if let Some(suffix) = full.strip_prefix(&self.input_buffer) {
+            if !suffix.is_empty() {
+                self.send_input(suffix.as_bytes());
+            }
+        }
+        self.input_buffer = full;
+        self.suggestions.clear();
+        self.selected_index = None;
     }
 
     // --- Keys reclaimed from gpui-component's Root bindings (see `main`). ---
