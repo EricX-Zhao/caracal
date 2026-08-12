@@ -14,6 +14,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod assets;
+mod command_history;
 mod config;
 mod crypto;
 mod keyring_store;
