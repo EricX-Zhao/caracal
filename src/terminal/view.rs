@@ -207,6 +207,14 @@ pub struct TerminalView {
     /// (`conn_banner_text`). Empty for non-SSH backends, which never show
     /// a banner (`remote_reconnect` gates that).
     host_label: String,
+    /// Stable key identifying which connection this tab's command history
+    /// belongs to — SSH reuses `SshConfig::key()` (`user@host:port`);
+    /// Local is the fixed string `"local"` (one shared bucket); Telnet is
+    /// `"telnet://{host}:{port}"`; Serial is `"serial://{port_name}"`. Set
+    /// once at construction, never changes for this tab's lifetime
+    /// (including across a `reconnect_with` reconnect — it's still the
+    /// same connection). See the design spec's "Component structure".
+    history_key: String,
     /// `Some` while a non-live state (connecting or dead) should be shown
     /// as a full-terminal overlay; `None` means the backend is live. Only
     /// ever `Some` when `remote_reconnect` is true. Set by
@@ -245,6 +253,7 @@ impl TerminalView {
             false,
             String::new(),
             title,
+            "local".to_string(),
             |cols, rows, bytes_tx| {
                 Arc::new(LocalPty::spawn(cols, rows, bytes_tx).expect("failed to spawn local pty"))
             },
@@ -267,6 +276,7 @@ impl TerminalView {
             false,
             String::new(),
             title,
+            "local".to_string(),
             move |cols, rows, bytes_tx| {
                 Arc::new(
                     LocalPty::spawn_with(cols, rows, bytes_tx, &shell, working_dir)
@@ -289,6 +299,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
         session: Arc<SshSession>,
         host_label: String,
+        history_key: String,
         title: String,
     ) -> Self {
         Self::with_backend(
@@ -297,6 +308,7 @@ impl TerminalView {
             true,
             host_label,
             title,
+            history_key,
             move |cols, rows, bytes_tx| session.open_shell(cols, rows, bytes_tx),
         )
     }
@@ -315,6 +327,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
         host_label: String,
+        history_key: String,
         title: String,
     ) -> Self {
         let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
@@ -329,6 +342,7 @@ impl TerminalView {
             host_label,
             Some(ConnBanner::Connecting),
             title,
+            history_key,
         )
     }
 
@@ -337,12 +351,14 @@ impl TerminalView {
     /// second channel to justify a shared connection.
     pub fn new_telnet(window: &mut Window, cx: &mut Context<Self>, config: TelnetConfig) -> Self {
         let title = format!("{}:{}", config.host, config.port);
+        let history_key = format!("telnet://{}:{}", config.host, config.port);
         Self::with_backend(
             window,
             cx,
             false,
             String::new(),
             title,
+            history_key,
             move |_cols, _rows, bytes_tx| match TelnetBackend::connect(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
@@ -357,12 +373,14 @@ impl TerminalView {
     /// A terminal backed by a serial port (`SerialBackend`).
     pub fn new_serial(window: &mut Window, cx: &mut Context<Self>, config: SerialConfig) -> Self {
         let title = config.port.clone();
+        let history_key = format!("serial://{}", config.port);
         Self::with_backend(
             window,
             cx,
             false,
             String::new(),
             title,
+            history_key,
             move |_cols, _rows, bytes_tx| match SerialBackend::open(config, bytes_tx.clone()) {
                 Ok(backend) => Arc::new(backend),
                 Err(e) => {
@@ -449,6 +467,7 @@ impl TerminalView {
         host_label: String,
         banner: Option<ConnBanner>,
         title: String,
+        history_key: String,
     ) -> Self {
         Self {
             term,
@@ -467,6 +486,7 @@ impl TerminalView {
             selection_dragging: None,
             remote_reconnect,
             host_label,
+            history_key,
             banner,
             _drain_task: drain_task,
             _disconnect_watch: disconnect_watch,
@@ -483,6 +503,7 @@ impl TerminalView {
         remote_reconnect: bool,
         host_label: String,
         title: String,
+        history_key: String,
         make_backend: impl FnOnce(u16, u16, flume::Sender<Vec<u8>>) -> Arc<dyn PtyBackend>,
     ) -> Self {
         let (focus_handle, term, events_tx, drain_task) = Self::base_setup(window, cx);
@@ -507,6 +528,7 @@ impl TerminalView {
             host_label,
             None,
             title,
+            history_key,
         )
     }
 

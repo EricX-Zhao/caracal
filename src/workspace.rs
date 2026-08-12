@@ -757,11 +757,11 @@ impl Workspace {
 
         let terminal = if let Some(session) = self.ssh_sessions.get(&key).cloned() {
             cx.new(|cx| {
-                TerminalView::new_ssh_shell(window, cx, session, host_label.clone(), title.clone())
+                TerminalView::new_ssh_shell(window, cx, session, host_label.clone(), key.clone(), title.clone())
             })
         } else {
             cx.new(|cx| {
-                TerminalView::new_ssh_connecting(window, cx, host_label.clone(), title.clone())
+                TerminalView::new_ssh_connecting(window, cx, host_label.clone(), key.clone(), title.clone())
             })
         };
         Self::seed_font_from_settings(&terminal, cx);
