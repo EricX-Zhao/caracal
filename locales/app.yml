@@ -750,6 +750,21 @@ Sftp:
   cancel_transfer_tooltip:
     zh-CN: "取消传输"
     en: "Cancel Transfer"
+  transfer_paused:
+    zh-CN: "已暂停"
+    en: "Paused"
+  pause:
+    zh-CN: "暂停"
+    en: "Pause"
+  resume:
+    zh-CN: "继续"
+    en: "Resume"
+  remove_transfer:
+    zh-CN: "删除"
+    en: "Delete"
+  delete_local_file:
+    zh-CN: "删除本地文件"
+    en: "Delete Local File"
   download_to_prefix:
     zh-CN: "下载到:"
     en: "Download to:"
