@@ -1409,13 +1409,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Detach the History slot from any connection so it resolves to the
-    /// "no terminal focused" placeholder. Mirrors `show_monitor_placeholder`.
-    fn show_history_placeholder(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.active_history = None;
-        cx.notify();
-    }
-
     fn add_center(
         &mut self,
         panel: Arc<dyn gpui_component::dock::PanelView>,
