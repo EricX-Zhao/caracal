@@ -72,7 +72,6 @@ struct Transfer {
     total: u64,
     transferred: u64,
     status: TransferStatus,
-    #[allow(dead_code)]
     started_at: Instant,
     /// The local-disk path of this transfer (download destination or upload
     /// source) — powers the completed-transfer context menu's "open
@@ -95,6 +94,20 @@ impl Transfer {
         } else {
             (self.transferred as f32 / self.total as f32).clamp(0.0, 1.0)
         }
+    }
+
+    /// Average transfer rate since the transfer started, in bytes/sec.
+    /// Averaged over the whole elapsed duration (not a rolling window) —
+    /// simple, needs no extra tracked state, and re-derives itself from
+    /// `transferred`/`started_at` on every render as new progress events
+    /// arrive, so it stays live without a separate poll loop. `elapsed` is
+    /// floored at 50ms so a transfer whose first render already has a
+    /// large `transferred` (a fast local disk, or a big first chunk
+    /// arriving before much wall-clock time has passed) doesn't produce a
+    /// spuriously huge rate from dividing by a near-zero duration.
+    fn speed_bytes_per_sec(&self) -> f64 {
+        let elapsed = self.started_at.elapsed().as_secs_f64().max(0.05);
+        self.transferred as f64 / elapsed
     }
 }
 
@@ -1931,9 +1944,10 @@ impl SftpPanel {
                 let status_text = match &t.status {
                     TransferStatus::Queued => rust_i18n::t!("Sftp.transfer_queued").to_string(),
                     TransferStatus::Active => format!(
-                        "{} / {}",
+                        "{} / {} · {}",
                         human_size(t.transferred),
-                        human_size(t.total)
+                        human_size(t.total),
+                        human_speed(t.speed_bytes_per_sec())
                     ),
                     TransferStatus::Done => {
                         rust_i18n::t!("Sftp.transfer_done", size = human_size(t.transferred)).to_string()
@@ -1974,6 +1988,17 @@ impl SftpPanel {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
+                        // Name gets its own full-width row (rather than
+                        // sharing one with the status text) so a long
+                        // filename's `.text_ellipsis()` truncates against
+                        // the row's own width instead of squeezing the
+                        // status text — `min_w(px(0.0))` is required
+                        // alongside `flex_1()` for that truncation to
+                        // engage at all: a flex item's default min-width is
+                        // its content size, which silently defeats
+                        // `overflow_hidden`/`text_ellipsis` without it
+                        // (same gotcha already hit and fixed for vertical
+                        // scroll regions elsewhere in this codebase).
                         div()
                             .flex()
                             .flex_row()
@@ -1988,17 +2013,12 @@ impl SftpPanel {
                             .child(
                                 div()
                                     .flex_1()
+                                    .min_w(px(0.0))
                                     .overflow_hidden()
                                     .text_ellipsis()
                                     .text_xs()
                                     .text_color(cx.theme().foreground)
                                     .child(SharedString::from(t.name.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(SharedString::from(status_text)),
                             )
                             .when(is_running, |d| {
                                 d.child(
@@ -2014,6 +2034,15 @@ impl SftpPanel {
                                         )),
                                 )
                             }),
+                    )
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(SharedString::from(status_text)),
                     )
                     .child(
                         div()
@@ -2208,6 +2237,12 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+/// `1258291.2` -> `"1.2M/s"` — reuses `human_size`'s unit ladder so a
+/// transfer's speed reads in the same units as its size.
+fn human_speed(bytes_per_sec: f64) -> String {
+    format!("{}/s", human_size(bytes_per_sec.max(0.0) as u64))
+}
+
 fn human_perms(perms: u32) -> String {
     let p = perms & 0o777;
     let rwx = |bits: u32| -> String {
@@ -2265,6 +2300,7 @@ fn human_mtime(mtime: u32) -> String {
 #[cfg(test)]
 mod transfer_progress_tests {
     use super::*;
+    use std::time::Duration;
 
     fn transfer_with(status: TransferStatus, total: u64, transferred: u64) -> Transfer {
         Transfer {
@@ -2277,6 +2313,31 @@ mod transfer_progress_tests {
             started_at: Instant::now(),
             local_path: PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn speed_bytes_per_sec_computes_average_rate_since_start() {
+        let mut t = transfer_with(TransferStatus::Active, 1_000_000, 500_000);
+        t.started_at = Instant::now() - Duration::from_secs(2);
+        let speed = t.speed_bytes_per_sec();
+        // ~250,000 B/s (500,000 bytes / 2s) — a small tolerance absorbs the
+        // real wall-clock time this test itself takes to run.
+        assert!((speed - 250_000.0).abs() < 5_000.0, "expected ~250000 B/s, got {speed}");
+    }
+
+    #[test]
+    fn speed_bytes_per_sec_floors_elapsed_to_avoid_a_spike_at_transfer_start() {
+        // `started_at` defaults to "now" — elapsed is near-zero, so without
+        // the 50ms floor this would report an absurd multi-GB/s rate.
+        let t = transfer_with(TransferStatus::Active, 1_000_000, 100_000);
+        let speed = t.speed_bytes_per_sec();
+        assert!(speed <= 100_000.0 / 0.05, "expected a floored rate, got {speed}");
+    }
+
+    #[test]
+    fn human_speed_appends_per_second_suffix() {
+        assert_eq!(human_speed(0.0), "0B/s");
+        assert_eq!(human_speed(1_258_291.2), "1.2M/s");
     }
 
     #[test]
