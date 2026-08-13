@@ -1164,12 +1164,14 @@ impl SftpPanel {
     /// backend to resume I/O on that transfer id.
     fn resume_transfer(&mut self, id: u64, cx: &mut Context<Self>) {
         if let Some(t) = self.transfers.iter_mut().find(|t| t.id == id) {
-            if let Some(since) = t.paused_since.take() {
-                t.paused_duration += since.elapsed();
+            if matches!(t.status, TransferStatus::Paused) {
+                if let Some(since) = t.paused_since.take() {
+                    t.paused_duration += since.elapsed();
+                }
+                t.status = TransferStatus::Active;
+                self.session.sftp_resume(id);
+                cx.notify();
             }
-            t.status = TransferStatus::Active;
-            self.session.sftp_resume(id);
-            cx.notify();
         }
     }
 
@@ -1177,8 +1179,10 @@ impl SftpPanel {
     /// file — pure list bookkeeping, no confirmation (matches
     /// `clear_completed_transfers`'s existing no-confirm convention).
     fn remove_transfer(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.transfers.retain(|t| t.id != id);
-        cx.notify();
+        if let Some(ix) = self.transfers.iter().position(|t| t.id == id) {
+            self.transfers.remove(ix);
+            cx.notify();
+        }
     }
 
     /// Drops every transfer whose status is terminal (`Done`,
@@ -1258,7 +1262,9 @@ impl SftpPanel {
                         let _ = std::fs::remove_file(&local_path);
                     }
                     let _ = weak_panel.update(cx, |this, cx| {
-                        this.transfers.retain(|t| t.id != id);
+                        if let Some(ix) = this.transfers.iter().position(|t| t.id == id) {
+                            this.transfers.remove(ix);
+                        }
                         cx.notify();
                     });
                     true

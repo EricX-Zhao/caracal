@@ -1411,6 +1411,8 @@ async fn walk_local_dir(
 /// `sftp_download_streaming`, this never emits `Progress` events itself —
 /// the caller (`run_download_dir`) reports progress once per completed
 /// file, using a running total across the whole directory, not per-chunk.
+/// Honors `cancel` and `paused` via `wait_while_paused`, checked both
+/// before opening any file handle and once per chunk.
 async fn download_one_file(
     sftp: &SftpSession,
     remote: &str,
@@ -1458,7 +1460,8 @@ async fn download_one_file(
 }
 
 /// Upload a single file within a directory job. Mirrors `download_one_file`
-/// — no intermediate `Progress` events, just a final byte count.
+/// — no intermediate `Progress` events, just a final byte count. Same
+/// `cancel`/`paused` handling via `wait_while_paused`.
 async fn upload_one_file(
     sftp: &SftpSession,
     local: &PathBuf,
@@ -1622,7 +1625,9 @@ enum StreamingOutcome {
 /// writes each chunk to a local `tokio::fs::File`. Emits a `Progress` event
 /// every `PROGRESS_INTERVAL` bytes (clamped so we never spam events on tiny
 /// writes). If `cancel` is observed set during the loop, returns
-/// `StreamingOutcome::Cancelled`.
+/// `StreamingOutcome::Cancelled`. If `paused` is set, blocks via
+/// `wait_while_paused` (still watching `cancel`) without closing either
+/// file handle, both before opening them and once per chunk.
 async fn sftp_download_streaming(
     sftp: &SftpSession,
     remote: &str,
@@ -1677,7 +1682,8 @@ async fn sftp_download_streaming(
 
 /// Streaming upload. Reads the local file in 32 KiB chunks and writes them
 /// to the remote SFTP file (created with `CREATE | WRITE | TRUNCATE`).
-/// Progress event cadence matches `sftp_download_streaming`.
+/// Progress event cadence matches `sftp_download_streaming`. Same
+/// `cancel`/`paused` handling.
 async fn sftp_upload_streaming(
     sftp: &SftpSession,
     local: &PathBuf,
