@@ -166,8 +166,8 @@ impl FileTableDelegate {
             entries: Vec::new(),
             columns: vec![
                 Column::new("name", rust_i18n::t!("Sftp.col_name")).width(px(220.)).sortable(),
-                Column::new("mtime", rust_i18n::t!("Sftp.col_mtime")).width(px(110.)),
                 Column::new("size", rust_i18n::t!("Sftp.col_size")).width(px(64.)).sortable().text_right(),
+                Column::new("mtime", rust_i18n::t!("Sftp.col_mtime")).width(px(110.)),
                 Column::new("perms", rust_i18n::t!("Sftp.col_perms")).width(px(72.)),
             ],
             panel,
@@ -1836,7 +1836,18 @@ impl SftpPanel {
             .flex_1()
             .min_w(px(0.0))
             .min_h(px(0.0))
-            .child(DataTable::new(&self.table_state))
+            // Horizontal scrollbar disabled: gpui-component's DataTable draws
+            // it as an `.absolute()` overlay pinned to the table's bottom
+            // edge (not a layout participant that reserves its own space),
+            // so whenever the 4 columns' total width exceeds a narrow SFTP
+            // panel, the bar paints on top of the last visible row instead
+            // of beside it. The Name column already ellipsis-truncates
+            // (min_w(0)+overflow_hidden+text_ellipsis in `render_td`) and
+            // the other three columns are short, fixed-width fields, so
+            // losing horizontal scroll costs little — widening the panel
+            // (or the resizable Name column) is still how you'd recover a
+            // truly clipped value.
+            .child(DataTable::new(&self.table_state).scrollbar_visible(true, false))
     }
 
     /// Wire up table event handlers (double-click to enter/download). Called
