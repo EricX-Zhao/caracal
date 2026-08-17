@@ -60,6 +60,18 @@ fn map_flow_control(s: &str) -> serialport::FlowControl {
     }
 }
 
+/// The reader thread's blocking-read timeout — also the upper bound on how
+/// long after a tab closes the previous generation's reader thread can still
+/// be sitting inside `read()` before it notices `shutdown` and exits (see
+/// `SerialBackend::shutdown`'s doc comment). Kept short so that window is
+/// short too.
+const READ_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// How many times `open` retries a `NoDevice` failure, and how long it waits
+/// between attempts — see the retry loop in `open` for why.
+const REOPEN_RETRY_ATTEMPTS: u32 = 3;
+const REOPEN_RETRY_DELAY: Duration = READ_TIMEOUT;
+
 /// Detected ports for the new-connection form's picker. Never errors (an
 /// empty `Vec` on detection failure just means the form's list stays empty
 /// and the user falls back to typing the path manually).
@@ -87,19 +99,44 @@ impl SerialBackend {
     /// `SshSession::connect`'s synchronous-connect contract.
     pub fn open(config: SerialConfig, bytes_tx: flume::Sender<Vec<u8>>) -> Result<Self> {
         let port_for_error = config.port.clone();
-        let port = serialport::new(&config.port, config.baud_rate)
-            .data_bits(map_data_bits(config.data_bits))
-            .parity(map_parity(&config.parity))
-            .stop_bits(map_stop_bits(config.stop_bits))
-            .flow_control(map_flow_control(&config.flow_control))
-            // A finite read timeout, not a truly blocking read: the reader
-            // loop below treats a timeout as "no data yet" and keeps
-            // polling, so the thread also notices promptly when the write
-            // channel closes (tab closed) instead of blocking forever on a
-            // port that never sends anything.
-            .timeout(Duration::from_millis(200))
-            .open()
-            .map_err(|e| anyhow!("open serial port {port_for_error:?}: {e}"))?;
+        let mut attempt = 0;
+        let port = loop {
+            let result = serialport::new(&config.port, config.baud_rate)
+                .data_bits(map_data_bits(config.data_bits))
+                .parity(map_parity(&config.parity))
+                .stop_bits(map_stop_bits(config.stop_bits))
+                .flow_control(map_flow_control(&config.flow_control))
+                // A finite read timeout, not a truly blocking read: the reader
+                // loop below treats a timeout as "no data yet" and keeps
+                // polling, so the thread also notices promptly when the write
+                // channel closes (tab closed) instead of blocking forever on a
+                // port that never sends anything.
+                .timeout(READ_TIMEOUT)
+                .open();
+            match result {
+                Ok(port) => break port,
+                // On Unix, `serialport` opens exclusively (TIOCEXCL + flock);
+                // an `EBUSY`/`EWOULDBLOCK` from that surfaces here as
+                // `NoDevice`. The dominant real-world cause of that — a
+                // previous tab's `SerialBackend` for this same port not yet
+                // released — is now fixed at the source (see
+                // docs/superpowers/specs/2026-08-17-serial-reopen-busy-design.md);
+                // this retry stays as a defensive net for the remaining,
+                // genuinely time-bounded case: this backend's *own* reader
+                // thread hasn't looped back to notice `shutdown` and drop
+                // its cloned handle yet (up to `READ_TIMEOUT`), plus
+                // whatever similar latency other software (udev,
+                // ModemManager, …) might add outside our control.
+                Err(e)
+                    if e.kind() == serialport::ErrorKind::NoDevice
+                        && attempt < REOPEN_RETRY_ATTEMPTS =>
+                {
+                    attempt += 1;
+                    std::thread::sleep(REOPEN_RETRY_DELAY);
+                }
+                Err(e) => return Err(anyhow!("open serial port {port_for_error:?}: {e}")),
+            }
+        };
 
         let mut reader = port
             .try_clone()

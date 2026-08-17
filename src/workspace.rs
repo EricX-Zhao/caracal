@@ -632,10 +632,10 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
-            this.unregister_tab_panel(panel, cx);
+            this.unregister_tab_panel(panel, window, cx);
         });
         self._subscriptions.push(tab_count_sub);
         self.register_tab_panel(panel.clone(), cx);
@@ -717,9 +717,19 @@ impl Workspace {
 
     /// Remove `panel` from the open-tab list (by entity identity) and
     /// recompute every remaining tab's displayed sequence number.
-    fn unregister_tab_panel(&mut self, panel: &Entity<TerminalPanel>, cx: &mut Context<Self>) {
+    fn unregister_tab_panel(&mut self, panel: &Entity<TerminalPanel>, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_panels.retain(|p| p.entity_id() != panel.entity_id());
         self.renumber_tabs(cx);
+        // `prune_stale_center` (see its doc comment) also releases whatever
+        // `Arc<dyn PanelView>` the just-closed panel is still pinned in via
+        // `DockArea.center`'s stale `DockItem::Tabs` entry — which, for a
+        // backend with an OS-level exclusive resource (e.g.
+        // `SerialBackend`'s serial-port lock), otherwise keeps that
+        // resource held until the *next* tab is opened. Running the prune
+        // right here, eagerly on close, releases it immediately instead of
+        // leaking it for one extra open/close cycle — see
+        // docs/superpowers/specs/2026-08-17-serial-reopen-busy-design.md.
+        self.prune_stale_center(window, cx);
     }
 
     /// Set every open tab's displayed `"N-"` prefix to its 1-indexed
@@ -846,7 +856,7 @@ impl Workspace {
             this.tab_count = this.tab_count.saturating_sub(1);
             this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
             this.release_ssh_tab_number(&closed_key, tab_number);
-            this.unregister_tab_panel(panel, cx);
+            this.unregister_tab_panel(panel, window, cx);
         });
         self._subscriptions.push(closed_sub);
         self.register_tab_panel(panel.clone(), cx);
@@ -1050,10 +1060,10 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
-            this.unregister_tab_panel(panel, cx);
+            this.unregister_tab_panel(panel, window, cx);
         });
         self._subscriptions.push(tab_count_sub);
         self.register_tab_panel(panel.clone(), cx);
@@ -1085,10 +1095,10 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, _window, cx| {
+        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
             let TerminalPanelEvent::Closed = event;
             this.tab_count = this.tab_count.saturating_sub(1);
-            this.unregister_tab_panel(panel, cx);
+            this.unregister_tab_panel(panel, window, cx);
         });
         self._subscriptions.push(tab_count_sub);
         self.register_tab_panel(panel.clone(), cx);
@@ -1420,29 +1430,58 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.tab_count += 1;
+        // Belt-and-suspenders: `unregister_tab_panel` already prunes a stale
+        // center eagerly on every tab close (see its doc comment), so this
+        // should normally be a no-op by the time we get here. Kept as a
+        // defensive fallback for any future close path that doesn't route
+        // through `unregister_tab_panel`.
+        self.prune_stale_center(window, cx);
         self.dock_area.update(cx, |dock_area, cx| {
-            // When the Center dock's tab group empties out (every terminal
-            // tab closed), its `TabPanel` detaches itself from the live
-            // `StackPanel` (`TabPanel::remove_self_if_empty` in
-            // gpui-component), but nothing prunes the matching entry from
-            // `DockArea.center`'s separate `DockItem::Split.items` tree —
-            // that tree is only ever appended to, never pruned on removal.
-            // Left alone, `add_panel` below would find that stale, now
-            // invisible `Tabs` entry and silently repopulate it instead of
-            // creating a new, visible tab group: the "double-click a saved
-            // connection does nothing after closing every tab" bug. Rebuild
-            // a fresh, empty center whenever we detect this.
+            dock_area.add_panel(panel, DockPlacement::Center, None, window, cx);
+        });
+    }
+
+    /// When the Center dock's (currently only ever one) tab group empties
+    /// out — every terminal tab closed — its `TabPanel` detaches itself from
+    /// the live `StackPanel` (`TabPanel::remove_self_if_empty` in
+    /// gpui-component), but nothing prunes the matching entry from
+    /// `DockArea.center`'s separate `DockItem::Split.items` tree: that tree
+    /// (and its `DockItem::Tabs::items: Vec<Arc<dyn PanelView>>`) is a cached
+    /// snapshot gpui-component only ever appends to, never prunes on
+    /// removal — see `DockItem` in gpui-component's `dock/mod.rs`. Left
+    /// alone, this is two separate bugs bundled in one stale reference:
+    ///
+    /// - A cosmetic one: `add_panel` would find that stale, now-invisible
+    ///   `Tabs` entry and silently repopulate it instead of creating a new,
+    ///   visible tab group (the "double-click a saved connection does
+    ///   nothing after closing every tab" bug).
+    /// - A resource leak: the stale `Tabs.items` entry is a genuine strong
+    ///   `Arc<dyn PanelView>` reference to the just-closed `TerminalPanel` —
+    ///   which keeps its `TerminalView`, and hence its backend
+    ///   (`Arc<dyn PtyBackend>`), alive until *this* runs. For a backend
+    ///   holding an OS-level exclusive resource (`SerialBackend`'s serial
+    ///   port, opened with `TIOCEXCL`/`flock` — see `serial.rs`), that meant
+    ///   the closed tab's port stayed locked, and reopening it immediately
+    ///   failed with "device busy" — not a timing race, a strict leak that
+    ///   only cleared on the *next* tab open. See
+    ///   docs/superpowers/specs/2026-08-17-serial-reopen-busy-design.md.
+    ///
+    /// Called both eagerly on every tab close (`unregister_tab_panel`, the
+    /// real fix) and defensively here in `add_center` (the original,
+    /// lazier-than-necessary fix for the cosmetic half of this bug).
+    fn prune_stale_center(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dock_area.update(cx, |dock_area, cx| {
             if Self::center_tab_group_is_stale(dock_area, cx) {
                 let weak = cx.entity().downgrade();
                 let fresh_center = DockItem::split(Axis::Horizontal, vec![], &weak, window, cx);
                 dock_area.set_center(fresh_center, window, cx);
             }
-            dock_area.add_panel(panel, DockPlacement::Center, None, window, cx);
         });
     }
 
     /// True if the Center dock's tab group exists but is empty — see
-    /// `add_center`'s doc comment for why this needs special handling.
+    /// `prune_stale_center`'s doc comment for why this needs special
+    /// handling.
     fn center_tab_group_is_stale(dock_area: &DockArea, cx: &App) -> bool {
         match dock_area.center() {
             DockItem::Split { items, .. } => items.iter().any(|item| {
