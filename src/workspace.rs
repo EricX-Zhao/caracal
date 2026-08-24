@@ -1876,11 +1876,13 @@ impl Workspace {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_1()
-                .px_1()
-                .py_1()
+                .gap_0()
+                .px_0()
                 .w_full()
                 .flex_shrink_0()
+                .bg(cx.theme().tab_bar)
+                .border_b_1()
+                .border_color(border)
                 .overflow_x_scroll();
             for (ix, panel) in self.tab_panels.iter().enumerate() {
                 let is_active = self.active_tab == Some(ix);
@@ -1934,7 +1936,10 @@ impl Workspace {
                         div()
                             .id(("close-center-tab", ix))
                             .rounded_sm()
-                            .hover(|s| s.bg(cx.theme().danger))
+                            .hover(|s| {
+                                s.bg(cx.theme().danger)
+                                    .text_color(cx.theme().danger_foreground)
+                            })
                             .child(crate::panels::icons::icon(crate::panels::icons::AppIcon::Delete))
                             .on_click(cx.listener(move |this, _ev, window, cx| {
                                 cx.stop_propagation();

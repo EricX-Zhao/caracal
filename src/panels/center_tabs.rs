@@ -2,8 +2,10 @@
 //! `Workspace` is the only strong owner of `TerminalPanel`s; this module
 //! does not hold entities.
 
-use gpui::{Div, InteractiveElement, ParentElement, Stateful, Styled, div};
-use gpui_component::ActiveTheme;
+use gpui::{
+    Div, InteractiveElement, ParentElement, Stateful, Styled, div, prelude::FluentBuilder, px,
+};
+use gpui_component::{ActiveTheme, StyledExt};
 
 /// After closing the tab at `closed` in a list of `len` tabs whose current
 /// active index is `active`, the new active index — or `None` if the list
@@ -51,11 +53,14 @@ impl gpui::Render for DragTab {
         cx: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
         gpui::div()
-            .px_2()
+            .px_3()
             .py_1()
-            .rounded_md()
-            .bg(cx.theme().accent)
+            .bg(cx.theme().tab_active)
+            .text_color(cx.theme().tab_active_foreground)
             .text_sm()
+            .font_semibold()
+            .border_r_1()
+            .border_color(cx.theme().border)
             .child(format!("{}", self.ix + 1))
     }
 }
@@ -73,23 +78,40 @@ pub fn render_tab_chip(
     is_active: bool,
     cx: &mut gpui::Context<crate::workspace::Workspace>,
 ) -> Stateful<Div> {
-    let bg = if is_active {
-        cx.theme().list_active
+    let fg = if is_active {
+        cx.theme().tab_active_foreground
     } else {
-        gpui::transparent_black()
+        cx.theme().muted_foreground
     };
     div()
         .id(("center-tab", ix))
+        .relative()
         .flex()
         .flex_row()
         .items_center()
         .gap_1()
-        .px_2()
+        .px_3()
         .py_1()
-        .rounded_md()
-        .bg(bg)
         .text_sm()
-        .hover(|s| s.bg(cx.theme().list_hover))
+        .text_color(fg)
+        .border_r_1()
+        .border_color(cx.theme().border)
+        .when(is_active, |d| {
+            d.bg(cx.theme().tab_active)
+                .font_semibold()
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(2.0))
+                        .bg(cx.theme().primary),
+                )
+        })
+        .when(!is_active, |d| {
+            d.hover(|s| s.bg(cx.theme().list_hover).text_color(cx.theme().foreground))
+        })
         .child(div().child(label))
 }
 
