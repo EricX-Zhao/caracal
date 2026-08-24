@@ -29,15 +29,25 @@ pub fn side_region_content(view: AnyView, border: Hsla, left_side: bool) -> AnyE
         .flex()
         .flex_col()
         .size_full()
+        .min_w(px(0.0))
         .min_h(px(0.0))
+        .overflow_hidden()
         .when(left_side, |d| d.border_r_1().border_color(border))
         .when(!left_side, |d| d.border_l_1().border_color(border))
         .child(
             div()
                 .relative()
                 .flex_1()
+                .min_w(px(0.0))
                 .min_h(px(0.0))
-                .child(div().absolute().size_full().child(view)),
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .overflow_hidden()
+                        .child(view),
+                ),
         )
         .into_any_element()
 }

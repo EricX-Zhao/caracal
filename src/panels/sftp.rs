@@ -1540,6 +1540,8 @@ impl Render for SftpPanel {
             .flex()
             .flex_col()
             .size_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .on_mouse_move(cx.listener(Self::on_transfer_pane_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::stop_transfer_pane_resize))
             .child(top_pane)
@@ -1668,83 +1670,101 @@ impl SftpPanel {
             .gap_1()
             .px_2()
             .py_1()
+            .w_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .border_b_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
-                Button::new("sftp-new-file")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::NewFile))
-                    .tooltip(rust_i18n::t!("Sftp.new_file_tooltip"))
-                    .on_click(cx.listener(|this, _, window, cx| this.new_file(window, cx))),
+                // Leading actions live in a clipping cluster. The old
+                // `.flex_1()` spacer collapsed to zero when the sidebar
+                // was narrower than the icon row; the buttons themselves
+                // do not shrink, so the trailing eye painted past the
+                // resize handle into the terminal.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .child(
+                        Button::new("sftp-new-file")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::NewFile))
+                            .tooltip(rust_i18n::t!("Sftp.new_file_tooltip"))
+                            .on_click(cx.listener(|this, _, window, cx| this.new_file(window, cx))),
+                    )
+                    .child(
+                        Button::new("sftp-new-folder")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::NewFolder))
+                            .tooltip(rust_i18n::t!("Sftp.new_folder_tooltip"))
+                            .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
+                    )
+                    .child(
+                        Button::new("sftp-upload")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::Upload))
+                            .tooltip(rust_i18n::t!("Sftp.upload_tooltip"))
+                            .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
+                    )
+                    .child(
+                        Button::new("sftp-upload-dir")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::UploadFolder))
+                            .tooltip(rust_i18n::t!("Sftp.upload_folder_tooltip"))
+                            .on_click(cx.listener(|this, _, _w, cx| this.upload_dir(cx))),
+                    )
+                    .child(
+                        Button::new("sftp-download")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::Download))
+                            .tooltip(rust_i18n::t!("Sftp.download"))
+                            .disabled(!has_selection)
+                            .on_click(cx.listener(|this, _, window, cx| this.download_selected(window, cx))),
+                    )
+                    .child(
+                        div().w(px(1.)).h(px(20.)).bg(cx.theme().border),
+                    )
+                    .child(
+                        Button::new("sftp-delete")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::Delete))
+                            .tooltip(rust_i18n::t!("Sftp.delete"))
+                            .disabled(!has_selection)
+                            .on_click(cx.listener(|this, _, window, cx| this.delete_selected(window, cx))),
+                    )
+                    .child(
+                        Button::new("sftp-up")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::Up))
+                            .tooltip(rust_i18n::t!("Sftp.go_up_tooltip"))
+                            .on_click(cx.listener(|this, _, window, cx| this.go_up(window, cx))),
+                    )
+                    .child(
+                        Button::new("sftp-refresh")
+                            .xsmall()
+                            .ghost()
+                            .icon(icon(AppIcon::Refresh))
+                            .tooltip(rust_i18n::t!("Sftp.refresh_tooltip"))
+                            .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
+                    ),
             )
-            .child(
-                Button::new("sftp-new-folder")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::NewFolder))
-                    .tooltip(rust_i18n::t!("Sftp.new_folder_tooltip"))
-                    .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
-            )
-            .child(
-                Button::new("sftp-upload")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::Upload))
-                    .tooltip(rust_i18n::t!("Sftp.upload_tooltip"))
-                    .on_click(cx.listener(|this, _, _w, cx| this.upload(cx))),
-            )
-            .child(
-                Button::new("sftp-upload-dir")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::UploadFolder))
-                    .tooltip(rust_i18n::t!("Sftp.upload_folder_tooltip"))
-                    .on_click(cx.listener(|this, _, _w, cx| this.upload_dir(cx))),
-            )
-            .child(
-                Button::new("sftp-download")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::Download))
-                    .tooltip(rust_i18n::t!("Sftp.download"))
-                    .disabled(!has_selection)
-                    .on_click(cx.listener(|this, _, window, cx| this.download_selected(window, cx))),
-            )
-            .child(
-                div().w(px(1.)).h(px(20.)).bg(cx.theme().border),
-            )
-            .child(
-                Button::new("sftp-delete")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::Delete))
-                    .tooltip(rust_i18n::t!("Sftp.delete"))
-                    .disabled(!has_selection)
-                    .on_click(cx.listener(|this, _, window, cx| this.delete_selected(window, cx))),
-            )
-            .child(
-                Button::new("sftp-up")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::Up))
-                    .tooltip(rust_i18n::t!("Sftp.go_up_tooltip"))
-                    .on_click(cx.listener(|this, _, window, cx| this.go_up(window, cx))),
-            )
-            .child(
-                Button::new("sftp-refresh")
-                    .xsmall()
-                    .ghost()
-                    .icon(icon(AppIcon::Refresh))
-                    .tooltip(rust_i18n::t!("Sftp.refresh_tooltip"))
-                    .on_click(cx.listener(|this, _, _w, cx| this.refresh(cx))),
-            )
-            .child(div().flex_1())
             .child(
                 Button::new("sftp-toggle-hidden")
                     .xsmall()
                     .ghost()
+                    .flex_shrink_0()
                     .icon(if self.show_hidden { IconName::EyeOff } else { IconName::Eye })
                     .tooltip(if self.show_hidden {
                         rust_i18n::t!("Sftp.hide_dotfiles_tooltip")

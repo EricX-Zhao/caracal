@@ -1819,6 +1819,8 @@ impl Workspace {
                 .h_full()
                 .flex_shrink_0()
                 .w(self.left_width)
+                .min_w(px(0.0))
+                .overflow_hidden()
                 .child(side_region_content(view, border, true))
                 .into_any_element()
         } else {
@@ -1860,6 +1862,8 @@ impl Workspace {
                 .h_full()
                 .flex_shrink_0()
                 .w(self.right_width)
+                .min_w(px(0.0))
+                .overflow_hidden()
                 .child(side_region_content(view, border, false))
                 .into_any_element()
         } else {
