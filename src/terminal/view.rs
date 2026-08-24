@@ -133,6 +133,37 @@ fn system_monospace_family() -> SharedString {
     "monospace".into()
 }
 
+/// IME pre-edit overlay while the OS is composing (pinyin, hangul, etc.).
+/// Empty marked text is represented as `None` on the view, not an empty
+/// string — that matches how Zed's `TerminalView::ime_state` is cleared.
+#[derive(Clone, Debug, PartialEq)]
+struct ImeState {
+    marked_text: String,
+}
+
+impl ImeState {
+    fn from_marked_text(text: String) -> Option<Self> {
+        if text.is_empty() {
+            None
+        } else {
+            Some(Self { marked_text: text })
+        }
+    }
+
+    fn marked_text_range(&self) -> std::ops::Range<usize> {
+        0..self.marked_text.encode_utf16().count()
+    }
+}
+
+/// While IME is composing, printable keys (and Enter/Backspace/Escape) must
+/// not also go to the PTY — the OS will commit via `InputHandler`. Modifier
+/// chords (Ctrl-C, etc.) still pass through, matching Zed's terminal which
+/// keeps `prefers_ime_for_printable_keys` at the default `false` so raw
+/// control keys reach the process.
+fn swallow_key_during_ime(composing: bool, _key: &str, modifiers: &gpui::Modifiers) -> bool {
+    composing && !modifiers.control && !modifiers.alt && !modifiers.platform
+}
+
 /// Non-live state shown as a full-terminal banner overlay
 /// (`conn_banner_text`, `TerminalView::render`). Only ever set on a
 /// `remote_reconnect` (SSH) backend.
@@ -250,6 +281,9 @@ pub struct TerminalView {
     /// `mark_disconnected` / `mark_connect_failed` / `mark_connecting`
     /// (the latter two added in Task 3), cleared by `reconnect_with`.
     banner: Option<ConnBanner>,
+    /// Pre-edit string from the platform IME, painted as an underlined
+    /// overlay at the cursor. `None` when not composing.
+    ime_state: Option<ImeState>,
     _drain_task: Task<()>,
     /// Watches the current backend generation's byte stream for closure.
     /// Replaced (dropping — and so cancelling — the previous one) each time
@@ -535,6 +569,7 @@ impl TerminalView {
             suggestions: Vec::new(),
             selected_index: None,
             banner,
+            ime_state: None,
             _drain_task: drain_task,
             _disconnect_watch: disconnect_watch,
         }
@@ -843,6 +878,16 @@ impl TerminalView {
             }
             return;
         }
+        // IME is composing: the platform will commit via `InputHandler`.
+        // Don't also encode the underlying latin keys (or Enter/Backspace)
+        // into the PTY. Ctrl/Alt/Super chords still go through.
+        if swallow_key_during_ime(
+            self.ime_state.is_some(),
+            ev.keystroke.key.as_str(),
+            &ev.keystroke.modifiers,
+        ) {
+            return;
+        }
         // Copy shortcut: Ctrl+Shift+C → copy current selection to clipboard.
         // This is the XTerm / gnome-terminal convention; Ctrl+C alone
         // continues to mean SIGINT (Phase 2 behavior).
@@ -1026,6 +1071,57 @@ impl TerminalView {
         self.term
             .lock()
             .scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+    }
+
+    /// Whether the platform IME should be able to commit into this terminal.
+    /// Connecting/failed banners swallow keyboard input; IME must too.
+    pub(crate) fn accepts_ime(&self) -> bool {
+        self.banner.is_none()
+    }
+
+    pub(crate) fn ime_marked_text(&self) -> Option<&str> {
+        self.ime_state.as_ref().map(|s| s.marked_text.as_str())
+    }
+
+    pub(crate) fn marked_text_range(&self) -> Option<std::ops::Range<usize>> {
+        self.ime_state.as_ref().map(ImeState::marked_text_range)
+    }
+
+    /// Sets the marked (pre-edit) text from the IME. Empty text clears.
+    pub(crate) fn set_marked_text(&mut self, text: String, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return self.clear_marked_text(cx);
+        }
+        self.ime_state = ImeState::from_marked_text(text);
+        cx.notify();
+    }
+
+    pub(crate) fn clear_marked_text(&mut self, cx: &mut Context<Self>) {
+        if self.ime_state.is_some() {
+            self.ime_state = None;
+            cx.notify();
+        }
+    }
+
+    /// Commits composed text to the PTY. Called by `InputHandler::replace_text_in_range`.
+    pub(crate) fn commit_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.clear_marked_text(cx);
+        if text.is_empty() || self.banner.is_some() {
+            return;
+        }
+        let mode: TermMode = *self.term.lock().mode();
+        let alt_screen = mode.contains(TermMode::ALT_SCREEN);
+        let tracking_active = self.suggestions_enabled && !alt_screen;
+        if tracking_active && !self.tracking_desynced {
+            self.input_buffer.push_str(text);
+            self.suggestions = crate::command_history::matching_suggestions(
+                &self.history_cache,
+                &self.input_buffer,
+            );
+            self.selected_index = None;
+        }
+        self.send_input(text.as_bytes());
+        cx.notify();
     }
 
     /// Local input tracking can no longer be trusted to match the shell's
@@ -1576,5 +1672,35 @@ mod tests {
             )
             .to_string()
         );
+    }
+
+    #[test]
+    fn ime_from_marked_text_none_when_empty() {
+        assert!(ImeState::from_marked_text(String::new()).is_none());
+        assert!(ImeState::from_marked_text("zhong".into()).is_some());
+    }
+
+    #[test]
+    fn ime_marked_text_range_is_utf16_units() {
+        let cjk = ImeState::from_marked_text("中".into()).unwrap();
+        assert_eq!(cjk.marked_text_range(), 0..1);
+        let emoji = ImeState::from_marked_text("👍".into()).unwrap();
+        assert_eq!(emoji.marked_text_range(), 0..2);
+        let pinyin = ImeState::from_marked_text("zhong".into()).unwrap();
+        assert_eq!(pinyin.marked_text_range(), 0..5);
+    }
+
+    #[test]
+    fn composing_swallows_printable_and_enter_not_ctrl() {
+        let none = gpui::Modifiers::default();
+        let ctrl = gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        assert!(!swallow_key_during_ime(false, "a", &none));
+        assert!(swallow_key_during_ime(true, "a", &none));
+        assert!(swallow_key_during_ime(true, "enter", &none));
+        assert!(swallow_key_during_ime(true, "backspace", &none));
+        assert!(!swallow_key_during_ime(true, "c", &ctrl));
     }
 }

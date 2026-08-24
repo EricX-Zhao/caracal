@@ -127,7 +127,9 @@ pub fn encode_key(ks: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {
         return None;
     }
 
-    // Plain text input: prefer the actually-typed character (handles shift/IME).
+    // Plain text input: prefer the actually-typed character (handles Shift).
+    // CJK IME commit does not go through this path — it uses `InputHandler`
+    // on the terminal canvas (see `render::TerminalInputHandler`).
     let text = ks
         .key_char
         .clone()
