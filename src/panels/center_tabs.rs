@@ -2,6 +2,9 @@
 //! `Workspace` is the only strong owner of `TerminalPanel`s; this module
 //! does not hold entities.
 
+use gpui::{Div, InteractiveElement, ParentElement, Stateful, Styled, div};
+use gpui_component::ActiveTheme;
+
 /// After closing the tab at `closed` in a list of `len` tabs whose current
 /// active index is `active`, the new active index — or `None` if the list
 /// is now empty or the close is invalid.
@@ -41,8 +44,63 @@ pub struct DragTab {
     pub ix: usize,
 }
 
+impl gpui::Render for DragTab {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        gpui::div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(cx.theme().accent)
+            .text_sm()
+            .child(format!("{}", self.ix + 1))
+    }
+}
+
 pub fn tab_label(tab_number: u32, title: &str) -> String {
     format!("{tab_number}-{title}")
+}
+
+/// Horizontal chip strip. `on_select` / `on_close` / drop handling are
+/// wired by the caller via the returned element's listeners — this helper
+/// only builds one chip so Workspace can attach `cx.listener`s.
+pub fn render_tab_chip(
+    ix: usize,
+    label: String,
+    is_active: bool,
+    cx: &mut gpui::Context<crate::workspace::Workspace>,
+) -> Stateful<Div> {
+    let bg = if is_active {
+        cx.theme().list_active
+    } else {
+        gpui::transparent_black()
+    };
+    div()
+        .id(("center-tab", ix))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_1()
+        .rounded_md()
+        .bg(bg)
+        .text_sm()
+        .hover(|s| s.bg(cx.theme().list_hover))
+        .child(div().child(label))
+}
+
+pub fn render_empty_center(cx: &gpui::App) -> Div {
+    div()
+        .size_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(cx.theme().muted_foreground)
+        .child(rust_i18n::t!("Terminal.empty_tabs").to_string())
 }
 
 #[cfg(test)]

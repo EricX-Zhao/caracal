@@ -1,10 +1,10 @@
 //! Top-level workspace: a nyaterm-style VSCode shell built on `gpui_component`.
 //! An in-app Header sits on top; below it a row of
-//! `[left activity bar] [left side region] [center DockArea] [right side region] [right activity bar]`
+//! `[left activity bar] [left side region] [center tabs] [right side region] [right activity bar]`
 //! sits above a slim status bar.
 //!
-//! The `DockArea` is used for the CENTER only (terminal tabs, plus future
-//! splits — it keeps its tab drag-docking). The left/right side regions are
+//! Center terminal tabs are owned only by `tab_panels` and rendered by
+//! `panels::center_tabs`. The left/right side regions are
 //! single-panel containers whose content is chosen by the activity bars and
 //! whose widths are controlled by hand-rolled drag handles in `render_body`
 //! (not a `gpui_component` `h_resizable` group — see `left_width`'s doc
@@ -21,21 +21,21 @@
 //! manual way to browse a host too.
 //!
 //! Background drain: every `TerminalView` owns its feeder thread + drain task,
-//! kept alive while the dock holds the panel entity; unbounded event channels
-//! mean a backgrounded tab never back-pressures. Switching back shows the latest.
+//! kept alive while `tab_panels` holds the panel entity; unbounded event
+//! channels mean a backgrounded tab never back-pressures. Switching back
+//! shows the latest.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, AnyWindowHandle, App, AppContext, Axis, Bounds, Context, Entity, EntityId, Focusable,
-    Font, FontFallbacks, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Task, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions, div, font, prelude::FluentBuilder, px, size,
+    AnyView, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, EntityId, Focusable, Font,
+    FontFallbacks, InteractiveElement, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Task, WeakEntity, Window, WindowBounds, WindowHandle, WindowOptions, div, font,
+    prelude::FluentBuilder, px, size,
 };
 use gpui_component::checkbox::Checkbox;
-use gpui_component::dock::{DockArea, DockItem, DockPlacement, PanelStyle};
 use gpui_component::input::{Input, InputState};
 use gpui_component::notification::NotificationType;
 use gpui_component::{ActiveTheme, Root, WindowExt, v_flex};
@@ -54,7 +54,7 @@ use crate::panels::command_history_panel::{CommandHistoryPanel, CommandHistoryPl
 use crate::panels::monitor::{MonitorPanel, MonitorPlaceholder};
 use crate::panels::security_auth::SecurityAuthPanel;
 use crate::panels::stub::StubPanel;
-use crate::panels::terminal::{TerminalPanel, TerminalPanelEvent};
+use crate::panels::terminal::TerminalPanel;
 use crate::settings;
 use crate::terminal::serial::SerialConfig;
 use crate::terminal::ssh::{SshConfig, SshSession};
@@ -244,8 +244,6 @@ fn show_unlock_dialog(window: &mut Window, cx: &mut Context<Workspace>) {
 }
 
 pub struct Workspace {
-    /// Hosts the CENTER terminal tabs only (no side docks anymore).
-    dock_area: Entity<DockArea>,
     /// Shared SSH connections, keyed by `user@host:port`.
     ssh_sessions: HashMap<String, Arc<SshSession>>,
     /// The `SshConfig` behind each SSH-backed `TerminalView`, so a
@@ -260,28 +258,25 @@ pub struct Workspace {
     /// so `open_ssh` can render tab titles as `"{name}:{n}"` — the Nth
     /// *currently open* tab for that host, reusing the lowest number freed
     /// by a closed tab rather than growing forever. Populated in `open_ssh`,
-    /// released in `handle_ssh_tab_closed`.
+    /// released in `close_tab`.
     ssh_tab_numbers: HashMap<String, HashSet<u32>>,
-    /// Every currently open `TerminalPanel`, in open order — the source
-    /// of truth for the workspace-wide `"N-"` tab-title sequence number,
-    /// recomputed by live position (not a sticky per-tab id) every time a
-    /// tab opens or closes via `register_tab_panel`/`unregister_tab_panel`.
-    /// Only goes stale after a manual drag-reorder — see
-    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
+    /// Per-host SSH tab number allocated for each `TerminalView`, so
+    /// `close_tab` can `release_ssh_tab_number` without the old `Closed`
+    /// subscriber capturing `n` at open time.
+    ssh_tab_n_by_term: HashMap<EntityId, (String, u32)>,
+    /// Every currently open `TerminalPanel`, in visual order — the unique
+    /// strong owner of center tabs, and the source of truth for the
+    /// workspace-wide `"N-"` tab-title sequence number, recomputed by live
+    /// position every time a tab opens, closes, or is drag-reordered.
     tab_panels: Vec<Entity<TerminalPanel>>,
+    /// Index into `tab_panels`; `None` iff the list is empty.
+    active_tab: Option<usize>,
+    /// `Some((hover_ix, insert_before))` while a `DragTab` is over a chip.
+    tab_drag_target: Option<(usize, bool)>,
     /// Every `TerminalView` this workspace has created, so settings changes
     /// (e.g. font) can be broadcast to already-open tabs. Dead weak refs are
     /// pruned lazily on the next broadcast rather than on tab close.
     terminal_views: Vec<WeakEntity<TerminalView>>,
-    /// Number of tabs currently open in the center dock's (single) tab
-    /// group. Tracked here rather than read from gpui-component's own
-    /// `DockArea.center()` tree, whose cached panel list is stale after any
-    /// tab close (see `center_tab_group_is_stale`'s doc comment) — and
-    /// `TabPanel` has no public panel-count getter either. Incremented in
-    /// `add_center` (the single entry point every `open_*` method uses),
-    /// decremented wherever a `TerminalPanelEvent::Closed` is observed
-    /// below.
-    tab_count: usize,
     /// The open settings window, if any — re-triggering the menu item
     /// focuses this instead of opening a duplicate.
     settings_window: Option<WindowHandle<Root>>,
@@ -403,16 +398,6 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Center-only dock: terminal tabs live here. No left/right docks.
-        // `PanelStyle::Auto` (the default) collapses to a plain, unstyled
-        // title bar when there's exactly one tab — no background/border, so
-        // it looks inconsistent with the bordered tab chips shown once a
-        // second tab opens. `TabBar` always renders the same styled strip,
-        // even with a single tab.
-        let dock_area = cx.new(|cx| {
-            DockArea::new("caracal-main", Some(1), window, cx).panel_style(PanelStyle::TabBar)
-        });
-
         // Seed the chrome font (see `apply_appearance_font_settings`'s doc
         // comment) once at startup — resolved eagerly here, not on every
         // render.
@@ -526,13 +511,14 @@ impl Workspace {
         let quick_commands_panel = cx.new(|cx| QuickCommandsPanel::new(workspace_handle, cx));
 
         Self {
-            dock_area,
             ssh_sessions: HashMap::new(),
             ssh_reconnect_configs: HashMap::new(),
             ssh_tab_numbers: HashMap::new(),
+            ssh_tab_n_by_term: HashMap::new(),
             tab_panels: Vec::new(),
+            active_tab: None,
+            tab_drag_target: None,
             terminal_views: Vec::new(),
-            tab_count: 0,
             settings_window: None,
             focused_terminal: None,
             _focused_terminal_observation: None,
@@ -633,14 +619,8 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
-            let TerminalPanelEvent::Closed = event;
-            this.tab_count = this.tab_count.saturating_sub(1);
-            this.unregister_tab_panel(panel, window, cx);
-        });
-        self._subscriptions.push(tab_count_sub);
-        self.register_tab_panel(panel.clone(), cx);
-        self.add_center(Arc::new(panel), window, cx);
+        self.register_tab_panel(panel, cx);
+        self.set_active_tab(self.tab_panels.len() - 1, window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
     }
@@ -718,19 +698,14 @@ impl Workspace {
 
     /// Remove `panel` from the open-tab list (by entity identity) and
     /// recompute every remaining tab's displayed sequence number.
-    fn unregister_tab_panel(&mut self, panel: &Entity<TerminalPanel>, window: &mut Window, cx: &mut Context<Self>) {
+    fn unregister_tab_panel(
+        &mut self,
+        panel: &Entity<TerminalPanel>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.tab_panels.retain(|p| p.entity_id() != panel.entity_id());
         self.renumber_tabs(cx);
-        // `prune_stale_center` (see its doc comment) also releases whatever
-        // `Arc<dyn PanelView>` the just-closed panel is still pinned in via
-        // `DockArea.center`'s stale `DockItem::Tabs` entry — which, for a
-        // backend with an OS-level exclusive resource (e.g.
-        // `SerialBackend`'s serial-port lock), otherwise keeps that
-        // resource held until the *next* tab is opened. Running the prune
-        // right here, eagerly on close, releases it immediately instead of
-        // leaking it for one extra open/close cycle — see
-        // docs/superpowers/specs/2026-08-17-serial-reopen-busy-design.md.
-        self.prune_stale_center(window, cx);
     }
 
     /// Set every open tab's displayed `"N-"` prefix to its 1-indexed
@@ -743,11 +718,8 @@ impl Workspace {
 
     /// Move `panel` to `new_ix` in the open-tab list (removing it from
     /// wherever it currently sits first) and recompute every open tab's
-    /// displayed sequence number. Called by `TerminalPanel::on_added_to`
-    /// every time gpui-component (re)attaches a panel — including a manual
-    /// drag-reorder, whose new position this reads via the dropped panel's
-    /// own `TabPanel::active_ix()` (always left pointing at it — see
-    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+    /// displayed sequence number. Called from the center-strip `on_drop`
+    /// handler after a drag-reorder.
     pub(crate) fn reposition_tab_panel(&mut self, panel: Entity<TerminalPanel>, new_ix: usize, cx: &mut Context<Self>) {
         self.tab_panels.retain(|p| p.entity_id() != panel.entity_id());
         let ix = new_ix.min(self.tab_panels.len());
@@ -836,6 +808,8 @@ impl Workspace {
         // `ReconnectRequested` (Enter pressed on the disconnected
         // banner — see `terminal/view.rs`) knows what to redial.
         self.ssh_reconnect_configs.insert(terminal.entity_id(), config.clone());
+        self.ssh_tab_n_by_term
+            .insert(terminal.entity_id(), (key.clone(), tab_number));
         let reconnect_sub =
             cx.subscribe_in(&terminal, window, |this, terminal, event, window, cx| {
                 let TerminalViewEvent::ReconnectRequested = event;
@@ -849,19 +823,8 @@ impl Workspace {
         // used in this method's `"{display_name}:{n}"` title suffix.)
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let closed_config = config.clone();
-        let closed_term = term_weak.clone();
-        let closed_key = key.clone();
-        let closed_sub = cx.subscribe_in(&panel, window, move |this, panel, event, window, cx| {
-            let TerminalPanelEvent::Closed = event;
-            this.tab_count = this.tab_count.saturating_sub(1);
-            this.handle_ssh_tab_closed(closed_config.clone(), &closed_term, window, cx);
-            this.release_ssh_tab_number(&closed_key, tab_number);
-            this.unregister_tab_panel(panel, window, cx);
-        });
-        self._subscriptions.push(closed_sub);
-        self.register_tab_panel(panel.clone(), cx);
-        self.add_center(Arc::new(panel), window, cx);
+        self.register_tab_panel(panel, cx);
+        self.set_active_tab(self.tab_panels.len() - 1, window, cx);
 
         if self.ssh_sessions.contains_key(&key) {
             self.show_sftp(config.clone(), window, cx);
@@ -1002,12 +965,11 @@ impl Workspace {
         .detach();
     }
 
-    /// Cleanup when an SSH-backed terminal tab is removed from the dock
-    /// (`TerminalPanelEvent::Closed`, emitted by `TerminalPanel::on_removed`).
-    /// If any other tab for the same host is still open, does nothing —
-    /// the shared session is still needed. Otherwise evicts the cached
-    /// `SshSession` and closes that host's SFTP/monitor panels (falling
-    /// back to their placeholders if either was the one currently shown).
+    /// Cleanup when an SSH-backed terminal tab is closed. If any other tab
+    /// for the same host is still open, does nothing — the shared session
+    /// is still needed. Otherwise evicts the cached `SshSession` and closes
+    /// that host's SFTP/monitor panels (falling back to their placeholders
+    /// if either was the one currently shown).
     fn handle_ssh_tab_closed(
         &mut self,
         config: SshConfig,
@@ -1061,14 +1023,8 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
-            let TerminalPanelEvent::Closed = event;
-            this.tab_count = this.tab_count.saturating_sub(1);
-            this.unregister_tab_panel(panel, window, cx);
-        });
-        self._subscriptions.push(tab_count_sub);
-        self.register_tab_panel(panel.clone(), cx);
-        self.add_center(Arc::new(panel), window, cx);
+        self.register_tab_panel(panel, cx);
+        self.set_active_tab(self.tab_panels.len() - 1, window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
     }
@@ -1096,14 +1052,8 @@ impl Workspace {
         // renumber_tabs call below corrects it before anything renders.
         let workspace_handle = cx.entity().downgrade();
         let panel = cx.new(|_cx| TerminalPanel::new(terminal, 0, workspace_handle));
-        let tab_count_sub = cx.subscribe_in(&panel, window, |this, panel, event, window, cx| {
-            let TerminalPanelEvent::Closed = event;
-            this.tab_count = this.tab_count.saturating_sub(1);
-            this.unregister_tab_panel(panel, window, cx);
-        });
-        self._subscriptions.push(tab_count_sub);
-        self.register_tab_panel(panel.clone(), cx);
-        self.add_center(Arc::new(panel), window, cx);
+        self.register_tab_panel(panel, cx);
+        self.set_active_tab(self.tab_panels.len() - 1, window, cx);
         self.show_sftp_placeholder(window, cx);
         self.show_monitor_placeholder(window, cx);
     }
@@ -1424,120 +1374,53 @@ impl Workspace {
         cx.notify();
     }
 
-    fn add_center(
+    pub(crate) fn close_tab(
         &mut self,
-        panel: Arc<dyn gpui_component::dock::PanelView>,
+        panel: Entity<TerminalPanel>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.tab_count += 1;
-        // Belt-and-suspenders: `unregister_tab_panel` already prunes a stale
-        // center eagerly on every tab close (see its doc comment), so this
-        // should normally be a no-op by the time we get here. Kept as a
-        // defensive fallback for any future close path that doesn't route
-        // through `unregister_tab_panel`.
-        self.prune_stale_center(window, cx);
-        self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel(panel, DockPlacement::Center, None, window, cx);
-        });
-    }
-
-    /// When the Center dock's (currently only ever one) tab group empties
-    /// out — every terminal tab closed — its `TabPanel` detaches itself from
-    /// the live `StackPanel` (`TabPanel::remove_self_if_empty` in
-    /// gpui-component), but nothing prunes the matching entry from
-    /// `DockArea.center`'s separate `DockItem::Split.items` tree: that tree
-    /// (and its `DockItem::Tabs::items: Vec<Arc<dyn PanelView>>`) is a cached
-    /// snapshot gpui-component only ever appends to, never prunes on
-    /// removal — see `DockItem` in gpui-component's `dock/mod.rs`. Left
-    /// alone, this is two separate bugs bundled in one stale reference:
-    ///
-    /// - A cosmetic one: `add_panel` would find that stale, now-invisible
-    ///   `Tabs` entry and silently repopulate it instead of creating a new,
-    ///   visible tab group (the "double-click a saved connection does
-    ///   nothing after closing every tab" bug).
-    /// - A resource leak: the stale `Tabs.items` entry is a genuine strong
-    ///   `Arc<dyn PanelView>` reference to the just-closed `TerminalPanel` —
-    ///   which keeps its `TerminalView`, and hence its backend
-    ///   (`Arc<dyn PtyBackend>`), alive until *this* runs. For a backend
-    ///   holding an OS-level exclusive resource (`SerialBackend`'s serial
-    ///   port, opened with `TIOCEXCL`/`flock` — see `serial.rs`), that meant
-    ///   the closed tab's port stayed locked, and reopening it immediately
-    ///   failed with "device busy" — not a timing race, a strict leak that
-    ///   only cleared on the *next* tab open. See
-    ///   docs/superpowers/specs/2026-08-17-serial-reopen-busy-design.md.
-    ///
-    /// Called both eagerly on every tab close (`unregister_tab_panel`, the
-    /// real fix) and defensively here in `add_center` (the original,
-    /// lazier-than-necessary fix for the cosmetic half of this bug).
-    fn prune_stale_center(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.dock_area.update(cx, |dock_area, cx| {
-            if Self::center_tab_group_is_stale(dock_area, cx) {
-                let weak = cx.entity().downgrade();
-                let fresh_center = DockItem::split(Axis::Horizontal, vec![], &weak, window, cx);
-                dock_area.set_center(fresh_center, window, cx);
-            }
-        });
-    }
-
-    /// True if the Center dock's tab group exists but is empty — see
-    /// `prune_stale_center`'s doc comment for why this needs special
-    /// handling.
-    fn center_tab_group_is_stale(dock_area: &DockArea, cx: &App) -> bool {
-        match dock_area.center() {
-            DockItem::Split { items, .. } => items.iter().any(|item| {
-                matches!(item, DockItem::Tabs { view, .. } if view.read(cx).active_panel(cx).is_none())
-            }),
-            DockItem::Tabs { view, .. } => view.read(cx).active_panel(cx).is_none(),
-            _ => false,
-        }
-    }
-
-    /// Find the (currently only ever one) `Tabs` group inside the center
-    /// dock's tree — a `Split` wrapping a single `Tabs` item today (see
-    /// `add_center`'s doc comment); this walk also handles a future nested
-    /// `Split` without changes.
-    fn active_tabs_item(&self, cx: &App) -> Option<DockItem> {
-        fn find(item: &DockItem) -> Option<DockItem> {
-            match item {
-                DockItem::Tabs { .. } => Some(item.clone()),
-                DockItem::Split { items, .. } => items.iter().find_map(find),
-                _ => None,
-            }
-        }
-        find(self.dock_area.read(cx).center())
-    }
-
-    /// Switch the center dock's active tab to `ix` (0-indexed). Uses
-    /// `DockItem::active_index`, gpui-component's own public method for
-    /// mutating the live `TabPanel` entity's active index — but that method
-    /// doesn't call `cx.notify()` itself (confirmed by reading its body), so
-    /// this does that explicitly afterward, or the tab switch wouldn't
-    /// repaint until something unrelated triggered a redraw.
-    ///
-    /// Also moves keyboard focus into the newly active panel. Mouse-click
-    /// tab switching goes through `TabPanel`'s own private `set_active_ix`,
-    /// which additionally calls a private `focus_active_panel` helper
-    /// (confirmed by reading `tab_panel.rs`) — `DockItem::active_index`
-    /// bypasses that entirely since it only touches the `active_ix` field
-    /// directly, so a keyboard-driven switch left focus on whatever had it
-    /// before (typically the now-hidden previous tab), stranding keystrokes
-    /// there. Reproduces the same effect via `TabPanel`'s public
-    /// `active_panel`/`PanelView::focus_handle` instead of needing the
-    /// private method itself.
-    fn set_active_tab_index(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tabs_item) = self.active_tabs_item(cx) else {
+        let Some(closed) = self
+            .tab_panels
+            .iter()
+            .position(|p| p.entity_id() == panel.entity_id())
+        else {
             return;
         };
-        let DockItem::Tabs { ref view, .. } = tabs_item else {
-            return;
-        };
-        let view = view.clone();
-        tabs_item.active_index(ix, cx);
-        view.update(cx, |_, cx| cx.notify());
-        if let Some(panel) = view.read(cx).active_panel(cx) {
-            panel.focus_handle(cx).focus(window, cx);
+        let term = panel.read(cx).terminal();
+        if let Some(config) = self.ssh_reconnect_configs.get(&term.entity_id()).cloned() {
+            self.handle_ssh_tab_closed(config, &term.downgrade(), window, cx);
         }
+        if let Some((key, n)) = self.ssh_tab_n_by_term.remove(&term.entity_id()) {
+            self.release_ssh_tab_number(&key, n);
+        }
+        let prev_active = self.active_tab.unwrap_or(0);
+        let prev_len = self.tab_panels.len();
+        self.unregister_tab_panel(&panel, window, cx);
+        self.active_tab = crate::panels::center_tabs::active_index_after_close(
+            closed,
+            prev_active,
+            prev_len,
+        );
+        if let Some(ix) = self.active_tab {
+            self.set_active_tab(ix, window, cx);
+        } else {
+            self.active_title = "Caracal".into();
+            self.focused_terminal = None;
+            cx.notify();
+        }
+    }
+
+    fn set_active_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tab_panels.len() {
+            return;
+        }
+        self.active_tab = Some(ix);
+        let panel = self.tab_panels[ix].clone();
+        panel.read(cx).focus_handle(cx).focus(window, cx);
+        let term = panel.read(cx).terminal();
+        self.set_active_title_from(&term.downgrade(), cx);
+        cx.notify();
     }
 
     /// `secondary-shift-t`: duplicate the focused tab's connection — a new
@@ -1571,35 +1454,31 @@ impl Workspace {
     }
 
     fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tabs_item) = self.active_tabs_item(cx) else {
-            return;
-        };
-        let DockItem::Tabs { ref view, .. } = tabs_item else {
-            return;
-        };
-        let current = view.read(cx).active_ix();
-        let new_ix = Self::next_tab_index(current, self.tab_count);
-        self.set_active_tab_index(new_ix, window, cx);
+        let current = self.active_tab.unwrap_or(0);
+        let new_ix = Self::next_tab_index(current, self.tab_panels.len());
+        self.set_active_tab(new_ix, window, cx);
     }
 
     fn on_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tabs_item) = self.active_tabs_item(cx) else {
-            return;
-        };
-        let DockItem::Tabs { ref view, .. } = tabs_item else {
-            return;
-        };
-        let current = view.read(cx).active_ix();
-        let new_ix = Self::prev_tab_index(current, self.tab_count);
-        self.set_active_tab_index(new_ix, window, cx);
+        let current = self.active_tab.unwrap_or(0);
+        let new_ix = Self::prev_tab_index(current, self.tab_panels.len());
+        self.set_active_tab(new_ix, window, cx);
     }
 
     /// Shared by the nine `on_goto_tab_N` handlers below.
     fn goto_tab(&mut self, one_indexed: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = Self::goto_tab_index(one_indexed, self.tab_count) else {
+        let Some(ix) = Self::goto_tab_index(one_indexed, self.tab_panels.len()) else {
             return;
         };
-        self.set_active_tab_index(ix, window, cx);
+        self.set_active_tab(ix, window, cx);
+    }
+
+    fn on_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.active_tab else {
+            return;
+        };
+        let panel = self.tab_panels[ix].clone();
+        self.close_tab(panel, window, cx);
     }
 
     fn on_goto_tab_1(&mut self, _: &GotoTab1, window: &mut Window, cx: &mut Context<Self>) {
@@ -1919,15 +1798,15 @@ impl Workspace {
             .child(col)
     }
 
-    /// The body row between the two activity bars: left region | center dock
+    /// The body row between the two activity bars: left region | center tabs
     /// | right region, with a hand-rolled drag handle between each side
     /// region and the center (see `left_width`'s doc comment for why this
     /// isn't a `gpui_component` `h_resizable` group).
     ///
     /// Side widths are absolute pixels that do **not** rescale when the
     /// window itself resizes — VSCode-style: a sidebar keeps whatever width
-    /// the user last dragged it to, and the center dock absorbs the change
-    /// via its own `flex_1`.
+    /// the user last dragged it to, and the center region absorbs the
+    /// change via its own `flex_1`.
     fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let border = cx.theme().border;
         let left_view = self.left_active.and_then(|id| self.resolve(id));
@@ -1987,6 +1866,89 @@ impl Workspace {
             div().h_full().flex_shrink_0().w(px(0.0)).into_any_element()
         };
 
+        let strip = {
+            let mut row = div()
+                .id("center-tab-strip")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .px_1()
+                .py_1()
+                .w_full()
+                .flex_shrink_0()
+                .overflow_x_scroll();
+            for (ix, panel) in self.tab_panels.iter().enumerate() {
+                let is_active = self.active_tab == Some(ix);
+                let number = panel.read(cx).tab_number();
+                let title = panel.read(cx).terminal().read(cx).title().to_string();
+                let label = crate::panels::center_tabs::tab_label(number, &title);
+                let chip = crate::panels::center_tabs::render_tab_chip(ix, label, is_active, cx)
+                    .on_click(cx.listener(move |this, _ev, window, cx| {
+                        this.set_active_tab(ix, window, cx);
+                    }))
+                    .on_drag(crate::panels::center_tabs::DragTab { ix }, |drag, _, _, cx| {
+                        cx.new(|_| drag.clone())
+                    })
+                    .on_drag_move(cx.listener(
+                        move |this, event: &gpui::DragMoveEvent<crate::panels::center_tabs::DragTab>, _, _cx| {
+                            if event.bounds.contains(&event.event.position) {
+                                let insert_before = event.event.position.x < event.bounds.center().x;
+                                this.tab_drag_target = Some((ix, insert_before));
+                            } else if this.tab_drag_target.is_some_and(|(t, _)| t == ix) {
+                                this.tab_drag_target = None;
+                            }
+                        },
+                    ))
+                    .on_drop(cx.listener(
+                        move |this, drag: &crate::panels::center_tabs::DragTab, window, cx| {
+                            let insert_before = this
+                                .tab_drag_target
+                                .filter(|(t, _)| *t == ix)
+                                .map(|(_, b)| b)
+                                .unwrap_or(true);
+                            this.tab_drag_target = None;
+                            let mut to = ix;
+                            if !insert_before {
+                                to += 1;
+                            }
+                            // After removal of `drag.ix`, indices >= drag.ix shift down.
+                            let from = drag.ix;
+                            if from >= this.tab_panels.len() {
+                                return;
+                            }
+                            if to > from {
+                                to -= 1;
+                            }
+                            to = to.min(this.tab_panels.len().saturating_sub(1));
+                            let panel = this.tab_panels[from].clone();
+                            this.reposition_tab_panel(panel, to, cx);
+                            this.set_active_tab(to, window, cx);
+                        },
+                    ))
+                    .child(
+                        div()
+                            .id(("close-center-tab", ix))
+                            .rounded_sm()
+                            .hover(|s| s.bg(cx.theme().danger))
+                            .child(crate::panels::icons::icon(crate::panels::icons::AppIcon::Delete))
+                            .on_click(cx.listener(move |this, _ev, window, cx| {
+                                cx.stop_propagation();
+                                let panel = this.tab_panels[ix].clone();
+                                this.close_tab(panel, window, cx);
+                            })),
+                    );
+                row = row.child(chip);
+            }
+            row
+        };
+
+        let body = if let Some(ix) = self.active_tab {
+            div().size_full().child(self.tab_panels[ix].clone())
+        } else {
+            crate::panels::center_tabs::render_empty_center(cx)
+        };
+
         let center = div()
             .flex()
             .flex_col()
@@ -1995,10 +1957,19 @@ impl Workspace {
             .overflow_hidden()
             .child(
                 div()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_hidden()
-                    .child(self.dock_area.clone()),
+                    .child(strip)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(0.0))
+                            .overflow_hidden()
+                            .child(body),
+                    ),
             )
             .when(self.show_quick_commands, |d| {
                 d.child(
@@ -2117,6 +2088,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))
+            .on_action(cx.listener(Self::on_close_tab))
             .on_action(cx.listener(Self::on_goto_tab_1))
             .on_action(cx.listener(Self::on_goto_tab_2))
             .on_action(cx.listener(Self::on_goto_tab_3))

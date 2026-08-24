@@ -1,24 +1,19 @@
-//! `TerminalPanel`: the adapter that lets a `terminal::TerminalView` live inside
-//! a `gpui_component` dock. It does three things only (CLAUDE.md §1): embed the
-//! inner entity, show a title (with a close button), and **delegate focus to the
+//! `TerminalPanel`: adapter that embeds a `terminal::TerminalView` in the
+//! workspace center. It does three things only (CLAUDE.md §1): embed the inner
+//! entity, show a scrollbar + copy/paste menu, and **delegate focus to the
 //! inner view**. No other business logic.
 
 use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use gpui::{
-    App, ClickEvent, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, Pixels, Point, Render, Size, StatefulInteractiveElement, Styled, WeakEntity,
-    Window, div, point, px, size,
+    App, Context, Entity, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Point, Render,
+    Size, Styled, WeakEntity, Window, div, point, px, size,
 };
-use gpui_component::dock::{Panel, PanelControl, PanelEvent, PanelView, TabPanel};
 use gpui_component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_component::scroll::{Scrollbar, ScrollbarHandle, ScrollbarShow};
-use gpui_component::ActiveTheme;
 
-use crate::panels::icons::{AppIcon, icon};
 use crate::terminal::model::SharedTerm;
 use crate::terminal::scrollback;
 use crate::terminal::view::TerminalView;
@@ -95,31 +90,12 @@ impl ScrollbarHandle for TerminalScrollbarHandle {
 
 pub struct TerminalPanel {
     terminal: Entity<TerminalView>,
-    /// The `TabPanel` this panel currently lives in, handed to us via
-    /// `on_added_to`. Needed so the close button (embedded in `title()`, since
-    /// this gpui-component revision's tab strip has no built-in per-tab close
-    /// icon) can remove *this specific* panel regardless of which tab is active.
-    tab_panel: Option<WeakEntity<TabPanel>>,
     /// The 1-indexed sequence number rendered as this tab's `"N-"` title
     /// prefix. Kept in sync by `Workspace::renumber_tabs` (via
     /// `set_tab_number` below) every time the open-tab set changes — not
-    /// a value this panel manages itself. Only goes stale after a manual
-    /// drag-reorder, which `Workspace` has no way to observe (see
-    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md).
+    /// a value this panel manages itself.
     tab_number: u32,
-    /// Whether this panel is currently attached to a `TabPanel`. Flipped to
-    /// `false` by `on_removed`, back to `true` by `on_added_to` — the signal
-    /// `on_removed` uses to tell a genuine close apart from gpui-component's
-    /// internal detach-then-reinsert dance for a drag-reorder (both call
-    /// `on_removed` identically; only a real close never calls `on_added_to`
-    /// again afterward). See
-    /// docs/superpowers/specs/2026-07-22-drag-reorder-false-close-design.md.
-    attached: bool,
-    /// Back-reference so `on_added_to` can tell `Workspace` where this tab
-    /// landed after every (re)attach, including a drag-reorder — mirrors
-    /// the same pattern `SftpPanel`/`MonitorPanel` already use to call back
-    /// into `Workspace`. See
-    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
+    /// Back-reference so `close` can ask `Workspace` to drop this tab.
     workspace: WeakEntity<Workspace>,
     /// Lazily built on first render (`TerminalPanel::new` takes no `cx`, and
     /// the handle needs `self.terminal.read(cx)` to get the shared `Term`).
@@ -130,9 +106,7 @@ impl TerminalPanel {
     pub fn new(terminal: Entity<TerminalView>, tab_number: u32, workspace: WeakEntity<Workspace>) -> Self {
         Self {
             terminal,
-            tab_panel: None,
             tab_number,
-            attached: true,
             workspace,
             scrollbar_handle: None,
         }
@@ -145,22 +119,29 @@ impl TerminalPanel {
         cx.notify();
     }
 
+    pub(crate) fn tab_number(&self) -> u32 {
+        self.tab_number
+    }
+
+    pub(crate) fn terminal(&self) -> Entity<TerminalView> {
+        self.terminal.clone()
+    }
+
+    #[allow(dead_code)] // nested-update path if a panel-local listener closes itself
     fn close(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab_panel) = self.tab_panel.as_ref().and_then(|w| w.upgrade()) else {
+        let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
-        let this: Arc<dyn PanelView> = Arc::new(cx.entity());
+        let panel = cx.entity();
         // Deferred: this runs inside a `cx.listener` on *this* panel, which
         // GPUI already wraps in an `Entity<TerminalPanel>::update(..)` call.
-        // Calling `remove_panel` synchronously would trigger our own
-        // `on_removed` hook, re-entering that same update — GPUI panics on
-        // nested self-updates ("cannot update X while it is already being
-        // updated"). Deferring runs it after the current update finishes,
-        // the same way gpui-component's own `TabPanel::on_action_close_panel`
-        // defers its cleanup.
+        // Calling `workspace.close_tab` synchronously would re-enter that
+        // same update if Workspace then notifies this panel — GPUI panics
+        // on nested self-updates. Deferring runs it after the current
+        // update finishes.
         window.defer(cx, move |window, cx| {
-            tab_panel.update(cx, |tab_panel, cx| {
-                tab_panel.remove_panel(this, window, cx);
+            workspace.update(cx, |workspace, cx| {
+                workspace.close_tab(panel, window, cx);
             });
         });
     }
@@ -232,122 +213,6 @@ impl Focusable for TerminalPanel {
     /// keyboard input (CLAUDE.md §2: focus 委托).
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.terminal.read(cx).focus_handle(cx)
-    }
-}
-
-impl gpui::EventEmitter<PanelEvent> for TerminalPanel {}
-
-/// Emitted when the dock actually removes this panel
-/// (`Panel::on_removed`, below) — a generic, backend-agnostic "this tab
-/// is gone" signal. `TerminalPanel` doesn't know or care why (matches
-/// its "adapter only" mandate, file header above); `Workspace` is the
-/// one that knows what, if anything, needs cleaning up for a given
-/// backend kind (see `open_ssh` in `workspace.rs`, the only current
-/// subscriber — local/Telnet/Serial tabs emit this too, just unobserved,
-/// since they share no session to clean up).
-#[derive(Clone, Debug)]
-pub enum TerminalPanelEvent {
-    Closed,
-}
-
-impl gpui::EventEmitter<TerminalPanelEvent> for TerminalPanel {}
-
-impl Panel for TerminalPanel {
-    fn panel_name(&self) -> &'static str {
-        "TerminalPanel"
-    }
-
-    /// Hide the "Expand / Zoom" icon in the tab strip. gpui-component's
-    /// `TabPanel::render_toolbar` only renders that icon when `zoomable`
-    /// returns `Some(PanelControl::Both | Toolbar)`; returning `None`
-    /// makes the entire zoom branch fall through to `None` and no icon is
-    /// emitted. The tab strip's "..." menu still offers Zoom In/Out as
-    /// menu actions, so the feature isn't lost — just demoted to a less
-    /// visible spot. We don't use TabPanel's tab-strip close button either
-    /// (this gpui-component revision doesn't ship one), hence our own `X`
-    /// in `title()`.
-    fn zoomable(&self, _cx: &App) -> Option<PanelControl> {
-        None
-    }
-
-    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = format!("{}-{}", self.tab_number, self.terminal.read(cx).title());
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .child(title)
-            .child(
-                div()
-                    .id(("close-terminal", cx.entity_id()))
-                    .rounded_sm()
-                    .text_color(cx.theme().foreground)
-                    .hover(|s| s.bg(cx.theme().danger).text_color(cx.theme().danger_foreground))
-                    .child(icon(AppIcon::Delete))
-                    .on_click(cx.listener(|this, _ev: &ClickEvent, window, cx| {
-                        // Don't also let the tab strip's own click handler fire
-                        // (it would select this tab right before we remove it).
-                        cx.stop_propagation();
-                        this.close(window, cx);
-                    })),
-            )
-    }
-
-    /// gpui-component calls `on_added_to` on every (re)attach — including a
-    /// drag-reorder's reinsert — but crucially calls it *before* it sets the
-    /// panel's new `active_ix` (confirmed by reading `TabPanel::insert_panel_at`/
-    /// `add_panel_with_active`: both call `on_added_to` first, `set_active_ix`
-    /// after). Reading `active_ix()` synchronously right here would see the
-    /// *previous* value, not this panel's real new position. Deferring the
-    /// read (via `window.defer`, until after the current update cycle — the
-    /// same reentrancy-avoidance pattern used elsewhere in this file) fixes
-    /// both that staleness *and* a second problem: this callback typically
-    /// fires while a `Workspace`-entity update is already on the call stack
-    /// (e.g. from `Workspace::open_local_with`'s own dispatch), and calling
-    /// `workspace.update(...)` synchronously from in here would be exactly
-    /// the nested-self-update GPUI panics on. See
-    /// docs/superpowers/specs/2026-07-22-tab-sequence-numbers-design.md.
-    fn on_added_to(
-        &mut self,
-        tab_panel: WeakEntity<TabPanel>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.tab_panel = Some(tab_panel.clone());
-        self.attached = true;
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        let this = cx.entity();
-        window.defer(cx, move |_window, cx| {
-            let Some(active_ix) = tab_panel.upgrade().map(|tp| tp.read(cx).active_ix()) else {
-                return;
-            };
-            workspace.update(cx, |workspace, cx| {
-                workspace.reposition_tab_panel(this, active_ix, cx);
-            });
-        });
-    }
-
-    /// gpui-component's `TabPanel::detach_panel` calls this identically for
-    /// a genuine close AND for every drag-driven reposition (detach, then
-    /// immediately reinsert elsewhere) — it has no way to tell us which.
-    /// Deferring the actual "is this really gone" check by one update cycle
-    /// and rechecking `attached` lets a drag's synchronous reinsert (which
-    /// flips `attached` back to `true` via `on_added_to`, before this
-    /// deferred closure runs) self-heal away a false close. See
-    /// docs/superpowers/specs/2026-07-22-drag-reorder-false-close-design.md.
-    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.attached = false;
-        let weak = cx.entity().downgrade();
-        window.defer(cx, move |_window, cx| {
-            let _ = weak.update(cx, |this, cx| {
-                if !this.attached {
-                    cx.emit(TerminalPanelEvent::Closed);
-                }
-            });
-        });
     }
 }
 
