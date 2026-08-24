@@ -384,6 +384,9 @@ Terminal:
   paste:
     zh-CN: "粘贴"
     en: "Paste"
+  empty_tabs:
+    zh-CN: "没有打开的终端"
+    en: "No open terminals"
 Sessions:
   title:
     zh-CN: "会话"

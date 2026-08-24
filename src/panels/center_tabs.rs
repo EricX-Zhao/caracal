@@ -36,9 +36,18 @@ pub fn reorder_indices(from: usize, to: usize, len: usize) -> Vec<usize> {
     v
 }
 
+#[derive(Clone)]
+pub struct DragTab {
+    pub ix: usize,
+}
+
+pub fn tab_label(tab_number: u32, title: &str) -> String {
+    format!("{tab_number}-{title}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{active_index_after_close, reorder_indices};
+    use super::{active_index_after_close, reorder_indices, tab_label};
 
     #[test]
     fn close_left_of_active_decrements() {
@@ -91,5 +100,11 @@ mod tests {
     fn reorder_out_of_range_is_identity() {
         assert_eq!(reorder_indices(9, 0, 3), vec![0, 1, 2]);
         assert_eq!(reorder_indices(0, 9, 3), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn tab_label_prefixes_live_number() {
+        assert_eq!(tab_label(1, "本地终端"), "1-本地终端");
+        assert_eq!(tab_label(3, "prod:2"), "3-prod:2");
     }
 }
