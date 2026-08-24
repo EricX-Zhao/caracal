@@ -15,11 +15,10 @@
 use std::collections::HashMap;
 
 use gpui::{KeyBinding, Keystroke, NoAction};
-use gpui_component::dock::ClosePanel;
 
 use crate::terminal::view::{ClearScreen, TERMINAL_KEY_CONTEXT};
 use crate::workspace::{
-    NewConnectionAction, NewTab, NextTab, OpenSettingsAction, PrevTab, ToggleLeftSidebar,
+    CloseTab, NewConnectionAction, NewTab, NextTab, OpenSettingsAction, PrevTab, ToggleLeftSidebar,
     ToggleQuickCommands, ToggleRightSidebar, ZoomIn, ZoomOut,
 };
 
@@ -86,7 +85,7 @@ pub fn effective_key(action_id: &str, overrides: &HashMap<String, String>) -> Op
 fn keybinding_for(action_id: &str, key: &str) -> KeyBinding {
     match action_id {
         "new_tab" => KeyBinding::new(key, NewTab, None),
-        "close_tab" => KeyBinding::new(key, ClosePanel, None),
+        "close_tab" => KeyBinding::new(key, CloseTab, None),
         "next_tab" => KeyBinding::new(key, NextTab, None),
         "prev_tab" => KeyBinding::new(key, PrevTab, None),
         "new_connection" => KeyBinding::new(key, NewConnectionAction, None),

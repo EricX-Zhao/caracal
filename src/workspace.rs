@@ -67,6 +67,7 @@ gpui::actions!(caracal_workspace, [
     NewTab,
     NextTab,
     PrevTab,
+    CloseTab,
     GotoTab1,
     GotoTab2,
     GotoTab3,
