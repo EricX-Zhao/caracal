@@ -1061,6 +1061,18 @@ impl TerminalView {
 
         if let Some(bytes) = encode_key(&ev.keystroke, mode) {
             self.send_input(&bytes);
+            // Stop propagation once the key is actually sent to the PTY.
+            // Since the CJK IME support above registered a `TerminalInputHandler`
+            // (render::terminal_canvas -> window.handle_input), the platform
+            // layer (e.g. gpui_linux's X11 Window::handle_input) *also*
+            // forwards every plain keystroke's `key_char` straight to
+            // `InputHandler::replace_text_in_range` — but only when this
+            // listener left the event propagating. Without this call, a
+            // plain letter is written to the PTY here AND a second time via
+            // `commit_text`, echoing every typed character twice. Zed's own
+            // `TerminalView::key_down` stops propagation the same way once
+            // `process_keystroke` reports the key as handled.
+            cx.stop_propagation();
         }
     }
 
